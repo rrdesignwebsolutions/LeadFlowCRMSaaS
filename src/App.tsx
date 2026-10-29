@@ -62,7 +62,24 @@ function Shell({ me, metrics, leads, loadError, reload, onLogout }: {
 }) {
   const [view, setView] = useState<View>("overview");
   const [sidebar, setSidebar] = useState(false);
+  const [wa, setWa] = useState<{ connected: boolean; label: string }>({ connected: false, label: "Não conectado" });
+  const [unread, setUnread] = useState(0);
   const go = (next: View) => { setView(next); setSidebar(false); };
+
+  const refreshWa = useCallback(async () => {
+    try {
+      const r = await api<{ integration: { status: string; displayPhoneNumber: string | null } | null }>("/api/integrations/whatsapp");
+      const ok = r.integration?.status === "connected";
+      setWa({ connected: ok, label: !r.integration ? "Não conectado" : ok ? `Conectado${r.integration.displayPhoneNumber ? ` · ${r.integration.displayPhoneNumber}` : ""}` : "Com erro" });
+      if (ok) setUnread((await api<{ results: Array<{ unread: number }> }>("/api/conversations")).results.reduce((n, c) => n + (c.unread > 0 ? 1 : 0), 0));
+      else setUnread(0);
+    } catch { /* o indicador é apenas informativo */ }
+  }, []);
+  useEffect(() => {
+    void refreshWa();
+    const timer = setInterval(() => { if (!document.hidden) void refreshWa(); }, 20000);
+    return () => clearInterval(timer);
+  }, [refreshWa]);
   const seatPct = metrics ? Math.min(100, (metrics.seats / metrics.seatLimit) * 100) : 0;
   const today = new Date().toLocaleDateString("pt-BR", { weekday: "long", day: "numeric", month: "long" }).toUpperCase();
   const conversion = metrics && metrics.leads > 0 ? `${Math.round((metrics.sold / metrics.leads) * 100)}%` : "—";
@@ -85,7 +102,7 @@ function Shell({ me, metrics, leads, loadError, reload, onLogout }: {
           <span className="nav-label">TRABALHO</span>
           {work.map((item) => (
             <button key={item.id} className={view === item.id ? "nav-item active" : "nav-item"} onClick={() => go(item.id)}>
-              <item.icon size={19} /><span>{item.label}</span>{item.id === "leads" && <em>{leads.length}</em>}
+              <item.icon size={19} /><span>{item.label}</span>{item.id === "leads" && <em>{leads.length}</em>}{item.id === "inbox" && unread > 0 && <em>{unread}</em>}
             </button>
           ))}
           <span className="nav-label">GESTÃO</span>
@@ -135,11 +152,11 @@ function Shell({ me, metrics, leads, loadError, reload, onLogout }: {
                 <div className="panel-title"><div><h2>Integrações</h2><p>Estado dos seus canais</p></div></div>
                 <div className="integration">
                   <span className="integration-icon"><MessageCircleMore size={22} /></span>
-                  <span><b>WhatsApp Business Platform</b><small>Não conectado</small></span>
-                  <span className="tag warning">Pendente</span>
+                  <span><b>WhatsApp Business Platform</b><small>{wa.label}</small></span>
+                  <span className={wa.connected ? "tag ok" : "tag warning"}>{wa.connected ? "Ativo" : "Pendente"}</span>
                 </div>
-                <div className="callout"><ShieldCheck size={18} /><p>Usamos apenas a API oficial. Enquanto a conexão não é aprovada pela Meta, cadastre leads manualmente.</p></div>
-                <button className="button secondary" onClick={() => go("settings")}>Ver requisitos</button>
+                <div className="callout"><ShieldCheck size={18} /><p>Usamos apenas a API oficial. {wa.connected ? "Mensagens recebidas criam leads automaticamente." : "Enquanto não conecta, cadastre leads manualmente."}</p></div>
+                <button className="button secondary" onClick={() => go(wa.connected ? "inbox" : "settings")}>{wa.connected ? "Abrir caixa de entrada" : "Conectar WhatsApp"}</button>
               </section>
             </div>
           </>}

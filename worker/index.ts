@@ -1,15 +1,19 @@
 /// <reference types="@cloudflare/workers-types" />
 
-interface Env {
+import { handleMetaPayload, whatsappRoutes } from "./whatsapp";
+
+export interface Env {
   DB: D1Database;
   ASSETS: Fetcher;
   APP_ORIGIN: string;
-  SESSION_SECRET: string;
+  SESSION_SECRET?: string;
   META_APP_SECRET?: string;
   META_VERIFY_TOKEN?: string;
+  ENCRYPTION_KEY?: string;
+  GRAPH_API_BASE?: string;
 }
 
-type Session = { userId: string; organizationId: string; role: string };
+export type Session = { userId: string; organizationId: string; role: string };
 const json = (data: unknown, status = 200, headers: HeadersInit = {}) =>
   new Response(JSON.stringify(data), { status, headers: { "content-type": "application/json", ...headers } });
 const id = () => crypto.randomUUID();
@@ -154,20 +158,9 @@ async function webhook(request: Request, env: Env, url: URL) {
   if (!env.META_APP_SECRET) return json({ error: "Webhook não configurado." }, 503);
   const raw = await request.text();
   if (!(await verifyMetaSignature(request, env.META_APP_SECRET, raw))) return json({ error: "Assinatura inválida." }, 401);
-  const payload = JSON.parse(raw) as { entry?: Array<{ id?:string; changes?: Array<{ value?: { metadata?:{ phone_number_id?:string }; messages?:Array<{id?:string}>; statuses?:Array<{id?:string;status?:string}> } }> }> };
-  for (const entry of payload.entry ?? []) for (const change of entry.changes ?? []) {
-    const value = change.value, phone = value?.metadata?.phone_number_id;
-    const integration = phone ? await env.DB.prepare(
-      "SELECT organization_id FROM integrations WHERE provider='meta_whatsapp' AND phone_number_id=? AND status='connected'"
-    ).bind(phone).first<{ organization_id:string }>() : null;
-    for (const item of [...(value?.messages ?? []), ...(value?.statuses ?? [])]) {
-      const externalId = `${item.id}:${"status" in item ? item.status : "message"}`;
-      await env.DB.prepare(`INSERT OR IGNORE INTO webhook_events(id,provider,external_event_id,phone_number_id,organization_id,payload_hash,status)
-        VALUES(?,'meta_whatsapp',?,?,?,?,?)`).bind(
-          id(), externalId, phone ?? null, integration?.organization_id ?? null, await sha256(raw), integration ? "received" : "ignored"
-        ).run();
-    }
-  }
+  let payload: Parameters<typeof handleMetaPayload>[1];
+  try { payload = JSON.parse(raw); } catch { return json({ error: "Corpo inválido." }, 400); }
+  await handleMetaPayload(env, payload, await sha256(raw));
   return json({ received: true });
 }
 
@@ -323,6 +316,8 @@ async function api(request: Request, env: Env, url: URL) {
       return json({ ok: true });
     }
   }
+  const whatsapp = await whatsappRoutes(request, env, url, auth);
+  if (whatsapp) return whatsapp;
   return json({ error: "Rota não encontrada." }, 404);
 }
 
