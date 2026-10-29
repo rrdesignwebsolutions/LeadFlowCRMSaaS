@@ -1,0 +1,37 @@
+{
+  "name": "av-flow-crm",
+  "private": true,
+  "version": "1.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview",
+    "format": "oxfmt",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "cf:dev": "wrangler dev",
+    "cf:deploy": "wrangler deploy",
+    "db:migrate:local": "wrangler d1 migrations apply av-flow-db --local",
+    "db:migrate:remote": "wrangler d1 migrations apply av-flow-db --remote"
+  },
+  "dependencies": {
+    "lucide-react": "^1.64.0",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^5.20261029.1",
+    "@tailwindcss/vite": "^4.0.0",
+    "@types/node": "^22.0.0",
+    "@types/react": "^19.0.0",
+    "@types/react-dom": "^19.0.0",
+    "@vitejs/plugin-react": "^6.0.0",
+    "oxfmt": "^0.2.0",
+    "tailwindcss": "^4.0.0",
+    "typescript": "^5.7.0",
+    "vite": "^8.0.5",
+    "vitest": "^5.0.5",
+    "wrangler": "^4.155.0"
+  }
+}

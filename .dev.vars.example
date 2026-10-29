@@ -1,0 +1,4 @@
+SESSION_SECRET=gere-um-segredo-aleatorio-com-pelo-menos-32-bytes
+META_APP_SECRET=
+META_VERIFY_TOKEN=
+META_ACCESS_TOKEN=
