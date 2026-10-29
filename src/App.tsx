@@ -32,7 +32,7 @@ export default function App() {
       <aside className={sidebar ? "sidebar open" : "sidebar"}>
         <div className="brand">
           <span className="brand-mark"><MessageCircleMore size={21} /></span>
-          <span>AV flow <b>CRM</b><small>Acelera Vendas</small></span>
+          <span>AV Flow <b>CRM</b><small>Acelera Vendas</small></span>
           <button className="icon-button mobile-only" aria-label="Fechar menu" onClick={() => setSidebar(false)}><X size={20} /></button>
         </div>
         <div className="workspace">

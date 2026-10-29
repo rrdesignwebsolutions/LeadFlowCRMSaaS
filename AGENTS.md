@@ -1,4 +1,4 @@
-# figma-make-app
+# AV Flow CRM
 
 React + Vite + Tailwind CSS project running inside Figma Make.
 

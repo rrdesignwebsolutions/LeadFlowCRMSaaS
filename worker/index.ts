@@ -32,7 +32,7 @@ function cookie(request: Request, name: string) {
 }
 
 async function session(request: Request, env: Env): Promise<Session | null> {
-  const token = cookie(request, "__Host-avflow_session");
+  const token = cookie(request, "__Host-av_flow_crm_session");
   if (!token) return null;
   const row = await env.DB.prepare(`
     SELECT s.user_id userId, s.organization_id organizationId, m.role
@@ -88,7 +88,7 @@ async function createSession(env: Env, userId: string, orgId: string, status = 2
   const token = `${id()}${id()}`;
   await env.DB.prepare("INSERT INTO sessions(id,token_hash,user_id,organization_id,expires_at) VALUES(?,?,?,?,datetime('now','+7 days'))")
     .bind(id(), await sha256(token), userId, orgId).run();
-  return json({ ok: true }, status, { "set-cookie": `__Host-avflow_session=${token}; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=604800` });
+  return json({ ok: true }, status, { "set-cookie": `__Host-av_flow_crm_session=${token}; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=604800` });
 }
 
 export async function verifyMetaSignature(request: Request, secret: string, raw: string) {
@@ -132,9 +132,9 @@ async function api(request: Request, env: Env, url: URL) {
   const auth = await session(request, env);
   if (!auth) return json({ error: "Não autenticado." }, 401);
   if (url.pathname === "/api/auth/logout" && request.method === "POST") {
-    const token = cookie(request, "__Host-avflow_session");
+    const token = cookie(request, "__Host-av_flow_crm_session");
     if (token) await env.DB.prepare("DELETE FROM sessions WHERE token_hash=?").bind(await sha256(token)).run();
-    return json({ ok: true }, 200, { "set-cookie": "__Host-avflow_session=; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=0" });
+    return json({ ok: true }, 200, { "set-cookie": "__Host-av_flow_crm_session=; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=0" });
   }
   if (url.pathname === "/api/me") {
     const data = await env.DB.prepare(`SELECT u.name,u.email,o.name organization,m.role FROM users u

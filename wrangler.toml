@@ -9,7 +9,7 @@ not_found_handling = "single-page-application"
 
 [[d1_databases]]
 binding = "DB"
-database_name = "av-flow-db"
+database_name = "av-flow-crm-db"
 database_id = "SUBSTITUA_PELO_ID_DO_D1"
 migrations_dir = "migrations"
 

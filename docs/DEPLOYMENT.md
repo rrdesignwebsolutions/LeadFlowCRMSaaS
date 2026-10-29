@@ -3,7 +3,7 @@
 ## Cloudflare
 
 1. Instale dependências com `pnpm install`.
-2. Autentique o Wrangler e crie o banco: `pnpm wrangler d1 create av-flow-db`.
+2. Autentique o Wrangler e crie o banco: `pnpm wrangler d1 create av-flow-crm-db`.
 3. Copie o `database_id` retornado para `wrangler.toml`.
 4. Aplique: `pnpm db:migrate:remote`.
 5. Cadastre segredos: `pnpm wrangler secret put SESSION_SECRET`, `META_APP_SECRET`, `META_VERIFY_TOKEN` e, somente quando necessário, `META_ACCESS_TOKEN`.
