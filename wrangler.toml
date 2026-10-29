@@ -10,7 +10,7 @@ not_found_handling = "single-page-application"
 [[d1_databases]]
 binding = "DB"
 database_name = "av-flow-crm-db"
-database_id = "SUBSTITUA_PELO_ID_DO_D1"
+database_id = "450c80b0-b805-4867-bcc2-8e0191c6047b"
 migrations_dir = "migrations"
 
 [vars]
