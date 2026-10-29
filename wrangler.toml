@@ -1,4 +1,4 @@
-name = "av-flow-crm"
+name = "leadflowcrmsaas"
 main = "worker/index.ts"
 compatibility_date = "2025-03-01"
 
@@ -14,7 +14,7 @@ database_id = "450c80b0-b805-4867-bcc2-8e0191c6047b"
 migrations_dir = "migrations"
 
 [vars]
-APP_ORIGIN = "http://localhost:5173"
+APP_ORIGIN = "https://leadflowcrmsaas.contato-167.workers.dev"
 
 # Segredos devem ser configurados com `wrangler secret put`:
 # SESSION_SECRET, META_APP_SECRET, META_VERIFY_TOKEN, META_ACCESS_TOKEN

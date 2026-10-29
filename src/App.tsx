@@ -1,32 +1,74 @@
-import { useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import {
-  Bell, ChartNoAxesCombined, Check, ChevronRight, CircleHelp, ContactRound, Inbox,
-  LayoutDashboard, Megaphone, Menu, MessageCircleMore, Search, Settings, ShieldCheck,
-  Sparkles, UsersRound, X,
+  ChartNoAxesCombined, ChevronRight, ContactRound, Inbox, LayoutDashboard, LogOut, Megaphone, Menu,
+  MessageCircleMore, Settings, ShieldCheck, UsersRound, X,
 } from "lucide-react";
+import AuthScreen from "./AuthScreen";
+import Leads from "./Leads";
+import { ReportsView, TeamView } from "./TeamReports";
+import { api, ApiError, errorMessage, money, roleLabels, statusLabels, type Lead, type Me, type Metrics } from "./api";
 
-const nav = [
-  { label: "Visão geral", icon: LayoutDashboard },
-  { label: "Caixa de entrada", icon: Inbox, badge: "0" },
-  { label: "Leads", icon: ContactRound },
-  { label: "Campanhas", icon: Megaphone },
-  { label: "Relatórios", icon: ChartNoAxesCombined },
+type View = "overview" | "inbox" | "leads" | "campaigns" | "reports" | "team" | "settings";
+
+const work: Array<{ id: View; label: string; icon: typeof Inbox }> = [
+  { id: "overview", label: "Visão geral", icon: LayoutDashboard },
+  { id: "inbox", label: "Caixa de entrada", icon: Inbox },
+  { id: "leads", label: "Leads", icon: ContactRound },
+  { id: "campaigns", label: "Campanhas", icon: Megaphone },
+  { id: "reports", label: "Relatórios", icon: ChartNoAxesCombined },
 ];
 
-const steps = [
-  { title: "Crie sua organização", description: "Estrutura multiempresa preparada", done: true },
-  { title: "Provisione o banco D1", description: "Crie o banco e aplique as migrações", done: false },
-  { title: "Conecte a conta Meta", description: "Exige App Review e credenciais oficiais", done: false },
-  { title: "Convide sua equipe", description: "Disponível após ativar a persistência", done: false },
-];
+const initials = (name: string) => name.split(/\s+/).filter(Boolean).slice(0, 2).map((p) => p[0]!.toUpperCase()).join("");
 
-function Button({ children, secondary = false, onClick }: { children: React.ReactNode; secondary?: boolean; onClick?: () => void }) {
-  return <button onClick={onClick} className={secondary ? "button secondary" : "button"}>{children}</button>;
+function Empty({ icon, title, children }: { icon: React.ReactNode; title: string; children: React.ReactNode }) {
+  return (
+    <section className="panel empty-panel">
+      <div className="empty-icon">{icon}</div>
+      <h3>{title}</h3>
+      <p>{children}</p>
+    </section>
+  );
 }
 
 export default function App() {
+  const [me, setMe] = useState<Me | null | undefined>(undefined);
+  const [metrics, setMetrics] = useState<Metrics | null>(null);
+  const [leads, setLeads] = useState<Lead[]>([]);
+  const [loadError, setLoadError] = useState("");
+
+  const load = useCallback(async () => {
+    try {
+      setMe(await api<Me>("/api/me"));
+      const [m, l] = await Promise.all([api<Metrics>("/api/dashboard"), api<{ results: Lead[] }>("/api/leads")]);
+      setMetrics(m);
+      setLeads(l.results);
+      setLoadError("");
+    } catch (e) {
+      if (e instanceof ApiError && e.status === 401) setMe(null);
+      else { setMe((current) => current ?? null); setLoadError(errorMessage(e)); }
+    }
+  }, []);
+
+  useEffect(() => { void load(); }, [load]);
+
+  if (me === undefined) return <div className="auth-page">Carregando...</div>;
+  if (me === null) return <AuthScreen onDone={() => { setMe(undefined); void load(); }} />;
+  return <Shell me={me} metrics={metrics} leads={leads} loadError={loadError} reload={load}
+    onLogout={async () => { await api("/api/auth/logout", { method: "POST" }).catch(() => undefined); setMe(null); setMetrics(null); setLeads([]); }} />;
+}
+
+function Shell({ me, metrics, leads, loadError, reload, onLogout }: {
+  me: Me; metrics: Metrics | null; leads: Lead[]; loadError: string; reload: () => void; onLogout: () => void;
+}) {
+  const [view, setView] = useState<View>("overview");
   const [sidebar, setSidebar] = useState(false);
-  const [notice, setNotice] = useState(false);
+  const go = (next: View) => { setView(next); setSidebar(false); };
+  const seatPct = metrics ? Math.min(100, (metrics.seats / metrics.seatLimit) * 100) : 0;
+  const today = new Date().toLocaleDateString("pt-BR", { weekday: "long", day: "numeric", month: "long" }).toUpperCase();
+  const conversion = metrics && metrics.leads > 0 ? `${Math.round((metrics.sold / metrics.leads) * 100)}%` : "—";
+  const revenue = leads.reduce((sum, l) => sum + (l.saleCents ?? 0), 0);
+  const followUps = leads.filter((l) => l.followUpAt && l.status !== "sold" && l.status !== "lost").sort((a, b) => a.followUpAt!.localeCompare(b.followUpAt!)).slice(0, 5);
+
   return (
     <div className="app-shell">
       <aside className={sidebar ? "sidebar open" : "sidebar"}>
@@ -36,97 +78,114 @@ export default function App() {
           <button className="icon-button mobile-only" aria-label="Fechar menu" onClick={() => setSidebar(false)}><X size={20} /></button>
         </div>
         <div className="workspace">
-          <span className="avatar company">AV</span>
-          <span><b>Minha empresa</b><small>Configuração inicial</small></span>
-          <ChevronRight size={16} />
+          <span className="avatar company">{initials(me.organization)}</span>
+          <span><b>{me.organization}</b><small>Plano inicial</small></span>
         </div>
         <nav aria-label="Navegação principal">
           <span className="nav-label">TRABALHO</span>
-          {nav.map((item, index) => <button className={index === 0 ? "nav-item active" : "nav-item"} key={item.label}>
-            <item.icon size={19} /><span>{item.label}</span>{item.badge && <em>{item.badge}</em>}
-          </button>)}
+          {work.map((item) => (
+            <button key={item.id} className={view === item.id ? "nav-item active" : "nav-item"} onClick={() => go(item.id)}>
+              <item.icon size={19} /><span>{item.label}</span>{item.id === "leads" && <em>{leads.length}</em>}
+            </button>
+          ))}
           <span className="nav-label">GESTÃO</span>
-          <button className="nav-item"><UsersRound size={19} /><span>Equipe</span></button>
-          <button className="nav-item"><Settings size={19} /><span>Configurações</span></button>
+          <button className={view === "team" ? "nav-item active" : "nav-item"} onClick={() => go("team")}><UsersRound size={19} /><span>Equipe</span></button>
+          <button className={view === "settings" ? "nav-item active" : "nav-item"} onClick={() => go("settings")}><Settings size={19} /><span>Configurações</span></button>
         </nav>
         <div className="sidebar-foot">
-          <div className="plan-line"><span>Plano inicial</span><b>0 de 3 usuários</b></div>
-          <div className="progress"><i /></div>
-          <button className="nav-item"><CircleHelp size={19} /><span>Central de ajuda</span></button>
-          <div className="user-row"><span className="avatar">VC</span><span><b>Você</b><small>Administrador</small></span><ChevronRight size={16} /></div>
+          <div className="plan-line"><span>Plano inicial</span><b>{metrics ? `${metrics.seats} de ${metrics.seatLimit} usuários` : ""}</b></div>
+          <div className="progress"><i style={{ width: `${seatPct}%` }} /></div>
+          <div className="user-row"><span className="avatar">{initials(me.name)}</span><span><b>{me.name}</b><small>{roleLabels[me.role] ?? me.role}</small></span></div>
+          <button className="nav-item" onClick={onLogout}><LogOut size={19} /><span>Sair</span></button>
         </div>
       </aside>
 
       <main>
         <header>
           <button className="icon-button mobile-only" aria-label="Abrir menu" onClick={() => setSidebar(true)}><Menu size={21} /></button>
-          <div className="search"><Search size={18} /><span>Buscar contatos, leads ou conversas</span><kbd>⌘ K</kbd></div>
-          <button className="icon-button" aria-label="Notificações"><Bell size={20} /></button>
-          <Button onClick={() => setNotice(true)}><MessageCircleMore size={18} /> Conectar WhatsApp</Button>
+          <span className="header-title">{me.organization}</span>
         </header>
 
         <div className="content">
-          <div className="page-heading">
-            <div><p className="eyebrow">TERÇA-FEIRA, 10 DE MARÇO</p><h1>Bom dia. Vamos começar?</h1><p>Conclua a configuração para receber seus primeiros contatos com segurança.</p></div>
-            <span className="status-pill"><i /> Ambiente não provisionado</span>
-          </div>
-
-          <section className="setup-card">
-            <div className="setup-copy">
-              <span className="setup-icon"><Sparkles size={22} /></span>
-              <div><p className="eyebrow green">PRIMEIROS PASSOS</p><h2>Prepare seu espaço de atendimento</h2><p>O código da aplicação está pronto para conectar à infraestrutura. Nenhum dado de demonstração foi inserido.</p></div>
+          {view === "overview" && <>
+            <div className="page-heading">
+              <div><p className="eyebrow">{today}</p><h1>Olá, {me.name.split(" ")[0]}!</h1><p>Resumo do seu funil comercial.</p></div>
+              <button className="button" onClick={() => go("leads")}>Ver leads</button>
             </div>
-            <div className="setup-progress"><span><b>1 de 4</b> etapas concluídas</span><strong>25%</strong></div>
-            <div className="progress large"><i /></div>
-            <div className="steps">
-              {steps.map((step, i) => <div className="step" key={step.title}>
-                <span className={step.done ? "check done" : "check"}>{step.done ? <Check size={16} /> : i + 1}</span>
-                <span><b>{step.title}</b><small>{step.description}</small></span>
-                {!step.done && <ChevronRight size={18} />}
-              </div>)}
+            {loadError && <p className="auth-error" role="alert">{loadError}</p>}
+            <div className="metrics">
+              {[
+                ["Leads", String(metrics?.leads ?? 0), `${metrics?.active ?? 0} em andamento`],
+                ["Qualificados", String(metrics?.qualified ?? 0), `${metrics?.hot ?? 0} quentes`],
+                ["Vendas", String(metrics?.sold ?? 0), revenue ? money(revenue) : "Nenhuma venda informada"],
+                ["Conversão", conversion, metrics?.leads ? "Vendidos ÷ leads" : "Dados insuficientes"],
+              ].map(([label, value, help]) => <article className="metric" key={label}><span>{label}</span><strong>{value}</strong><small>{help}</small></article>)}
             </div>
-          </section>
+            <div className="grid">
+              <section className="panel">
+                <div className="panel-title"><div><h2>Próximos follow-ups</h2><p>Leads com retorno agendado</p></div><button className="text-button" onClick={() => go("leads")}>Ver todos <ChevronRight size={16} /></button></div>
+                {followUps.length ? followUps.map((l) => (
+                  <div className="row-item" key={l.id}>
+                    <span><b>{l.name ?? l.phone}</b><small>{statusLabels[l.status]}{l.nextAction ? ` · ${l.nextAction}` : ""}</small></span>
+                    <time>{new Date(l.followUpAt!).toLocaleString("pt-BR", { dateStyle: "short", timeStyle: "short" })}</time>
+                  </div>
+                )) : <p className="empty-text">Nenhum follow-up agendado. Defina um ao abrir um lead.</p>}
+              </section>
+              <section className="panel">
+                <div className="panel-title"><div><h2>Integrações</h2><p>Estado dos seus canais</p></div></div>
+                <div className="integration">
+                  <span className="integration-icon"><MessageCircleMore size={22} /></span>
+                  <span><b>WhatsApp Business Platform</b><small>Não conectado</small></span>
+                  <span className="tag warning">Pendente</span>
+                </div>
+                <div className="callout"><ShieldCheck size={18} /><p>Usamos apenas a API oficial. Enquanto a conexão não é aprovada pela Meta, cadastre leads manualmente.</p></div>
+                <button className="button secondary" onClick={() => go("settings")}>Ver requisitos</button>
+              </section>
+            </div>
+          </>}
 
-          <div className="metrics">
-            {[
-              ["Conversas abertas", "0", "Aguardando conexão"],
-              ["Leads no período", "0", "Sem dados registrados"],
-              ["Vendas confirmadas", "0", "Nenhuma venda informada"],
-              ["Taxa de conversão", "—", "Dados insuficientes"],
-            ].map(([label, value, help]) => <article className="metric" key={label}><span>{label}</span><strong>{value}</strong><small>{help}</small></article>)}
-          </div>
+          {view === "leads" && <Leads leads={leads} loadError={loadError} onChanged={reload} />}
+          {view === "team" && <TeamView meRole={me.role} onChanged={reload} />}
+          {view === "reports" && <ReportsView key={leads.length + ":" + metrics?.sold} />}
 
-          <div className="grid">
-            <section className="panel empty-panel">
-              <div className="panel-title"><div><h2>Atividade recente</h2><p>Movimentações reais da sua equipe</p></div><button className="text-button">Ver auditoria <ChevronRight size={16} /></button></div>
-              <div className="empty-icon"><ShieldCheck size={25} /></div>
-              <h3>Nenhuma atividade registrada</h3>
-              <p>Os eventos aparecerão aqui depois que o banco estiver provisionado e sua equipe começar a usar o CRM.</p>
-            </section>
+          {view === "inbox" && <>
+            <div className="page-heading"><div><h1>Caixa de entrada</h1></div></div>
+            <Empty icon={<MessageCircleMore size={25} />} title="WhatsApp ainda não conectado">
+              As conversas aparecerão aqui depois que a integração oficial com a Meta for concluída. Até lá, use a aba Leads para registrar seus contatos.
+            </Empty>
+          </>}
+
+          {view === "campaigns" && <>
+            <div className="page-heading"><div><h1>Campanhas</h1></div></div>
+            <Empty icon={<Megaphone size={25} />} title="Sem dados de campanhas">
+              A atribuição de leads a campanhas depende de origem comprovada (anúncios Click-to-WhatsApp, Lead Ads ou UTM). Ela será habilitada junto com a integração da Meta; nada é estimado.
+            </Empty>
+          </>}
+
+          {view === "settings" && <>
+            <div className="page-heading"><div><h1>Configurações</h1></div></div>
             <section className="panel">
-              <div className="panel-title"><div><h2>Integrações</h2><p>Estado verificado dos seus canais</p></div></div>
-              <div className="integration">
-                <span className="integration-icon"><MessageCircleMore size={22} /></span>
-                <span><b>WhatsApp Business Platform</b><small>Credenciais Meta não configuradas</small></span>
-                <span className="tag warning">Pendente</span>
-              </div>
-              <div className="callout"><ShieldCheck size={18} /><p>Usamos apenas a API oficial. Nenhum QR Code ou automação do WhatsApp Web será solicitado.</p></div>
-              <Button secondary onClick={() => setNotice(true)}>Ver requisitos de conexão</Button>
+              <div className="panel-title"><div><h2>Conta</h2></div></div>
+              <dl className="info">
+                <dt>Empresa</dt><dd>{me.organization}</dd>
+                <dt>Nome</dt><dd>{me.name}</dd>
+                <dt>E-mail</dt><dd>{me.email}</dd>
+                <dt>Papel</dt><dd>{roleLabels[me.role] ?? me.role}</dd>
+              </dl>
             </section>
-          </div>
+            <section className="panel spaced">
+              <div className="panel-title"><div><h2>WhatsApp Business Platform</h2><p>Integração oficial da Meta</p></div><span className="tag warning">Pendente</span></div>
+              <div className="modal-list">
+                <span><b>1</b> Criar o app e o Embedded Signup no Meta for Developers</span>
+                <span><b>2</b> Cadastrar os segredos META_APP_SECRET e META_VERIFY_TOKEN no Worker</span>
+                <span><b>3</b> Registrar o webhook /api/webhooks/meta</span>
+                <span><b>4</b> Concluir App Review e verificação empresarial</span>
+              </div>
+              <p className="muted">Nenhum QR Code ou automação do WhatsApp Web é usado.</p>
+            </section>
+          </>}
         </div>
       </main>
-
-      {notice && <div className="modal-backdrop" role="presentation" onMouseDown={() => setNotice(false)}>
-        <section className="modal" role="dialog" aria-modal="true" aria-labelledby="modal-title" onMouseDown={(e) => e.stopPropagation()}>
-          <button className="icon-button modal-close" aria-label="Fechar" onClick={() => setNotice(false)}><X size={20} /></button>
-          <span className="setup-icon"><MessageCircleMore size={23} /></span>
-          <p className="eyebrow green">CONEXÃO OFICIAL</p><h2 id="modal-title">WhatsApp ainda não está configurado</h2>
-          <p>Para ativar este botão é necessário publicar o Worker, criar o banco D1 e configurar o aplicativo no Meta for Developers. O Embedded Signup também depende de aprovação e elegibilidade da Meta.</p>
-          <div className="modal-list"><span><b>1</b> Provisionar Cloudflare D1</span><span><b>2</b> Configurar segredos do Worker</span><span><b>3</b> Concluir configuração e revisão da Meta</span></div>
-          <div className="modal-actions"><Button secondary onClick={() => setNotice(false)}>Entendi</Button></div>
-        </section>
-      </div>}
     </div>
   );
 }
