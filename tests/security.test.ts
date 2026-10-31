@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { constantTimeEqual, sha256, verifyMetaSignature } from "../worker/index";
+import { accountUpdateAction } from "../worker/whatsapp";
 
 async function signature(secret: string, raw: string) {
   const key = await crypto.subtle.importKey(
@@ -37,5 +38,39 @@ describe("security primitives", () => {
     });
     await expect(verifyMetaSignature(valid, "app-secret", raw)).resolves.toBe(true);
     await expect(verifyMetaSignature(invalid, "app-secret", raw)).resolves.toBe(false);
+  });
+});
+
+describe("WhatsApp account updates", () => {
+  it("disconnects when the WhatsApp account is deleted", () => {
+    expect(accountUpdateAction("ACCOUNT_DELETED", undefined, "app-123")).toBe(
+      "disconnect",
+    );
+  });
+
+  it("disconnects only when this app is uninstalled", () => {
+    expect(
+      accountUpdateAction("PARTNER_APP_UNINSTALLED", "app-123", "app-123"),
+    ).toBe("disconnect");
+    expect(
+      accountUpdateAction("PARTNER_APP_UNINSTALLED", "other-app", "app-123"),
+    ).toBe("record");
+  });
+
+  it("marks restrictions and offboarding for review without disconnecting", () => {
+    for (const event of [
+      "ACCOUNT_OFFBOARDED",
+      "ACCOUNT_RESTRICTION",
+      "ACCOUNT_VIOLATION",
+      "DISABLED_UPDATE",
+    ])
+      expect(accountUpdateAction(event, undefined, "app-123")).toBe("error");
+  });
+
+  it("records other account updates without changing the connection", () => {
+    expect(accountUpdateAction("PARTNER_APP_INSTALLED", "app-123", "app-123")).toBe(
+      "record",
+    );
+    expect(accountUpdateAction(undefined, undefined, "app-123")).toBe("record");
   });
 });

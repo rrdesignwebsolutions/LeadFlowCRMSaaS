@@ -152,9 +152,87 @@ type WaValue = {
   messages?: WaMessage[]
 
   statuses?: WaStatus[]
+
+  event?: string
+
+  waba_info?: { partner_app_id?: string }
 }
 
 type Integration = { id: string; organization_id: string }
+
+export function accountUpdateAction(
+  event: string | undefined,
+  partnerAppId: string | undefined,
+  appId: string | undefined,
+): "disconnect" | "error" | "record" {
+  if (event === "ACCOUNT_DELETED") return "disconnect"
+
+  if (
+    event === "PARTNER_APP_UNINSTALLED" &&
+    partnerAppId &&
+    appId &&
+    partnerAppId === appId
+  )
+    return "disconnect"
+
+  if (
+    event &&
+    [
+      "ACCOUNT_OFFBOARDED",
+      "ACCOUNT_RESTRICTION",
+      "ACCOUNT_VIOLATION",
+      "DISABLED_UPDATE",
+    ].includes(event)
+  )
+    return "error"
+
+  return "record"
+}
+
+async function handleAccountUpdate(
+  env: Env,
+  integration: Integration,
+  value: WaValue,
+) {
+  const action = accountUpdateAction(
+    value.event,
+    value.waba_info?.partner_app_id,
+    env.META_APP_ID,
+  )
+
+  if (action === "disconnect") {
+    await env.DB.prepare(`UPDATE integrations
+      SET status='disconnected',access_token_enc=NULL,error_code=?,error_summary=?,
+      updated_at=CURRENT_TIMESTAMP WHERE id=? AND organization_id=?`)
+      .bind(
+        value.event ?? "account_update",
+        "A conta WhatsApp foi removida ou o acesso do app foi revogado na Meta.",
+        integration.id,
+        integration.organization_id,
+      )
+      .run()
+
+    return
+  }
+
+  if (action === "error") {
+    const summary =
+      value.event === "ACCOUNT_OFFBOARDED"
+        ? "A conta WhatsApp foi desconectada na Meta. Revise a conexão antes de voltar a operar."
+        : "A Meta informou uma restrição ou violação na conta WhatsApp. Revise o status no Meta Business."
+
+    await env.DB.prepare(`UPDATE integrations
+      SET status='error',error_code=?,error_summary=?,updated_at=CURRENT_TIMESTAMP
+      WHERE id=? AND organization_id=?`)
+      .bind(
+        value.event ?? "account_update",
+        summary,
+        integration.id,
+        integration.organization_id,
+      )
+      .run()
+  }
+}
 
 function describeMessage(m: WaMessage) {
   const type = m.type ?? "unknown"
@@ -319,7 +397,11 @@ export async function handleMetaPayload(
 
   payload: {
     object?: string
-    entry?: Array<{ changes?: Array<{ value?: WaValue }> }>
+    entry?: Array<{
+      id?: string
+      time?: number
+      changes?: Array<{ field?: string; value?: WaValue }>
+    }>
   },
 
   payloadHash: string,
@@ -327,7 +409,7 @@ export async function handleMetaPayload(
   if (payload.object !== "whatsapp_business_account") return
 
   for (const entry of payload.entry ?? [])
-    for (const change of entry.changes ?? []) {
+    for (const [changeIndex, change] of (entry.changes ?? []).entries()) {
       const value = change.value
 
       if (!value) continue
@@ -341,7 +423,13 @@ export async function handleMetaPayload(
 
             .bind(phone)
             .first<Integration>()
-        : null
+        : change.field === "account_update" && entry.id
+          ? await env.DB.prepare(
+              "SELECT id,organization_id FROM integrations WHERE provider='meta_whatsapp' AND external_account_id=? AND status IN ('connected','error')",
+            )
+              .bind(entry.id)
+              .first<Integration>()
+          : null
 
       const items = [
         ...(value.messages ?? []).map((item) => ({
@@ -353,6 +441,14 @@ export async function handleMetaPayload(
           key: `${item.id}:${item.status}`,
           run: () => handleStatus(env, integration!, item),
         })),
+        ...(change.field === "account_update" && entry.id
+          ? [
+              {
+                key: `account_update:${entry.id}:${value.event ?? "unknown"}:${entry.time ?? "unknown"}:${changeIndex}:${payloadHash}`,
+                run: () => handleAccountUpdate(env, integration!, value),
+              },
+            ]
+          : []),
       ]
 
       for (const item of items) {
