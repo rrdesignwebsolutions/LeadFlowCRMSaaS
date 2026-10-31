@@ -53,6 +53,7 @@ export default function AuthScreen({ onDone }: { onDone: () => void }) {
         {!inviteToken && <button type="button" className="text-button" onClick={() => { setMode(register ? "login" : "register"); setError(""); }}>
           {register ? "Já tenho conta" : "Criar uma conta"}
         </button>}
+        <a className="text-button" href="/privacy.html" target="_blank" rel="noreferrer">Política de Privacidade</a>
       </form>
     </div>
   );

@@ -201,6 +201,9 @@ function Shell({ me, metrics, leads, loadError, reload, onLogout }: {
               <p className="muted">Nenhum QR Code ou automação do WhatsApp Web é usado.</p>
             </section>
           </>}
+          <footer className="mt-8 border-t border-line pt-5 text-xs text-muted">
+            <a href="/privacy.html" target="_blank" rel="noreferrer" className="underline">Política de Privacidade</a>
+          </footer>
         </div>
       </main>
     </div>
