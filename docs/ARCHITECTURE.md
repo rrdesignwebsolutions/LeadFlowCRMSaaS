@@ -33,7 +33,7 @@ O Worker resolve `user_id`, `organization_id` e papel exclusivamente pela sessã
 
 1. **Cadastro:** valida entrada → PBKDF2 no Worker → transação lógica via batch cria empresa, usuário, membro admin e assinatura → sessão.
 2. **Login:** limite por conta (5 falhas, bloqueio de 15 min) → sessão aleatória persistida apenas como SHA-256 → cookie seguro.
-3. **WhatsApp:** Embedded Signup retorna autorização ao backend → backend troca código conforme documentação vigente → salva apenas IDs; token deve ficar em secret store dedicada. Este passo está pendente.
+3. **WhatsApp:** Embedded Signup v4 retorna código de curta duração ao backend → backend troca o código sem expor o App Secret → valida Phone Number ID com a Graph API → cifra o token por organização e assina o WABA no webhook. A disponibilidade em produção ainda depende das aprovações e credenciais da Meta.
 4. **Entrada:** Meta chama webhook → HMAC `X-Hub-Signature-256` → resolve `phone_number_id` único → grava evento com chave idempotente → processamento cria contato/conversa/mensagem na organização correspondente.
 5. **Saída:** usuário autenticado → valida organização, integração e janela de atendimento → cria estado `queued` → Graph API → persiste ID/status real. Não marcar entregue antes do webhook.
 6. **Atribuição:** aceitar somente referência CTWA/Lead Ads, UTM capturada, CSV mapeado ou correção manual auditada. Ausência de evidência permanece `unknown`.

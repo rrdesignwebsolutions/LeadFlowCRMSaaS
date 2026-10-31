@@ -6,7 +6,7 @@
 2. Autentique o Wrangler e crie o banco: `pnpm wrangler d1 create av-flow-crm-db`.
 3. Copie o `database_id` retornado para `wrangler.toml`.
 4. Aplique: `pnpm db:migrate:remote`.
-5. Cadastre segredos: `pnpm wrangler secret put SESSION_SECRET`, `META_APP_SECRET`, `META_VERIFY_TOKEN` e, somente quando necessário, `META_ACCESS_TOKEN`.
+5. Cadastre segredos: `pnpm wrangler secret put SESSION_SECRET`, `META_APP_SECRET`, `META_VERIFY_TOKEN` e `ENCRYPTION_KEY`.
 6. Ajuste `APP_ORIGIN`, execute `pnpm build` e `pnpm cf:deploy`.
 7. Configure domínio customizado e confirme HTTPS, cookies, CSP e logs sem payloads sensíveis.
 
@@ -14,9 +14,9 @@ Para desenvolvimento, copie `.dev.vars.example` para `.dev.vars` (arquivo ignora
 
 ## Meta — checklist manual obrigatório
 
-No Meta for Developers: crie um app do tipo apropriado ao caso vigente; adicione WhatsApp; configure empresa, domínios e política de privacidade; registre a URL pública `/api/webhooks/meta`; use o mesmo verify token do secret; assine os campos de mensagens necessários; configure o Embedded Signup e seu Configuration ID; solicite permissões e acesso avançado exigidos pela documentação atual; conclua verificação empresarial e requisitos de Tech Provider quando aplicáveis.
+No Meta for Developers: crie um app do tipo apropriado ao caso vigente; adicione WhatsApp; configure empresa, domínios e política de privacidade; registre a URL pública `/api/webhooks/meta`; use o mesmo verify token do secret; assine `messages` e `account_update`; configure o Embedded Signup v4; solicite permissões e acesso avançado exigidos pela documentação atual; conclua verificação empresarial e requisitos de Tech Provider quando aplicáveis. Defina `META_APP_ID` e `META_CONFIG_ID` nas vars do Worker e `META_APP_SECRET` como secret. O fluxo troca o código de uso único no backend e guarda o token resultante criptografado com `ENCRYPTION_KEY`.
 
-Teste primeiro com o número de teste. Registre WABA ID e Phone Number ID somente após callback real. Confirme `whatsapp_business_management` e `whatsapp_business_messaging` conforme o fluxo aprovado. App Review, acesso avançado, verificação empresarial, Embedded Signup e coexistência dependem de elegibilidade/configuração da Meta e **não estão concluídos** neste repositório.
+Teste primeiro com o número de teste e use o fluxo Embedded Signup v4 integrado em Configurações. O callback fornece WABA ID, Phone Number ID e código de autorização de curta duração; o Worker troca o código imediatamente. No Login do Facebook para Empresas, habilite as opções OAuth e Login com SDK JavaScript exigidas pela documentação atual e permita o domínio HTTPS do app. Confirme `whatsapp_business_management` e `whatsapp_business_messaging` conforme o fluxo aprovado. A implementação está no repositório; App Review, acesso avançado, elegibilidade e liberação para produção dependem da Meta.
 
 Coexistência não deve ser oferecida sem o fluxo oficial habilitado e confirmação de elegibilidade. Antes de conectar, informe impactos sobre o aplicativo atual e histórico; nunca migre ou remova um número automaticamente.
 

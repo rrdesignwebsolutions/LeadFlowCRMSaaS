@@ -15,6 +15,8 @@ migrations_dir = "migrations"
 
 [vars]
 APP_ORIGIN = "https://leadflowcrmsaas.contato-167.workers.dev"
+META_APP_ID = "2102727550349167"
+META_CONFIG_ID = "1746703063104476"
 
 # Segredos devem ser configurados com `wrangler secret put`:
-# SESSION_SECRET, META_APP_SECRET, META_VERIFY_TOKEN, META_ACCESS_TOKEN
+# SESSION_SECRET, META_APP_SECRET, META_VERIFY_TOKEN, ENCRYPTION_KEY
