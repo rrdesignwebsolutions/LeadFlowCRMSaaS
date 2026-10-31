@@ -1,5 +1,4 @@
 import { useEffect, useState, type FormEvent } from "react";
-import { MessageCircleMore } from "lucide-react";
 import { api } from "./api";
 
 export default function AuthScreen({ onDone }: { onDone: () => void }) {
@@ -38,7 +37,7 @@ export default function AuthScreen({ onDone }: { onDone: () => void }) {
     <div className="auth-page">
       <form className="auth-card" onSubmit={submit}>
         <div className="brand">
-          <span className="brand-mark"><MessageCircleMore size={21} /></span>
+          <img className="brand-mark" src="/app-icon.png" alt="" />
           <span>AV Flow <b>CRM</b><small>Acelera Vendas</small></span>
         </div>
         <h1>{invite ? `Entrar em ${invite.organization}` : register ? "Criar conta" : "Entrar"}</h1>

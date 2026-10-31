@@ -27,6 +27,7 @@
 .brand > span:nth-child(2) small { grid-column: 1 / -1; color: var(--color-muted); font: 600 8px var(--font-sans); letter-spacing: .12em; text-transform: uppercase; }
 .brand b { color: var(--color-brand-600); }
 .brand-mark, .setup-icon { width: 36px; height: 36px; display: inline-flex; align-items: center; justify-content: center; color: white; background: var(--color-brand-600); border-radius: 11px; box-shadow: 0 6px 16px rgb(13 138 87 / 18%); }
+.brand-mark { display: block; object-fit: cover; }
 .workspace { display: flex; align-items: center; gap: 10px; background: #f7f9f8; border: 1px solid var(--color-line); padding: 10px; border-radius: 12px; margin: 24px 0; }
 .workspace > span:nth-child(2), .user-row > span:nth-child(2) { display: flex; flex: 1; min-width: 0; flex-direction: column; }
 .workspace b, .user-row b { font-size: 13px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
