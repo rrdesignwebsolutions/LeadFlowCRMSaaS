@@ -11,7 +11,7 @@ export type Team = { members: Member[]; invites: Invite[]; seats: number; seatLi
 export type Reports = { byStatus: Array<{ status: string; count: number }>; sales: { count: number; totalCents: number } };
 
 export class ApiError extends Error {
-  constructor(public status: number, message: string) {
+  constructor(public status: number, message: string, public code?: string) {
     super(message);
   }
 }
@@ -24,7 +24,7 @@ export async function api<T>(path: string, init: { method?: string; body?: unkno
     body: init.body ? JSON.stringify(init.body) : undefined,
   });
   const data = await response.json().catch(() => ({}));
-  if (!response.ok) throw new ApiError(response.status, (data as { error?: string }).error ?? "Erro inesperado.");
+  if (!response.ok) throw new ApiError(response.status, (data as { error?: string }).error ?? "Erro inesperado.", (data as { code?: string }).code);
   return data as T;
 }
 

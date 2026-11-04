@@ -41,6 +41,18 @@ Coexistência não deve ser oferecida sem o fluxo oficial habilitado e confirma�
 
 Use versões de deploy do Cloudflare para rollback e migrações aditivas; não reverta schema destrutivamente sem backup/export. Agende exportação D1, teste restauração e restrinja acesso. Workers, D1, Queues e R2 têm franquias e limites que mudam; consulte as páginas oficiais antes do lançamento e configure alertas. A Meta pode cobrar mensagens conforme categoria, país e janela vigente. Não há promessa de custo zero.
 
+## Confirmação de e-mail
+
+O cadastro envia um link de confirmação (válido por 24 h) pela API da Resend. A exigência só vale quando os dois itens abaixo estão configurados; sem eles, o cadastro entra direto, como antes.
+
+1. Crie uma conta em resend.com e verifique um domínio seu (o `workers.dev` não envia e-mail).
+2. Defina o remetente em `wrangler.toml` → `[vars]` → `EMAIL_FROM = "AV Flow CRM <no-reply@seudominio.com>"` e a chave com `pnpm exec wrangler secret put RESEND_API_KEY`.
+3. Faça o deploy. Contas existentes e convidados contam como verificados; contas novas não confirmadas em 3 dias são removidas pela limpeza diária.
+
+## Limpeza de contas inativas
+
+Uma tarefa diária (cron `0 6 * * *`, definida em `wrangler.toml`) remove contas abandonadas: empresa criada há mais de 14 dias, com um único usuário, sem leads, contatos, conversas, vendas ou integrações e sem acesso nos últimos 14 dias. Contas com qualquer uso, e superadmins, nunca são removidas. Ajuste `INACTIVE_DAYS` em `worker/cleanup.ts` se quiser outro prazo. Atualize a política de retenção/privacidade para mencionar essa regra.
+
 ## Pendências antes de produção
 
 - Provisionar D1 e aplicar migração.

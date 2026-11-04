@@ -2,6 +2,13 @@
 
 import { aiRoutes } from "./ai"
 import { brandingRoutes } from "./branding"
+import { cleanupInactiveAccounts } from "./cleanup"
+import {
+  canResend,
+  consumeVerificationToken,
+  emailVerificationEnabled,
+  sendVerificationEmail,
+} from "./verification"
 import { handleMetaPayload, whatsappRoutes } from "./whatsapp"
 
 export interface Env {
@@ -34,6 +41,10 @@ export interface Env {
   INFINITEPAY_PRO_URL?: string
 
   INFINITEPAY_SCALE_URL?: string
+  /** Chave da API Resend para enviar e-mails de confirmação (secret). */
+  RESEND_API_KEY?: string
+  /** Remetente verificado, ex.: "AV Flow CRM <no-reply@seudominio.com>". */
+  EMAIL_FROM?: string
 }
 
 export type Session = { userId: string; organizationId: string; role: string }
@@ -210,6 +221,18 @@ async function authRoutes(request: Request, env: Env, path: string) {
         ).bind(id(), orgId),
       ])
 
+      if (emailVerificationEnabled(env)) {
+        await sendVerificationEmail(env, userId, email, body.name.trim())
+
+        return json({ verify: true, email }, 202)
+      }
+
+      await env.DB.prepare(
+        "UPDATE users SET email_verified_at=CURRENT_TIMESTAMP WHERE id=?",
+      )
+        .bind(userId)
+        .run()
+
       return await createSession(env, userId, orgId, 201)
     } catch (error) {
       console.error(
@@ -231,16 +254,18 @@ async function authRoutes(request: Request, env: Env, path: string) {
     const body = await request.json<{ email?: string; password?: string }>()
 
     const user = await env.DB.prepare(
-      "SELECT id,password_hash,password_salt,failed_login_count,locked_until FROM users WHERE email=? COLLATE NOCASE",
+      "SELECT id,name,password_hash,password_salt,failed_login_count,locked_until,email_verified_at FROM users WHERE email=? COLLATE NOCASE",
     )
 
       .bind(body.email?.trim() ?? "")
       .first<{
         id: string
+        name: string
         password_hash: string
         password_salt: string
         failed_login_count: number
         locked_until: string | null
+        email_verified_at: string | null
       }>()
 
     if (
@@ -277,6 +302,15 @@ async function authRoutes(request: Request, env: Env, path: string) {
 
     if (!member) return json({ error: "Usuário sem organização ativa." }, 403)
 
+    if (emailVerificationEnabled(env) && !user.email_verified_at)
+      return json(
+        {
+          error: "Confirme seu e-mail para acessar. Verifique sua caixa de entrada.",
+          code: "email_not_verified",
+        },
+        403,
+      )
+
     await env.DB.prepare(
       "UPDATE users SET failed_login_count=0,locked_until=NULL WHERE id=?",
     )
@@ -284,6 +318,43 @@ async function authRoutes(request: Request, env: Env, path: string) {
       .run()
 
     return createSession(env, user.id, member.organization_id)
+  }
+
+  if (path === "/api/auth/verify" && request.method === "POST") {
+    const body = await request.json<{ token?: string }>()
+
+    const userId = await consumeVerificationToken(env, body.token ?? "")
+
+    if (!userId)
+      return json({ error: "Link inválido ou expirado. Peça um novo e-mail." }, 400)
+
+    const member = await env.DB.prepare(
+      "SELECT organization_id FROM organization_members WHERE user_id=? AND status='active' LIMIT 1",
+    )
+      .bind(userId)
+      .first<{ organization_id: string }>()
+
+    if (!member) return json({ error: "Usuário sem organização ativa." }, 403)
+
+    return createSession(env, userId, member.organization_id)
+  }
+
+  if (path === "/api/auth/resend" && request.method === "POST") {
+    const body = await request.json<{ email?: string }>()
+
+    const user = emailVerificationEnabled(env)
+      ? await env.DB.prepare(
+          "SELECT id,name,email FROM users WHERE email=? COLLATE NOCASE AND email_verified_at IS NULL",
+        )
+          .bind(body.email?.trim() ?? "")
+          .first<{ id: string; name: string; email: string }>()
+      : null
+
+    if (user && (await canResend(env, user.id)))
+      await sendVerificationEmail(env, user.id, user.email, user.name)
+
+    // Resposta idêntica para não revelar quais e-mails existem.
+    return json({ ok: true })
   }
 
   return null
@@ -352,7 +423,7 @@ async function acceptInvite(
   try {
     await env.DB.batch([
       env.DB.prepare(
-        "INSERT INTO users(id,email,name,password_hash,password_salt) VALUES(?,?,?,?,?)",
+        "INSERT INTO users(id,email,name,password_hash,password_salt,email_verified_at) VALUES(?,?,?,?,?,CURRENT_TIMESTAMP)",
       ).bind(
         userId,
         invite.email.toLowerCase(),
@@ -1027,5 +1098,9 @@ export default {
     }
 
     return env.ASSETS.fetch(request)
+  },
+
+  async scheduled(_event: ScheduledController, env: Env, ctx: ExecutionContext) {
+    ctx.waitUntil(cleanupInactiveAccounts(env))
   },
 } satisfies ExportedHandler<Env>

@@ -13,6 +13,9 @@ database_name = "av-flow-crm-db"
 database_id = "450c80b0-b805-4867-bcc2-8e0191c6047b"
 migrations_dir = "migrations"
 
+[triggers]
+crons = ["0 6 * * *"]
+
 [vars]
 APP_ORIGIN = "https://leadflowcrmsaas.contato-167.workers.dev"
 META_APP_ID = "2102727550349167"
@@ -20,6 +23,7 @@ META_CONFIG_ID = "1746703063104476"
 INFINITEPAY_ESSENCIAL_URL = "https://invoice.infinitepay.io/plans/ruanramosdigital/inBSB8ZFu5"
 INFINITEPAY_PRO_URL = "https://invoice.infinitepay.io/plans/ruanramosdigital/bZKUF3koEP"
 INFINITEPAY_SCALE_URL = "https://invoice.infinitepay.io/plans/ruanramosdigital/BoSGuppyiX"
+EMAIL_FROM = "AV Flow CRM <contato@rrdesignwebsolutions.com.br>"
 
 # Segredos devem ser configurados com `wrangler secret put`:
 # SESSION_SECRET, META_APP_SECRET, META_VERIFY_TOKEN, ENCRYPTION_KEY
