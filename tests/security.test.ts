@@ -1,6 +1,23 @@
 import { describe, expect, it } from "vitest";
 import { constantTimeEqual, isValidInfinitePayCheckoutUrl, sha256, verifyMetaSignature } from "../worker/index";
 import { accountUpdateAction } from "../worker/whatsapp";
+import { isReadableBrandColor, isValidImageData } from "../worker/branding";
+
+describe("branding validation", () => {
+  it("aceita apenas imagens raster em base64 e limita tamanho", () => {
+    expect(isValidImageData("data:image/png;base64,iVBORw0KGgo=")).toBe(true);
+    expect(isValidImageData("data:image/svg+xml;base64,PHN2Zz4=")).toBe(false);
+    expect(isValidImageData("data:image/png;base64,AAAA<script>")).toBe(false);
+    expect(isValidImageData(`data:image/webp;base64,${"A".repeat(200_000)}`)).toBe(false);
+  });
+
+  it("valida cor hex com contraste suficiente", () => {
+    expect(isReadableBrandColor("#0d8a57")).toBe(true);
+    expect(isReadableBrandColor("#ffff00")).toBe(false);
+    expect(isReadableBrandColor("red")).toBe(false);
+    expect(isReadableBrandColor("#12345")).toBe(false);
+  });
+});
 
 async function signature(secret: string, raw: string) {
   const key = await crypto.subtle.importKey(

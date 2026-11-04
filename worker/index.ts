@@ -1,6 +1,7 @@
 /// <reference types="@cloudflare/workers-types" />
 
 import { aiRoutes } from "./ai"
+import { brandingRoutes } from "./branding"
 import { handleMetaPayload, whatsappRoutes } from "./whatsapp"
 
 export interface Env {
@@ -973,6 +974,10 @@ async function api(
   const ai = await aiRoutes(request, env, url, auth)
 
   if (ai) return ai
+
+  const branding = await brandingRoutes(request, env, url, auth)
+
+  if (branding) return branding
 
   const whatsapp = await whatsappRoutes(request, env, url, auth)
 

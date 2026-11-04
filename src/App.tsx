@@ -8,6 +8,7 @@ import AuthScreen from "./AuthScreen";
 import Leads from "./Leads";
 import Plans from "./Plans";
 import WhatsAppSettings from "./WhatsAppSettings";
+import { applyBranding, BrandingSettings, type Branding } from "./Branding";
 import { ReportsView, TeamView } from "./TeamReports";
 import { api, ApiError, errorMessage, money, roleLabels, statusLabels, type Lead, type Me, type Metrics } from "./api";
 
@@ -38,10 +39,14 @@ export default function App() {
   const [metrics, setMetrics] = useState<Metrics | null>(null);
   const [leads, setLeads] = useState<Lead[]>([]);
   const [loadError, setLoadError] = useState("");
+  const [branding, setBranding] = useState<Branding | null>(null);
+
+  const updateBranding = useCallback((b: Branding | null) => { setBranding(b); applyBranding(b); }, []);
 
   const load = useCallback(async () => {
     try {
       setMe(await api<Me>("/api/me"));
+      api<Branding>("/api/branding").then(updateBranding).catch(() => undefined);
       const [m, l] = await Promise.all([api<Metrics>("/api/dashboard"), api<{ results: Lead[] }>("/api/leads")]);
       setMetrics(m);
       setLeads(l.results);
@@ -50,18 +55,18 @@ export default function App() {
       if (e instanceof ApiError && e.status === 401) setMe(null);
       else { setMe((current) => current ?? null); setLoadError(errorMessage(e)); }
     }
-  }, []);
+  }, [updateBranding]);
 
   useEffect(() => { void load(); }, [load]);
 
   if (me === undefined) return <div className="auth-page">Carregando...</div>;
   if (me === null) return <AuthScreen onDone={() => { setMe(undefined); void load(); }} />;
-  return <Shell me={me} metrics={metrics} leads={leads} loadError={loadError} reload={load}
-    onLogout={async () => { await api("/api/auth/logout", { method: "POST" }).catch(() => undefined); setMe(null); setMetrics(null); setLeads([]); }} />;
+  return <Shell me={me} branding={branding} onBranding={updateBranding} metrics={metrics} leads={leads} loadError={loadError} reload={load}
+    onLogout={async () => { await api("/api/auth/logout", { method: "POST" }).catch(() => undefined); setMe(null); setMetrics(null); setLeads([]); updateBranding(null); }} />;
 }
 
-function Shell({ me, metrics, leads, loadError, reload, onLogout }: {
-  me: Me; metrics: Metrics | null; leads: Lead[]; loadError: string; reload: () => void; onLogout: () => void;
+function Shell({ me, branding, onBranding, metrics, leads, loadError, reload, onLogout }: {
+  me: Me; branding: Branding | null; onBranding: (b: Branding) => void; metrics: Metrics | null; leads: Lead[]; loadError: string; reload: () => void; onLogout: () => void;
 }) {
   const [view, setView] = useState<View>("overview");
   const [sidebar, setSidebar] = useState(false);
@@ -93,12 +98,14 @@ function Shell({ me, metrics, leads, loadError, reload, onLogout }: {
     <div className="app-shell">
       <aside className={sidebar ? "sidebar open" : "sidebar"}>
         <div className="brand">
-          <img className="brand-mark" src="/app-icon.png" alt="" />
-          <span>AV Flow <b>CRM</b><small>Acelera Vendas</small></span>
+          <img className="brand-mark" src={branding?.logo ?? "/app-icon.png"} alt="" />
+          {branding?.displayName
+            ? <span>{branding.displayName}<small>{branding.tagline ?? ""}</small></span>
+            : <span>AV Flow <b>CRM</b><small>{branding?.tagline ?? "Acelera Vendas"}</small></span>}
           <button className="icon-button mobile-only" aria-label="Fechar menu" onClick={() => setSidebar(false)}><X size={20} /></button>
         </div>
         <div className="workspace">
-          <span className="avatar company">{initials(me.organization)}</span>
+          <span className="avatar company">{branding?.logo ? <img src={branding.logo} alt="" /> : initials(me.organization)}</span>
           <span><b>{me.organization}</b><small>Plano inicial</small></span>
         </div>
         <nav aria-label="Navegação principal">
@@ -116,7 +123,7 @@ function Shell({ me, metrics, leads, loadError, reload, onLogout }: {
         <div className="sidebar-foot">
           <div className="plan-line"><span>Plano inicial</span><b>{metrics ? `${metrics.seats} de ${metrics.seatLimit} usuários` : ""}</b></div>
           <div className="progress"><i style={{ width: `${seatPct}%` }} /></div>
-          <div className="user-row"><span className="avatar">{initials(me.name)}</span><span><b>{me.name}</b><small>{roleLabels[me.role] ?? me.role}</small></span></div>
+          <div className="user-row"><span className="avatar">{branding?.avatar ? <img src={branding.avatar} alt="" /> : initials(me.name)}</span><span><b>{me.name}</b><small>{roleLabels[me.role] ?? me.role}</small></span></div>
           <button className="nav-item" onClick={onLogout}><LogOut size={19} /><span>Sair</span></button>
         </div>
       </aside>
@@ -195,6 +202,7 @@ function Shell({ me, metrics, leads, loadError, reload, onLogout }: {
                 <dt>Papel</dt><dd>{roleLabels[me.role] ?? me.role}</dd>
               </dl>
             </section>
+            <BrandingSettings branding={branding} isAdmin={me.role === "admin"} onSaved={onBranding} companyName={me.organization} />
             <AISettings canEdit={me.role === "admin" || me.role === "manager"} />
             <WhatsAppSettings isAdmin={me.role === "admin"} onChanged={reload} />
           </>}
