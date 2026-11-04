@@ -21,7 +21,7 @@
 }
 
 .app-shell { min-height: 100vh; display: flex; }
-.sidebar { width: 252px; background: #fff; border-right: 1px solid var(--color-line); display: flex; flex-direction: column; padding: 20px 14px; position: fixed; inset: 0 auto 0 0; z-index: 30; }
+.sidebar { width: 252px; background: #fff; border-right: 1px solid var(--color-line); display: flex; flex-direction: column; padding: 20px 14px; position: fixed; inset: 0 auto 0 0; z-index: 30; overflow-y: auto; overscroll-behavior: contain; }
 .brand { height: 38px; display: flex; align-items: center; gap: 10px; padding: 0 8px; font: 700 17px var(--font-display); }
 .brand > span:nth-child(2) { display: grid; grid-template-columns: auto auto; column-gap: 5px; align-items: baseline; }
 .brand > span:nth-child(2) small { grid-column: 1 / -1; color: var(--color-muted); font: 600 8px var(--font-sans); letter-spacing: .12em; text-transform: uppercase; }
@@ -40,7 +40,7 @@ nav { display: flex; flex-direction: column; gap: 3px; }
 .nav-item:hover { background: #f3f6f4; color: var(--color-ink); }
 .nav-item.active { background: var(--color-brand-50); color: var(--color-brand-600); font-weight: 600; }
 .nav-item em { margin-left: auto; background: #e8eeeb; color: #66736c; border-radius: 20px; min-width: 22px; padding: 2px 6px; text-align: center; font-size: 11px; font-style: normal; }
-.sidebar-foot { margin-top: auto; }
+.sidebar-foot { margin-top: auto; padding-bottom: env(safe-area-inset-bottom); }
 .plan-line { display: flex; justify-content: space-between; padding: 10px 4px 7px; font-size: 10px; color: var(--color-muted); }
 .plan-line b { color: #48534d; font-weight: 500; }
 .progress { height: 4px; background: #e8edea; border-radius: 10px; overflow: hidden; }
