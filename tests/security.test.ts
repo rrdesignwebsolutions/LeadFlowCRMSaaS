@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { constantTimeEqual, sha256, verifyMetaSignature } from "../worker/index";
+import { constantTimeEqual, isValidInfinitePayCheckoutUrl, sha256, verifyMetaSignature } from "../worker/index";
 import { accountUpdateAction } from "../worker/whatsapp";
 
 async function signature(secret: string, raw: string) {
@@ -38,6 +38,13 @@ describe("security primitives", () => {
     });
     await expect(verifyMetaSignature(valid, "app-secret", raw)).resolves.toBe(true);
     await expect(verifyMetaSignature(invalid, "app-secret", raw)).resolves.toBe(false);
+  });
+
+  it("accepts only HTTPS InfinitePay checkout URLs", () => {
+    expect(isValidInfinitePayCheckoutUrl("https://checkout.infinitepay.io/subscribe/123")).toBe(true);
+    expect(isValidInfinitePayCheckoutUrl("http://infinitepay.io/subscribe/123")).toBe(false);
+    expect(isValidInfinitePayCheckoutUrl("https://infinitepay.io.example.com/subscribe/123")).toBe(false);
+    expect(isValidInfinitePayCheckoutUrl(undefined)).toBe(false);
   });
 });
 

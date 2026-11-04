@@ -27,6 +27,12 @@ export interface Env {
   OPENAI_API_KEY?: string
 
   OPENAI_MODEL?: string
+
+  INFINITEPAY_ESSENCIAL_URL?: string
+
+  INFINITEPAY_PRO_URL?: string
+
+  INFINITEPAY_SCALE_URL?: string
 }
 
 export type Session = { userId: string; organizationId: string; role: string }
@@ -38,6 +44,23 @@ const json = (data: unknown, status = 200, headers: HeadersInit = {}) =>
   })
 
 const id = () => crypto.randomUUID()
+
+const billingPlanUrls = (env: Env) => ({
+  essencial: env.INFINITEPAY_ESSENCIAL_URL,
+  pro: env.INFINITEPAY_PRO_URL,
+  scale: env.INFINITEPAY_SCALE_URL,
+})
+
+export const isValidInfinitePayCheckoutUrl = (value: string | undefined) => {
+  if (!value) return false
+  try {
+    const url = new URL(value)
+    return url.protocol === "https:" &&
+      (url.hostname === "infinitepay.io" || url.hostname.endsWith(".infinitepay.io"))
+  } catch {
+    return false
+  }
+}
 
 const hex = (buffer: ArrayBuffer) =>
   [...new Uint8Array(buffer)]
@@ -488,6 +511,35 @@ async function api(
   const auth = await session(request, env)
 
   if (!auth) return json({ error: "Não autenticado." }, 401)
+
+  if (url.pathname === "/api/billing/plans" && request.method === "GET") {
+    const links = billingPlanUrls(env)
+    return json({
+      available: Object.entries(links)
+        .filter(([, value]) => isValidInfinitePayCheckoutUrl(value))
+        .map(([planId]) => planId),
+    })
+  }
+
+  if (url.pathname === "/api/billing/checkout" && request.method === "POST") {
+    if (auth.role !== "admin")
+      return json({ error: "Apenas administradores podem contratar ou alterar o plano." }, 403)
+
+    const body = await request.json<{ planId?: string }>()
+    const links = billingPlanUrls(env)
+    const checkoutUrl = body.planId === "essencial"
+      ? links.essencial
+      : body.planId === "pro"
+        ? links.pro
+        : body.planId === "scale"
+          ? links.scale
+          : undefined
+
+    if (!isValidInfinitePayCheckoutUrl(checkoutUrl))
+      return json({ error: "O link recorrente deste plano ainda não foi configurado no sistema." }, 503)
+
+    return json({ checkoutUrl })
+  }
 
   if (url.pathname === "/api/auth/logout" && request.method === "POST") {
     const token = cookie(request, "__Host-av_flow_crm_session")

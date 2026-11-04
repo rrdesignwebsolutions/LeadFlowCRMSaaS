@@ -12,6 +12,15 @@
 
 Para desenvolvimento, copie `.dev.vars.example` para `.dev.vars` (arquivo ignorado) e use valores locais. Nunca commite segredos.
 
+## Assinaturas recorrentes — InfinitePay
+
+1. No app InfinitePay, habilite as assinaturas/Planos e Recorrências e crie um plano mensal para cada faixa exibida em **Planos** (Essencial R$ 79, Pro R$ 149 e Scale R$ 299).
+2. Gere um link de inscrição para cada plano e cadastre os links como secrets do Worker: `pnpm wrangler secret put INFINITEPAY_ESSENCIAL_URL`, `INFINITEPAY_PRO_URL` e `INFINITEPAY_SCALE_URL`.
+3. Só links HTTPS de `infinitepay.io` são aceitos. A aba **Planos** habilita os botões à medida que cada link é configurado. O checkout e o recebimento acontecem na InfinitePay.
+4. Antes de divulgar, confirme no painel que valores, periodicidade, meios de pagamento, parcelamento e renovação correspondem aos cards do CRM. Não envie links de inscrição de planos com preço diferente do exibido.
+
+Esta integração usa os links recorrentes criados no painel, não a API de checkout de pagamento avulso. Os meios de pagamento disponíveis dependem das opções habilitadas para cada cobrança na InfinitePay. A confirmação, cancelamento e renovação da assinatura devem ser acompanhados no painel InfinitePay; o CRM não sincroniza eventos nem aplica limites por plano. Não anuncie ativação automática ou controle de acesso por assinatura até implementar e validar um mecanismo oficial de eventos/consulta para recorrências.
+
 ## Meta — checklist manual obrigatório
 
 No Meta for Developers: crie um app do tipo apropriado ao caso vigente; adicione WhatsApp; configure empresa, domínios e a URL pública `https://leadflowcrmsaas.contato-167.workers.dev/privacy.html`; registre a URL pública `/api/webhooks/meta`; use o mesmo verify token do secret; assine `messages` e `account_update`; configure o Embedded Signup v4; solicite permissões e acesso avançado exigidos pela documentação atual; conclua verificação empresarial e requisitos de Tech Provider quando aplicáveis. Defina `META_APP_ID` e `META_CONFIG_ID` nas vars do Worker e `META_APP_SECRET` como secret. O fluxo troca o código de uso único no backend e guarda o token resultante criptografado com `ENCRYPTION_KEY`.

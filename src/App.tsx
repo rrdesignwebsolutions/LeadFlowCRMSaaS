@@ -1,15 +1,16 @@
 import { useCallback, useEffect, useState } from "react";
 import {
-  ChartNoAxesCombined, ChevronRight, ContactRound, Inbox, LayoutDashboard, LogOut, Megaphone, Menu,
+  ChartNoAxesCombined, ChevronRight, ContactRound, CreditCard, Inbox, LayoutDashboard, LogOut, Megaphone, Menu,
   MessageCircleMore, Settings, ShieldCheck, UsersRound, X,
 } from "lucide-react";
 import AISettings from "./AISettings";
 import AuthScreen from "./AuthScreen";
 import Leads from "./Leads";
+import Plans from "./Plans";
 import { ReportsView, TeamView } from "./TeamReports";
 import { api, ApiError, errorMessage, money, roleLabels, statusLabels, type Lead, type Me, type Metrics } from "./api";
 
-type View = "overview" | "inbox" | "leads" | "campaigns" | "reports" | "team" | "settings";
+type View = "overview" | "inbox" | "leads" | "campaigns" | "reports" | "team" | "plans" | "settings";
 
 const work: Array<{ id: View; label: string; icon: typeof Inbox }> = [
   { id: "overview", label: "Visão geral", icon: LayoutDashboard },
@@ -108,6 +109,7 @@ function Shell({ me, metrics, leads, loadError, reload, onLogout }: {
           ))}
           <span className="nav-label">GESTÃO</span>
           <button className={view === "team" ? "nav-item active" : "nav-item"} onClick={() => go("team")}><UsersRound size={19} /><span>Equipe</span></button>
+          <button className={view === "plans" ? "nav-item active" : "nav-item"} onClick={() => go("plans")}><CreditCard size={19} /><span>Planos</span></button>
           <button className={view === "settings" ? "nav-item active" : "nav-item"} onClick={() => go("settings")}><Settings size={19} /><span>Configurações</span></button>
         </nav>
         <div className="sidebar-foot">
@@ -164,6 +166,7 @@ function Shell({ me, metrics, leads, loadError, reload, onLogout }: {
 
           {view === "leads" && <Leads leads={leads} loadError={loadError} onChanged={reload} />}
           {view === "team" && <TeamView meRole={me.role} onChanged={reload} />}
+          {view === "plans" && <Plans meRole={me.role} />}
           {view === "reports" && <ReportsView key={leads.length + ":" + metrics?.sold} />}
 
           {view === "inbox" && <>
