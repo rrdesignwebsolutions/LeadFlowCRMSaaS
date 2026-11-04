@@ -75,7 +75,7 @@ export default function AISettings({ canEdit }: { canEdit: boolean }) {
         <div><h2><Bot size={18} /> Assistente de IA</h2><p>Responde clientes no WhatsApp e qualifica os leads automaticamente</p></div>
         <span className={settings.enabled && ready ? "tag" : "tag warning"}>{!ready ? "Chave pendente" : settings.enabled ? "Ativo" : "Desligado"}</span>
       </div>
-      {!ready && <p className="muted">Configure o segredo GEMINI_API_KEY no Worker para ativar a IA.</p>}
+      {!ready && <p className="muted">Configure o segredo OPENAI_API_KEY no Worker para ativar a IA.</p>}
       <form className="form" onSubmit={save}>
         <label><span><input type="checkbox" name="enabled" defaultChecked={settings.enabled} disabled={!canEdit} /> Responder automaticamente</span></label>
         <label>Nome do assistente<input name="assistantName" defaultValue={settings.assistantName} maxLength={60} disabled={!canEdit} /></label>

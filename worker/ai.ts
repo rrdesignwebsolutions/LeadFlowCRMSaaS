@@ -1,7 +1,7 @@
 import type { Env, Session } from "./index"
 import { sendText } from "./whatsapp"
 
-const GEMINI_BASE = "https://generativelanguage.googleapis.com/v1beta/models"
+const OPENAI_URL = "https://api.openai.com/v1/responses"
 const MAX_PDF_BYTES = 10 * 1024 * 1024
 const MAX_KNOWLEDGE_CHARS = 150_000
 const HUMAN_PAUSE_MINUTES = 30
@@ -33,53 +33,83 @@ function base64(bytes: Uint8Array) {
   return btoa(out)
 }
 
-async function gemini(env: Env, body: unknown) {
-  if (!env.GEMINI_API_KEY) throw new Error("GEMINI_API_KEY n√£o configurada")
+async function llm(
+  env: Env,
+  body: {
+    instructions?: string
+    input: unknown
+    schema?: { name: string; schema: unknown }
+  },
+) {
+  if (!env.OPENAI_API_KEY) throw new Error("OPENAI_API_KEY n„o configurada")
 
-  const model = env.GEMINI_MODEL || "gemini-2.5-flash"
-
-  const response = await fetch(`${GEMINI_BASE}/${model}:generateContent`, {
+  const response = await fetch(OPENAI_URL, {
     method: "POST",
     headers: {
       "content-type": "application/json",
-      "x-goog-api-key": env.GEMINI_API_KEY,
+      authorization: `Bearer ${env.OPENAI_API_KEY}`,
     },
-    body: JSON.stringify(body),
+    body: JSON.stringify({
+      model: env.OPENAI_MODEL || "gpt-6-luna",
+      instructions: body.instructions,
+      input: body.input,
+      reasoning: { effort: "low" },
+      store: false,
+      ...(body.schema && {
+        text: {
+          format: {
+            type: "json_schema",
+            name: body.schema.name,
+            strict: true,
+            schema: body.schema.schema,
+          },
+        },
+      }),
+    }),
   })
 
-  if (!response.ok)
-    throw new Error(`Gemini respondeu ${response.status}`)
+  if (!response.ok) throw new Error(`OpenAI respondeu ${response.status}`)
 
   const data = (await response.json()) as {
-    candidates?: Array<{ content?: { parts?: Array<{ text?: string }> } }>
+    output?: Array<{
+      type: string
+      content?: Array<{ type: string; text?: string }>
+    }>
   }
 
   return (
-    data.candidates?.[0]?.content?.parts
-      ?.map((p) => p.text ?? "")
+    data.output
+      ?.filter((item) => item.type === "message")
+      .flatMap((item) => item.content ?? [])
+      .filter((part) => part.type === "output_text")
+      .map((part) => part.text ?? "")
       .join("")
       .trim() ?? ""
   )
 }
 
 async function extractPdf(env: Env, bytes: Uint8Array) {
-  const text = await gemini(env, {
-    contents: [
+  const text = await llm(env, {
+    input: [
       {
-        parts: [
+        role: "user",
+        content: [
           {
-            text: "Transcreva integralmente este documento em portugu√™s para servir de base de conhecimento de um atendente de vendas. Preserve todos os nomes de produtos, modelos, pre√ßos, condi√ß√µes de pagamento, especifica√ß√µes t√©cnicas, garantia e prazos, em listas ou tabelas organizadas por produto. Para cada foto ou imagem, descreva o que ela mostra (modelo, cor, detalhes vis√≠veis) associando ao produto. N√£o invente nada que n√£o esteja no documento.",
+            type: "input_file",
+            filename: "catalogo.pdf",
+            file_data: `data:application/pdf;base64,${base64(bytes)}`,
           },
-          { inline_data: { mime_type: "application/pdf", data: base64(bytes) } },
+          {
+            type: "input_text",
+            text: "Transcreva integralmente este documento em portuguÍs para servir de base de conhecimento de um atendente de vendas. Preserve todos os nomes de produtos, modelos, preÁos, condiÁıes de pagamento, especificaÁıes tÈcnicas, garantia e prazos, em listas ou tabelas organizadas por produto. Para cada foto ou imagem, descreva o que ela mostra (modelo, cor, detalhes visÌveis) associando ao produto. N„o invente nada que n„o esteja no documento.",
+          },
         ],
       },
     ],
-    generationConfig: { temperature: 0 },
   })
 
   return text.slice(0, MAX_KNOWLEDGE_CHARS)
 }
-
 type Decision = {
   reply: string
   handoff: boolean
@@ -95,18 +125,20 @@ type Decision = {
   }
 }
 
-const nullableString = { type: "STRING", nullable: true }
+const nullableString = { type: ["string", "null"] }
 
 const decisionSchema = {
-  type: "OBJECT",
+  type: "object",
+  additionalProperties: false,
   properties: {
-    reply: { type: "STRING" },
-    handoff: { type: "BOOLEAN" },
+    reply: { type: "string" },
+    handoff: { type: "boolean" },
     lead: {
-      type: "OBJECT",
+      type: "object",
+      additionalProperties: false,
       properties: {
-        status: { ...nullableString, enum: AI_STATUSES },
-        score: { type: "INTEGER", nullable: true },
+        status: { type: ["string", "null"], enum: [...AI_STATUSES, null] },
+        score: { type: ["integer", "null"] },
         summary: nullableString,
         productInterest: nullableString,
         mainInterest: nullableString,
@@ -114,12 +146,20 @@ const decisionSchema = {
         paymentMethod: nullableString,
         purchaseTimeline: nullableString,
       },
-      required: ["status", "score", "summary"],
+      required: [
+        "status",
+        "score",
+        "summary",
+        "productInterest",
+        "mainInterest",
+        "budgetRange",
+        "paymentMethod",
+        "purchaseTimeline",
+      ],
     },
   },
   required: ["reply", "handoff", "lead"],
 }
-
 const clip = (value: unknown, max: number) =>
   typeof value === "string" && value.trim() ? value.trim().slice(0, max) : null
 
@@ -153,7 +193,7 @@ export async function autoReply(
   conversationId: string,
   inboundExternalId: string,
 ) {
-  if (!env.GEMINI_API_KEY) return
+  if (!env.OPENAI_API_KEY) return
 
   const settings = await env.DB.prepare(
     "SELECT enabled,assistant_name,instructions FROM ai_settings WHERE organization_id=?",
@@ -227,39 +267,21 @@ export async function autoReply(
     .bind(context.leadId, organizationId)
     .first()
 
-  const raw = await gemini(env, {
-    systemInstruction: {
-      parts: [
-        { text: systemPrompt(settings, context.organization, knowledge) },
-      ],
-    },
-    contents: [
+  const raw = await llm(env, {
+    instructions: systemPrompt(settings, context.organization, knowledge),
+    input: [
       {
         role: "user",
-        parts: [
-          {
-            text: `Dados j√° coletados do lead: ${JSON.stringify(lead ?? {})}\n\nConversa (mais antiga primeiro):\n${history
-              .map(
-                (m) =>
-                  `${m.direction === "inbound" ? "CLIENTE" : "ATENDENTE"}: ${m.body}`,
-              )
-              .join(
-                "\n",
-              )}\n\nResponda a √∫ltima mensagem do cliente no formato JSON pedido.`,
-          },
-        ],
+        content: `Dados j· coletados do lead: ${JSON.stringify(lead ?? {})}\n\nConversa (mais antiga primeiro):\n${history
+          .map(
+            (m) =>
+              `${m.direction === "inbound" ? "CLIENTE" : "ATENDENTE"}: ${m.body}`,
+          )
+          .join("\n")}\n\nResponda a ˙ltima mensagem do cliente no formato JSON pedido.`,
       },
     ],
-    generationConfig: {
-      temperature: 0.3,
-      responseMimeType: "application/json",
-      responseSchema: decisionSchema,
-    },
+    schema: { name: "decisao_atendimento", schema: decisionSchema },
   })
-
-  let decision: Decision
-
-  try {
     decision = JSON.parse(raw)
   } catch {
     throw new Error("resposta da IA fora do formato")
@@ -347,7 +369,7 @@ export async function aiRoutes(
         assistantName: settings?.assistantName ?? "Assistente",
         instructions: settings?.instructions ?? "",
       },
-      serverReady: !!env.GEMINI_API_KEY,
+      serverReady: !!env.OPENAI_API_KEY,
     })
   }
 
@@ -380,7 +402,7 @@ export async function aiRoutes(
   }
 
   if (path === "/api/ai/knowledge" && request.method === "POST") {
-    if (!env.GEMINI_API_KEY)
+    if (!env.OPENAI_API_KEY)
       return json({ error: "A chave da IA ainda n√£o foi configurada." }, 503)
 
     const form = await request.formData().catch(() => null)

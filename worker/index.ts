@@ -24,9 +24,9 @@ export interface Env {
 
   GRAPH_API_BASE?: string
 
-  GEMINI_API_KEY?: string
+  OPENAI_API_KEY?: string
 
-  GEMINI_MODEL?: string
+  OPENAI_MODEL?: string
 }
 
 export type Session = { userId: string; organizationId: string; role: string }
