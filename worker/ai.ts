@@ -41,7 +41,7 @@ async function llm(
     schema?: { name: string; schema: unknown }
   },
 ) {
-  if (!env.OPENAI_API_KEY) throw new Error("OPENAI_API_KEY não configurada")
+  if (!env.OPENAI_API_KEY) throw new Error("OPENAI_API_KEY nÃ£o configurada")
 
   const response = await fetch(OPENAI_URL, {
     method: "POST",
@@ -101,7 +101,7 @@ async function extractPdf(env: Env, bytes: Uint8Array) {
           },
           {
             type: "input_text",
-            text: "Transcreva integralmente este documento em português para servir de base de conhecimento de um atendente de vendas. Preserve todos os nomes de produtos, modelos, preços, condições de pagamento, especificações técnicas, garantia e prazos, em listas ou tabelas organizadas por produto. Para cada foto ou imagem, descreva o que ela mostra (modelo, cor, detalhes visíveis) associando ao produto. Não invente nada que não esteja no documento.",
+            text: "Transcreva integralmente este documento em portuguÃªs para servir de base de conhecimento de um atendente de vendas. Preserve todos os nomes de produtos, modelos, preÃ§os, condiÃ§Ãµes de pagamento, especificaÃ§Ãµes tÃ©cnicas, garantia e prazos, em listas ou tabelas organizadas por produto. Para cada foto ou imagem, descreva o que ela mostra (modelo, cor, detalhes visÃ­veis) associando ao produto. NÃ£o invente nada que nÃ£o esteja no documento.",
           },
         ],
       },
@@ -272,16 +272,20 @@ export async function autoReply(
     input: [
       {
         role: "user",
-        content: `Dados já coletados do lead: ${JSON.stringify(lead ?? {})}\n\nConversa (mais antiga primeiro):\n${history
+        content: `Dados jÃ¡ coletados do lead: ${JSON.stringify(lead ?? {})}\n\nConversa (mais antiga primeiro):\n${history
           .map(
             (m) =>
               `${m.direction === "inbound" ? "CLIENTE" : "ATENDENTE"}: ${m.body}`,
           )
-          .join("\n")}\n\nResponda a última mensagem do cliente no formato JSON pedido.`,
+          .join("\n")}\n\nResponda a Ãºltima mensagem do cliente no formato JSON pedido.`,
       },
     ],
     schema: { name: "decisao_atendimento", schema: decisionSchema },
   })
+
+  let decision: Decision
+
+  try {
     decision = JSON.parse(raw)
   } catch {
     throw new Error("resposta da IA fora do formato")
