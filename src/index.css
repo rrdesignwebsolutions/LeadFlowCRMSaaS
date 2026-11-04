@@ -206,6 +206,23 @@ h3 { font: 700 14px var(--font-display); }
 .billing-icon { width: 36px; height: 36px; flex: 0 0 auto; display: inline-flex; align-items: center; justify-content: center; border-radius: 10px; color: var(--color-brand-600); background: var(--color-brand-50); }
 .billing-note h3 { font-size: 12px; }
 .billing-note p { margin-top: 4px; color: var(--color-muted); font-size: 11px; line-height: 1.6; }
+.whatsapp-settings { min-height: 0; }
+.whatsapp-settings .panel-title { gap: 16px; }
+.whatsapp-settings .panel-title > div > p:last-child { max-width: 600px; }
+.whatsapp-connect-panel { display: flex; align-items: center; justify-content: space-between; gap: 24px; margin-top: 22px; padding: 18px; border: 1px solid #e8efeb; border-radius: 12px; background: #f9fbfa; }
+.whatsapp-benefits { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); flex: 1; gap: 16px; }
+.whatsapp-benefits span { display: flex; flex-direction: column; gap: 5px; }
+.whatsapp-benefits b { font-size: 11px; font-weight: 600; }
+.whatsapp-benefits small { color: var(--color-muted); font-size: 10px; line-height: 1.5; }
+.whatsapp-connect-action { display: flex; flex-direction: column; align-items: flex-start; gap: 7px; max-width: 235px; }
+.whatsapp-connect-action p, .whatsapp-footnote { color: var(--color-muted); font-size: 10px; line-height: 1.5; }
+.whatsapp-connected { display: flex; align-items: center; gap: 10px; margin: 20px 0 15px; padding: 14px; border-radius: 10px; background: #f0faf4; }
+.whatsapp-connected-mark { width: 28px; height: 28px; display: inline-flex; align-items: center; justify-content: center; border-radius: 50%; color: white; background: var(--color-brand-600); font-weight: 700; }
+.whatsapp-connected > span:nth-child(2) { display: flex; flex: 1; flex-direction: column; gap: 3px; font-size: 12px; }
+.whatsapp-connected small, .whatsapp-connection-issue { color: var(--color-muted); font-size: 10px; }
+.whatsapp-footnote { margin-top: 15px; }
 @media (max-width: 800px) { .metrics { grid-template-columns: repeat(2, 1fr); } .grid { grid-template-columns: 1fr; } .content { padding: 24px 16px 60px; } }
 @media (max-width: 900px) { .pricing-grid { grid-template-columns: 1fr; } .pricing-description { min-height: 0; } }
 @media (max-width: 520px) { .benchmark-table { min-width: 580px; } .benchmark-tag { display: table; margin: 5px 0 0; } }
+@media (max-width: 900px) { .whatsapp-connect-panel { align-items: stretch; flex-direction: column; } .whatsapp-connect-action { max-width: none; } }
+@media (max-width: 520px) { .whatsapp-benefits { grid-template-columns: 1fr; } }

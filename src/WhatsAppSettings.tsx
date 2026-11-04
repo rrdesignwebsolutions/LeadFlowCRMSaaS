@@ -1,6 +1,4 @@
-import { useCallback, useEffect, useRef, useState, type FormEvent } from "react"
-
-import { Copy } from "lucide-react"
+import { useCallback, useEffect, useRef, useState } from "react"
 
 import { api, errorMessage } from "./api"
 
@@ -55,8 +53,6 @@ declare global {
     fbAsyncInit?: () => void
   }
 }
-
-const copy = (value: string) => void navigator.clipboard.writeText(value)
 
 export default function WhatsAppSettings({
   isAdmin,
@@ -181,7 +177,7 @@ export default function WhatsAppSettings({
       setNote(
         result.subscribed
           ? `Número ${result.displayPhoneNumber} conectado.`
-          : `Número ${result.displayPhoneNumber} conectado, mas a assinatura do webhook falhou: ${result.subscribeError ?? "erro desconhecido"}. Verifique a configuração do webhook na Meta.`,
+          : `Número ${result.displayPhoneNumber} conectado. A ativação do canal ainda está sendo concluída; atualize em instantes.`,
       )
 
       await load()
@@ -307,38 +303,6 @@ export default function WhatsAppSettings({
     )
   }
 
-  async function connect(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault()
-
-    setBusy(true)
-    setError("")
-    setNote("")
-
-    try {
-      const r = await api<{
-        displayPhoneNumber: string
-        subscribed: boolean
-        subscribeError?: string
-      }>("/api/integrations/whatsapp", {
-        method: "POST",
-        body: Object.fromEntries(new FormData(event.currentTarget)),
-      })
-
-      setNote(
-        r.subscribed
-          ? `Número ${r.displayPhoneNumber} conectado.`
-          : `Número ${r.displayPhoneNumber} conectado, mas a assinatura de mensagens falhou: ${r.subscribeError ?? "erro desconhecido"}. Verifique o webhook no painel da Meta.`,
-      )
-
-      await load()
-      onChanged()
-    } catch (e) {
-      setError(errorMessage(e))
-    } finally {
-      setBusy(false)
-    }
-  }
-
   async function disconnect() {
     if (
       !confirm(
@@ -362,6 +326,13 @@ export default function WhatsAppSettings({
   const i = data?.integration
 
   const ready = data?.serverReady
+  const canConnect = !!(
+    data?.embeddedSignup.appId &&
+    data.embeddedSignup.configId &&
+    ready?.appSecret &&
+    ready.verifyToken &&
+    ready.encryptionKey
+  )
 
   const label = !i
     ? "Não conectado"
@@ -370,14 +341,15 @@ export default function WhatsAppSettings({
       : "Com erro"
 
   return (
-    <section className="panel spaced">
+    <section className="panel spaced whatsapp-settings">
       <div className="panel-title">
         <div>
-          <h2>WhatsApp Business Platform</h2>
-          <p>Integração oficial da Meta (Cloud API)</p>
+          <p className="eyebrow green">CANAIS DE ATENDIMENTO</p>
+          <h2>WhatsApp Business</h2>
+          <p>Conecte seu número oficial e prepare seu canal de atendimento para trabalhar com o AV Flow CRM.</p>
         </div>
         <span className={`tag ${i?.status === "connected" ? "ok" : "warning"}`}>
-          {label}
+          {data ? label : "Verificando"}
         </span>
       </div>
       {error && (
@@ -387,10 +359,11 @@ export default function WhatsAppSettings({
       )}
       {note && <p className="callout-text">{note}</p>}
       {i && (
-        <p className="muted">
-          Número: <b>{i.displayPhoneNumber ?? i.phoneNumberId}</b>
-          {i.errorSummary ? ` · ${i.errorSummary}` : ""}
-        </p>
+        <div className="whatsapp-connected">
+          <span className="whatsapp-connected-mark">✓</span>
+          <span><b>Número conectado</b><small>{i.displayPhoneNumber ?? i.phoneNumberId}</small></span>
+          {i.errorSummary && <span className="whatsapp-connection-issue">Verifique a conexão no WhatsApp Business.</span>}
+        </div>
       )}
       {i && isAdmin && (
         <button className="button secondary" onClick={() => void disconnect()}>
@@ -398,110 +371,37 @@ export default function WhatsAppSettings({
         </button>
       )}
 
-      {!i && isAdmin && (
-        <>
-          <div className="steps-help">
-            <p>
-              Conecte uma conta comercial usando o fluxo seguro de Cadastro
-              incorporado da Meta. O código de autorização é trocado no servidor
-              e o token não é exibido no navegador.
-            </p>
-            {!data?.embeddedSignup.configId && (
-              <p className="auth-error" role="alert">
-                Configure o ID do cadastro incorporado no Worker antes de
-                continuar.
-              </p>
-            )}
-            {ready &&
-              !(
-                ready.appSecret &&
-                ready.verifyToken &&
-                ready.encryptionKey
-              ) && (
-                <p className="auth-error" role="alert">
-                  Servidor incompleto — faltam:{" "}
-                  {[
-                    !ready.appSecret && "META_APP_SECRET",
-                    !ready.verifyToken && "META_VERIFY_TOKEN",
-                    !ready.encryptionKey && "ENCRYPTION_KEY",
-                  ]
-                    .filter(Boolean)
-                    .join(", ")}
-                  .
-                </p>
-              )}
-            <button
-              className="button"
-              type="button"
-              onClick={startEmbeddedSignup}
-              disabled={busy || !sdkReady || !data?.embeddedSignup.configId}
-            >
-              {busy
-                ? "Aguardando a Meta…"
-                : sdkReady
-                  ? "Conectar com a Meta"
-                  : "Carregando Meta…"}
-            </button>
-            <p className="muted">
-              Durante testes, somente administradores e desenvolvedores
-              cadastrados no app da Meta podem concluir o fluxo. A conexão de
-              clientes em produção depende da análise e aprovação da Meta.
-            </p>
-            <details>
-              <summary>Configuração manual (alternativa)</summary>
-              <p>
-                <b>1.</b> Configure o webhook Meta em{" "}
-                <b>WhatsApp → Configuração</b>, usando a URL abaixo e o secret{" "}
-                <code>META_VERIFY_TOKEN</code>. Assine <b>messages</b> e{" "}
-                <b>account_update</b>.
-              </p>
-              <div className="callout-text">
-                <span className="break">
-                  URL de callback: {data?.webhookUrl}
-                </span>
-                <button
-                  type="button"
-                  className="text-button"
-                  onClick={() => data && copy(data.webhookUrl)}
-                >
-                  <Copy size={14} /> Copiar
-                </button>
-              </div>
-              <form className="form" onSubmit={connect}>
-                <label>
-                  Phone Number ID
-                  <input name="phoneNumberId" required inputMode="numeric" />
-                </label>
-                <label>
-                  WABA ID (ID da conta do WhatsApp Business)
-                  <input name="wabaId" required inputMode="numeric" />
-                </label>
-                <label>
-                  Token de acesso
-                  <input
-                    name="accessToken"
-                    type="password"
-                    required
-                    autoComplete="off"
-                  />
-                </label>
-                <div className="modal-actions">
-                  <button className="button secondary" disabled={busy}>
-                    {busy ? "Verificando…" : "Conectar manualmente"}
-                  </button>
-                </div>
-              </form>
-            </details>
+      {!i && (
+        <div className="whatsapp-connect-panel">
+          <div className="whatsapp-benefits">
+            <span><b>Plataforma oficial</b><small>Conexão da sua conta empresarial pela Meta</small></span>
+            <span><b>Autorização segura</b><small>Você aprova o acesso diretamente com a Meta</small></span>
+            <span><b>Sem QR Code</b><small>Integração oficial, sem automação não autorizada</small></span>
           </div>
-        </>
+          {isAdmin ? (
+            <div className="whatsapp-connect-action">
+              <button
+                className="button"
+                type="button"
+                onClick={startEmbeddedSignup}
+                disabled={busy || !sdkReady || !canConnect}
+              >
+                {busy
+                  ? "Concluindo conexão…"
+                  : !canConnect
+                    ? "Conexão indisponível no momento"
+                    : sdkReady
+                      ? "Conectar com a Meta"
+                      : "Preparando conexão…"}
+              </button>
+              <p>Você será direcionado à Meta para autorizar sua conta WhatsApp Business.</p>
+            </div>
+          ) : (
+            <p className="muted">Peça ao administrador da empresa para conectar o número.</p>
+          )}
+        </div>
       )}
-      {!i && !isAdmin && (
-        <p className="muted">Peça a um administrador para conectar o número.</p>
-      )}
-      <p className="muted">
-        Nenhum QR Code ou automação do WhatsApp Web é usado. O token é guardado
-        criptografado e nunca é exibido.
-      </p>
+      <p className="whatsapp-footnote">A conexão usa a plataforma oficial do WhatsApp Business. Não utiliza QR Code nem automação do WhatsApp Web.</p>
     </section>
   )
 }

@@ -7,6 +7,7 @@ import AISettings from "./AISettings";
 import AuthScreen from "./AuthScreen";
 import Leads from "./Leads";
 import Plans from "./Plans";
+import WhatsAppSettings from "./WhatsAppSettings";
 import { ReportsView, TeamView } from "./TeamReports";
 import { api, ApiError, errorMessage, money, roleLabels, statusLabels, type Lead, type Me, type Metrics } from "./api";
 
@@ -195,16 +196,7 @@ function Shell({ me, metrics, leads, loadError, reload, onLogout }: {
               </dl>
             </section>
             <AISettings canEdit={me.role === "admin" || me.role === "manager"} />
-            <section className="panel spaced">
-              <div className="panel-title"><div><h2>WhatsApp Business Platform</h2><p>Integração oficial da Meta</p></div><span className="tag warning">Pendente</span></div>
-              <div className="modal-list">
-                <span><b>1</b> Criar o app e o Embedded Signup no Meta for Developers</span>
-                <span><b>2</b> Cadastrar os segredos META_APP_SECRET e META_VERIFY_TOKEN no Worker</span>
-                <span><b>3</b> Registrar o webhook /api/webhooks/meta</span>
-                <span><b>4</b> Concluir App Review e verificação empresarial</span>
-              </div>
-              <p className="muted">Nenhum QR Code ou automação do WhatsApp Web é usado.</p>
-            </section>
+            <WhatsAppSettings isAdmin={me.role === "admin"} onChanged={reload} />
           </>}
           <footer className="mt-8 border-t border-line pt-5 text-xs text-muted">
             <a href="/privacy.html" target="_blank" rel="noreferrer" className="underline">Política de Privacidade</a>
