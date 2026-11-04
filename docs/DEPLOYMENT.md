@@ -14,7 +14,7 @@ Para desenvolvimento, copie `.dev.vars.example` para `.dev.vars` (arquivo ignora
 
 ## Assinaturas recorrentes — InfinitePay
 
-1. No app InfinitePay, habilite as assinaturas/Planos e Recorrências e crie um plano mensal para cada faixa exibida em **Planos** (Essencial R$ 79, Pro R$ 149 e Scale R$ 299).
+1. No app InfinitePay, habilite as assinaturas/Planos e Recorrências e crie um plano mensal para cada faixa exibida em **Planos** (Essencial R$ 119, Pro R$ 149 e Scale R$ 249).
 2. Gere um link de inscrição para cada plano e cadastre os links como secrets do Worker: `pnpm wrangler secret put INFINITEPAY_ESSENCIAL_URL`, `INFINITEPAY_PRO_URL` e `INFINITEPAY_SCALE_URL`.
 3. Só links HTTPS de `infinitepay.io` são aceitos. A aba **Planos** habilita os botões à medida que cada link é configurado. O checkout e o recebimento acontecem na InfinitePay.
 4. Antes de divulgar, confirme no painel que valores, periodicidade, meios de pagamento, parcelamento e renovação correspondem aos cards do CRM. Não envie links de inscrição de planos com preço diferente do exibido.
