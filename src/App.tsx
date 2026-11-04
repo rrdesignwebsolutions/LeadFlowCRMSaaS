@@ -191,6 +191,7 @@ function Shell({ me, metrics, leads, loadError, reload, onLogout }: {
                 <dt>Papel</dt><dd>{roleLabels[me.role] ?? me.role}</dd>
               </dl>
             </section>
+            <AISettings canEdit={me.role === "admin" || me.role === "manager"} />
             <section className="panel spaced">
               <div className="panel-title"><div><h2>WhatsApp Business Platform</h2><p>Integração oficial da Meta</p></div><span className="tag warning">Pendente</span></div>
               <div className="modal-list">
