@@ -3,6 +3,7 @@ import {
   ChartNoAxesCombined, ChevronRight, ContactRound, Inbox, LayoutDashboard, LogOut, Megaphone, Menu,
   MessageCircleMore, Settings, ShieldCheck, UsersRound, X,
 } from "lucide-react";
+import AISettings from "./AISettings";
 import AuthScreen from "./AuthScreen";
 import Leads from "./Leads";
 import { ReportsView, TeamView } from "./TeamReports";

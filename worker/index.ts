@@ -1,5 +1,6 @@
 /// <reference types="@cloudflare/workers-types" />
 
+import { aiRoutes } from "./ai"
 import { handleMetaPayload, whatsappRoutes } from "./whatsapp"
 
 export interface Env {
@@ -22,6 +23,10 @@ export interface Env {
   ENCRYPTION_KEY?: string
 
   GRAPH_API_BASE?: string
+
+  GEMINI_API_KEY?: string
+
+  GEMINI_MODEL?: string
 }
 
 export type Session = { userId: string; organizationId: string; role: string }
@@ -411,7 +416,12 @@ export async function verifyMetaSignature(
   return constantTimeEqual(provided, expected)
 }
 
-async function webhook(request: Request, env: Env, url: URL) {
+async function webhook(
+  request: Request,
+  env: Env,
+  url: URL,
+  ctx: ExecutionContext,
+) {
   if (request.method === "GET") {
     const valid =
       url.searchParams.get("hub.mode") === "subscribe" &&
@@ -438,17 +448,24 @@ async function webhook(request: Request, env: Env, url: URL) {
     return json({ error: "Corpo inválido." }, 400)
   }
 
-  await handleMetaPayload(env, payload, await sha256(raw))
+  await handleMetaPayload(env, payload, await sha256(raw), (task) =>
+    ctx.waitUntil(task),
+  )
 
   return json({ received: true })
 }
 
-async function api(request: Request, env: Env, url: URL) {
+async function api(
+  request: Request,
+  env: Env,
+  url: URL,
+  ctx: ExecutionContext,
+) {
   const authResult = await authRoutes(request, env, url.pathname)
 
   if (authResult) return authResult
 
-  if (url.pathname === "/api/webhooks/meta") return webhook(request, env, url)
+  if (url.pathname === "/api/webhooks/meta") return webhook(request, env, url, ctx)
 
   if (url.pathname === "/api/health") {
     await env.DB.prepare("SELECT 1").first()
@@ -530,7 +547,7 @@ async function api(request: Request, env: Env, url: URL) {
   if (url.pathname === "/api/leads" && request.method === "GET") {
     return json(
       await env.DB.prepare(`SELECT l.id,l.status,l.product_interest productInterest,l.notes,l.next_action nextAction,l.follow_up_at followUpAt,
-      l.loss_reason lossReason,l.updated_at updatedAt,c.name,c.phone_e164 phone,c.email,
+      l.loss_reason lossReason,l.ai_score aiScore,l.ai_summary aiSummary,l.updated_at updatedAt,c.name,c.phone_e164 phone,c.email,
       (SELECT amount_cents FROM sales s WHERE s.lead_id=l.id AND s.organization_id=l.organization_id ORDER BY s.created_at DESC LIMIT 1) saleCents
       FROM leads l JOIN contacts c ON c.id=l.contact_id AND c.organization_id=l.organization_id
       WHERE l.organization_id=? ORDER BY l.updated_at DESC LIMIT 500`)
@@ -901,6 +918,10 @@ async function api(request: Request, env: Env, url: URL) {
     }
   }
 
+  const ai = await aiRoutes(request, env, url, auth)
+
+  if (ai) return ai
+
   const whatsapp = await whatsappRoutes(request, env, url, auth)
 
   if (whatsapp) return whatsapp
@@ -909,7 +930,7 @@ async function api(request: Request, env: Env, url: URL) {
 }
 
 export default {
-  async fetch(request: Request, env: Env) {
+  async fetch(request: Request, env: Env, ctx: ExecutionContext) {
     const url = new URL(request.url)
 
     if (url.pathname.startsWith("/api/")) {
@@ -923,7 +944,7 @@ export default {
         if (isMutation && !isWebhook && origin && origin !== env.APP_ORIGIN)
           return json({ error: "Origem não permitida." }, 403)
 
-        const response = await api(request, env, url)
+        const response = await api(request, env, url, ctx)
 
         const headers = new Headers(response.headers)
 

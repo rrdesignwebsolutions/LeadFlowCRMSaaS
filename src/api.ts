@@ -3,7 +3,7 @@ export type Metrics = { leads: number; qualified: number; hot: number; sold: num
 export type Lead = {
   id: string; status: string; productInterest: string | null; notes: string | null; nextAction: string | null;
   followUpAt: string | null; lossReason: string | null; updatedAt: string; name: string | null; phone: string;
-  email: string | null; saleCents: number | null;
+  email: string | null; saleCents: number | null; aiScore: number | null; aiSummary: string | null;
 };
 export type Member = { id: string; name: string; email: string; role: string; status: string };
 export type Invite = { id: string; email: string; role: string; expiresAt: string };

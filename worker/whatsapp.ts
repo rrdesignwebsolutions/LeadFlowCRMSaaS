@@ -1,4 +1,5 @@
 import type { Env, Session } from "./index"
+import { autoReply } from "./ai"
 
 const GRAPH_VERSION = "v26.0"
 
@@ -348,6 +349,8 @@ async function handleInbound(
   )
 
   await env.DB.batch(batch)
+
+  return { conversationId, type, externalId: m.id }
 }
 
 async function handleStatus(env: Env, integration: Integration, s: WaStatus) {
@@ -405,6 +408,7 @@ export async function handleMetaPayload(
   },
 
   payloadHash: string,
+  after: (task: Promise<unknown>) => void = () => {},
 ) {
   if (payload.object !== "whatsapp_business_account") return
 
@@ -434,7 +438,24 @@ export async function handleMetaPayload(
       const items = [
         ...(value.messages ?? []).map((item) => ({
           key: `${item.id}:message`,
-          run: () => handleInbound(env, integration!, value, item),
+          run: async () => {
+            const result = await handleInbound(env, integration!, value, item)
+
+            if (result.type === "text")
+              after(
+                autoReply(
+                  env,
+                  integration!.organization_id,
+                  result.conversationId,
+                  result.externalId,
+                ).catch((error) =>
+                  console.error(
+                    "ai_reply_failed",
+                    error instanceof Error ? error.message : "unknown",
+                  ),
+                ),
+              )
+          },
         })),
 
         ...(value.statuses ?? []).map((item) => ({
@@ -723,7 +744,7 @@ async function connectWithEmbeddedSignup(
   })
 }
 
-async function sendText(
+export async function sendText(
   env: Env,
   auth: Session,
   conversationId: string,
@@ -786,10 +807,17 @@ async function sendText(
   const messageId = uid()
 
   await env.DB.prepare(
-    "INSERT INTO messages(id,organization_id,conversation_id,direction,type,body,status,sent_by) VALUES(?,?,?,'outbound','text',?,'queued',?)",
+    "INSERT INTO messages(id,organization_id,conversation_id,direction,type,body,status,sent_by,is_ai) VALUES(?,?,?,'outbound','text',?,'queued',?,?)",
   )
 
-    .bind(messageId, auth.organizationId, conversationId, body, auth.userId)
+    .bind(
+      messageId,
+      auth.organizationId,
+      conversationId,
+      body,
+      auth.userId || null,
+      auth.role === "ai" ? 1 : 0,
+    )
     .run()
 
   const fail = async (code: string, message: string, status = 502) => {

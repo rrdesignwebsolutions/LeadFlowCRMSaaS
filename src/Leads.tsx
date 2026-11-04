@@ -146,7 +146,7 @@ export default function Leads({ leads, loadError, onChanged }: { leads: Lead[]; 
         {loadError && <p className="auth-error" role="alert">{loadError}</p>}
         {visible.length ? (
           <div className="table-wrap"><table className="leads-table">
-            <thead><tr><th>Contato</th><th>Telefone</th><th>Interesse</th><th>Status</th><th>Follow-up</th></tr></thead>
+            <thead><tr><th>Contato</th><th>Telefone</th><th>Interesse</th><th>Nota IA</th><th>Status</th><th>Follow-up</th></tr></thead>
             <tbody>{visible.map((l) => (
               <tr key={l.id} className="clickable" tabIndex={0} onClick={() => setOpenId(l.id)} onKeyDown={(e) => e.key === "Enter" && setOpenId(l.id)}>
                 <td>{l.name ?? "Sem nome"}</td><td>{l.phone}</td><td>{l.productInterest ?? "—"}</td>
