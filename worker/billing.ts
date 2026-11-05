@@ -6,6 +6,12 @@ const PERIOD_DAYS = 30
 
 export const TRIAL_DAYS = 7
 
+// Plano anual: paga 10 mensalidades por 12 meses (2 meses grátis).
+export const ANNUAL_MONTHS_CHARGED = 10
+const ANNUAL_DAYS = 365
+
+export type Cycle = "monthly" | "annual"
+
 export const PLAN_PRICES: Record<string, { name: string; cents: number }> = {
   essencial: { name: "Essencial", cents: 11900 },
   pro: { name: "Pro", cents: 14900 },
@@ -73,10 +79,15 @@ export async function createCheckout(
   organizationId: string,
   planId: string,
   customerEmail?: string,
+  cycle: Cycle = "monthly",
 ) {
   const plan = PLAN_PRICES[planId]
 
   if (!plan || !env.INFINITEPAY_API_KEY) return null
+
+  const annual = cycle === "annual"
+  const cents = annual ? plan.cents * ANNUAL_MONTHS_CHARGED : plan.cents
+  const days = annual ? ANNUAL_DAYS : PERIOD_DAYS
 
   const orderNsu = `${organizationId}_${crypto.randomUUID().slice(0, 8)}`
 
@@ -93,8 +104,8 @@ export async function createCheckout(
       items: [
         {
           quantity: 1,
-          price: plan.cents,
-          description: `AV Flow CRM ${plan.name} - ${PERIOD_DAYS} dias`,
+          price: cents,
+          description: `AV Flow CRM ${plan.name} - ${annual ? "anual" : "mensal"}`,
         },
       ],
       ...(customerEmail ? { customer: { email: customerEmail } } : {}),
@@ -125,9 +136,9 @@ export async function createCheckout(
   }
 
   await env.DB.prepare(
-    "INSERT INTO billing_orders(order_nsu,organization_id,plan,amount_cents) VALUES(?,?,?,?)",
+    "INSERT INTO billing_orders(order_nsu,organization_id,plan,amount_cents,period_days) VALUES(?,?,?,?,?)",
   )
-    .bind(orderNsu, organizationId, planId, plan.cents)
+    .bind(orderNsu, organizationId, planId, cents, days)
     .run()
 
   return url
@@ -149,10 +160,10 @@ export async function confirmOrder(
   if (typeof orderNsu !== "string" || !env.INFINITEPAY_API_KEY) return "ignored"
 
   const order = await env.DB.prepare(
-    "SELECT organization_id organizationId, plan, amount_cents amount FROM billing_orders WHERE order_nsu=? AND status='pending'",
+    "SELECT organization_id organizationId,     plan, amount_cents amount, period_days days FROM billing_orders WHERE order_nsu=? AND status='pending'",
   )
     .bind(orderNsu)
-    .first<{ organizationId: string; plan: string; amount: number }>()
+        .first<{ organizationId: string; plan: string; amount: number; days: number }>()
 
   if (!order) return "ignored"
 
@@ -200,7 +211,7 @@ export async function confirmOrder(
        period_ends_at=datetime(MAX(COALESCE(period_ends_at, CURRENT_TIMESTAMP), CURRENT_TIMESTAMP), ?2)
      WHERE organization_id=?3`,
   )
-    .bind(order.plan, `+${PERIOD_DAYS} days`, order.organizationId)
+    .bind(order.plan, `+${order.days} days`, order.organizationId)
     .run()
 
   return "activated"

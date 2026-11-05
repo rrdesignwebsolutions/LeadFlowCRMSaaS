@@ -1,0 +1,1 @@
+ALTER TABLE billing_orders ADD COLUMN period_days INTEGER NOT NULL DEFAULT 30;

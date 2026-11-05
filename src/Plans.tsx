@@ -41,6 +41,7 @@ export default function Plans({ meRole }: { meRole: string }) {
   const [available, setAvailable] = useState<PlanId[]>([]);
   const [error, setError] = useState("");
   const [loadingPlan, setLoadingPlan] = useState<PlanId | null>(null);
+  const [annual, setAnnual] = useState(false);
   const isAdmin = meRole === "admin";
 
   useEffect(() => {
@@ -55,7 +56,7 @@ export default function Plans({ meRole }: { meRole: string }) {
     try {
       const { checkoutUrl } = await api<{ checkoutUrl: string }>("/api/billing/checkout", {
         method: "POST",
-        body: { planId },
+        body: { planId, cycle: annual ? "annual" : "monthly" },
       });
       window.location.assign(checkoutUrl);
     } catch (e) {
@@ -75,13 +76,18 @@ export default function Plans({ meRole }: { meRole: string }) {
       </div>
       {error && <p className="auth-error" role="alert">{error}</p>}
       {!isAdmin && <p className="callout" role="status">Somente o administrador da empresa pode contratar ou alterar o plano.</p>}
+      <div style={{ display: "flex", gap: 8, margin: "12px 0" }} role="group" aria-label="Periodicidade">
+        <button className={annual ? "button secondary" : "button"} onClick={() => setAnnual(false)}>Mensal</button>
+        <button className={annual ? "button" : "button secondary"} onClick={() => setAnnual(true)}>Anual · 2 meses grátis</button>
+      </div>
       <div className="pricing-grid">
         {plans.map((plan) => (
           <article className={plan.featured ? "pricing-card featured" : "pricing-card"} key={plan.id}>
             {plan.featured && <span className="pricing-badge"><Sparkles size={13} /> MELHOR ESCOLHA</span>}
             <h2>{plan.name}</h2>
             <p className="pricing-description">{plan.description}</p>
-            <p className="pricing-price">{money(plan.price)}<span>/mês</span></p>
+            <p className="pricing-price">{annual ? money(plan.price * 10) : money(plan.price)}<span>{annual ? "/ano" : "/mês"}</span></p>
+            {annual && <p className="pricing-description">Equivale a {money(Math.round((plan.price * 10) / 12))}/mês · economia de {money(plan.price * 2)}</p>}
             <p className={plan.featured ? "pricing-per-user highlighted" : "pricing-per-user"}>
               {money(Math.round(plan.price / 3))} por pessoa/mês · 3 usuários
             </p>

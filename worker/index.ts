@@ -637,7 +637,7 @@ async function api(
     if (auth.role !== "admin")
       return json({ error: "Apenas administradores podem contratar ou alterar o plano." }, 403)
 
-    const body = await request.json<{ planId?: string }>()
+    const body = await request.json<{ planId?: string; cycle?: string }>()
 
     if (dynamicBillingEnabled(env)) {
       const me = await env.DB.prepare("SELECT email FROM users WHERE id=?")
@@ -649,6 +649,7 @@ async function api(
         auth.organizationId,
         body.planId ?? "",
         me?.email,
+        body.cycle === "annual" ? "annual" : "monthly",
       )
 
       return checkoutUrl
