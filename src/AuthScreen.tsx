@@ -47,8 +47,12 @@ export default function AuthScreen({ onDone }: { onDone: () => void }) {
     setError("");
     setNotice("");
     try {
-      const result = await api<{ verify?: boolean; email?: string }>(mode === "login" ? "/api/auth/login" : "/api/auth/register", { method: "POST", body: form });
-      if (result.verify) { setPendingEmail(result.email ?? form.email ?? ""); return; }
+      const result = await api<{ verify?: boolean; email?: string; sent?: boolean }>(mode === "login" ? "/api/auth/login" : "/api/auth/register", { method: "POST", body: form });
+      if (result.verify) {
+        setPendingEmail(result.email ?? form.email ?? "");
+        if (result.sent === false) setNotice("Não conseguimos enviar o e-mail agora. Toque em “Reenviar e-mail” em instantes.");
+        return;
+      }
       if (inviteToken) window.history.replaceState(null, "", "/");
       onDone();
     } catch (e) {

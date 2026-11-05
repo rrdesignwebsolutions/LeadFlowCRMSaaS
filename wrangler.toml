@@ -23,7 +23,9 @@ META_CONFIG_ID = "1746703063104476"
 INFINITEPAY_ESSENCIAL_URL = "https://invoice.infinitepay.io/plans/ruanramosdigital/inBSB8ZFu5"
 INFINITEPAY_PRO_URL = "https://invoice.infinitepay.io/plans/ruanramosdigital/bZKUF3koEP"
 INFINITEPAY_SCALE_URL = "https://invoice.infinitepay.io/plans/ruanramosdigital/BoSGuppyiX"
+INFINITEPAY_HANDLE = "ruanramosdigital"
 EMAIL_FROM = "AV Flow CRM <contato@rrdesignwebsolutions.com.br>"
 
 # Segredos devem ser configurados com `wrangler secret put`:
-# SESSION_SECRET, META_APP_SECRET, META_VERIFY_TOKEN, ENCRYPTION_KEY
+# SESSION_SECRET, META_APP_SECRET, META_VERIFY_TOKEN, ENCRYPTION_KEY,
+# INFINITEPAY_API_KEY (ativa a liberação automática após o pagamento)

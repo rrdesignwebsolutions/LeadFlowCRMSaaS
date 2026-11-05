@@ -1,4 +1,5 @@
-export type Me = { name: string; email: string; organization: string; role: string };
+export type Subscription = { status: "trialing" | "active" | "expired"; plan: string; endsAt: string | null; daysLeft: number };
+export type Me = { name: string; email: string; organization: string; role: string; subscription: Subscription };
 export type Metrics = { leads: number; qualified: number; hot: number; sold: number; active: number; seats: number; seatLimit: number };
 export type Lead = {
   id: string; status: string; productInterest: string | null; notes: string | null; nextAction: string | null;

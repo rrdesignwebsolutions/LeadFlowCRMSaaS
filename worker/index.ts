@@ -2,6 +2,15 @@
 
 import { aiRoutes } from "./ai"
 import { brandingRoutes } from "./branding"
+import {
+  confirmOrder,
+  createCheckout,
+  dynamicBillingEnabled,
+  hasAccess,
+  PLAN_PRICES,
+  sendBillingReminders,
+  subscriptionFor,
+} from "./billing"
 import { cleanupInactiveAccounts } from "./cleanup"
 import {
   canResend,
@@ -41,6 +50,10 @@ export interface Env {
   INFINITEPAY_PRO_URL?: string
 
   INFINITEPAY_SCALE_URL?: string
+  /** Chave da API de Checkout da InfinitePay (secret). Habilita a ativação automática. */
+  INFINITEPAY_API_KEY?: string
+  /** InfiniteTag da conta (sem o $). */
+  INFINITEPAY_HANDLE?: string
   /** Chave da API Resend para enviar e-mails de confirmação (secret). */
   RESEND_API_KEY?: string
   /** Remetente verificado, ex.: "AV Flow CRM <no-reply@seudominio.com>". */
@@ -217,14 +230,14 @@ async function authRoutes(request: Request, env: Env, path: string) {
         ).bind(orgId, userId),
 
         env.DB.prepare(
-          "INSERT INTO subscriptions(id,organization_id) VALUES(?,?)",
+          "INSERT INTO subscriptions(id,organization_id,status,period_ends_at) VALUES(?,?,'trialing',datetime('now','+7 days'))",
         ).bind(id(), orgId),
       ])
 
       if (emailVerificationEnabled(env)) {
-        await sendVerificationEmail(env, userId, email, body.name.trim())
+        const sent = await sendVerificationEmail(env, userId, email, body.name.trim())
 
-        return json({ verify: true, email }, 202)
+        return json({ verify: true, email, sent }, 202)
       }
 
       await env.DB.prepare(
@@ -562,6 +575,18 @@ async function api(
 
   if (url.pathname === "/api/webhooks/meta") return webhook(request, env, url, ctx)
 
+  if (url.pathname === "/api/billing/webhook/infinitepay" && request.method === "POST") {
+    const body = await request.json<Record<string, unknown>>().catch(() => ({}))
+
+    const result = await confirmOrder(env, {
+      orderNsu: body.order_nsu,
+      transactionNsu: body.transaction_nsu,
+      slug: body.invoice_slug ?? body.slug,
+    })
+
+    return result === "error" ? json({ error: "Falha ao confirmar." }, 502) : json({ ok: true })
+  }
+
   if (url.pathname === "/api/health") {
     await env.DB.prepare("SELECT 1").first()
 
@@ -587,10 +612,25 @@ async function api(
   if (url.pathname === "/api/billing/plans" && request.method === "GET") {
     const links = billingPlanUrls(env)
     return json({
-      available: Object.entries(links)
-        .filter(([, value]) => isValidInfinitePayCheckoutUrl(value))
-        .map(([planId]) => planId),
+      available: dynamicBillingEnabled(env)
+        ? Object.keys(PLAN_PRICES)
+        : Object.entries(links)
+            .filter(([, value]) => isValidInfinitePayCheckoutUrl(value))
+            .map(([planId]) => planId),
     })
+  }
+
+  if (url.pathname === "/api/billing/confirm" && request.method === "POST") {
+    const body = await request.json<Record<string, unknown>>().catch(() => ({}))
+
+    await confirmOrder(env, {
+      orderNsu: body.order_nsu,
+      transactionNsu: body.transaction_nsu,
+      slug: body.slug,
+      organizationId: auth.organizationId,
+    })
+
+    return json({ ok: true })
   }
 
   if (url.pathname === "/api/billing/checkout" && request.method === "POST") {
@@ -598,6 +638,24 @@ async function api(
       return json({ error: "Apenas administradores podem contratar ou alterar o plano." }, 403)
 
     const body = await request.json<{ planId?: string }>()
+
+    if (dynamicBillingEnabled(env)) {
+      const me = await env.DB.prepare("SELECT email FROM users WHERE id=?")
+        .bind(auth.userId)
+        .first<{ email: string }>()
+
+      const checkoutUrl = await createCheckout(
+        env,
+        auth.organizationId,
+        body.planId ?? "",
+        me?.email,
+      )
+
+      return checkoutUrl
+        ? json({ checkoutUrl })
+        : json({ error: "Não foi possível abrir o pagamento agora. Tente novamente." }, 502)
+    }
+
     const links = billingPlanUrls(env)
     const checkoutUrl = body.planId === "essencial"
       ? links.essencial
@@ -635,8 +693,17 @@ async function api(
         .bind(auth.userId, auth.organizationId)
         .first()
 
-    return json(data)
+    return json({ ...data, subscription: await subscriptionFor(env, auth.organizationId) })
   }
+
+  if (!(await hasAccess(env, auth.organizationId)))
+    return json(
+      {
+        error: "Seu período de teste terminou. Assine um plano para continuar.",
+        code: "subscription_required",
+      },
+      402,
+    )
 
   if (url.pathname === "/api/dashboard") {
     const metrics = await env.DB.prepare(`SELECT COUNT(*) leads,
@@ -1102,5 +1169,6 @@ export default {
 
   async scheduled(_event: ScheduledController, env: Env, ctx: ExecutionContext) {
     ctx.waitUntil(cleanupInactiveAccounts(env))
+    ctx.waitUntil(sendBillingReminders(env))
   },
 } satisfies ExportedHandler<Env>

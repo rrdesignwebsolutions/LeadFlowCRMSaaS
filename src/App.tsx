@@ -45,7 +45,9 @@ export default function App() {
 
   const load = useCallback(async () => {
     try {
-      setMe(await api<Me>("/api/me"));
+      const current = await api<Me>("/api/me");
+      setMe(current);
+      if (current.subscription.status === "expired") { setMetrics(null); setLeads([]); setLoadError(""); return; }
       api<Branding>("/api/branding").then(updateBranding).catch(() => undefined);
       const [m, l] = await Promise.all([api<Metrics>("/api/dashboard"), api<{ results: Lead[] }>("/api/leads")]);
       setMetrics(m);
@@ -57,12 +59,44 @@ export default function App() {
     }
   }, [updateBranding]);
 
-  useEffect(() => { void load(); }, [load]);
+  useEffect(() => {
+    // Retorno do checkout: confirma o pagamento antes de carregar o app (o webhook também faz isso).
+    const params = new URLSearchParams(window.location.search);
+    const order = params.get("order_nsu");
+    const run = async () => {
+      if (order) {
+        window.history.replaceState({}, "", window.location.pathname);
+        await api("/api/billing/confirm", { method: "POST", body: { order_nsu: order, transaction_nsu: params.get("transaction_nsu"), slug: params.get("slug") } }).catch(() => undefined);
+      }
+      await load();
+    };
+    void run();
+  }, [load]);
+
+  const logout = async () => { await api("/api/auth/logout", { method: "POST" }).catch(() => undefined); setMe(null); setMetrics(null); setLeads([]); updateBranding(null); };
 
   if (me === undefined) return <div className="auth-page">Carregando...</div>;
   if (me === null) return <AuthScreen onDone={() => { setMe(undefined); void load(); }} />;
-  return <Shell me={me} branding={branding} onBranding={updateBranding} metrics={metrics} leads={leads} loadError={loadError} reload={load}
-    onLogout={async () => { await api("/api/auth/logout", { method: "POST" }).catch(() => undefined); setMe(null); setMetrics(null); setLeads([]); updateBranding(null); }} />;
+  if (me.subscription.status === "expired") return <Locked me={me} reload={load} onLogout={logout} />;
+  return <Shell me={me} branding={branding} onBranding={updateBranding} metrics={metrics} leads={leads} loadError={loadError} reload={load} onLogout={logout} />;
+}
+
+function Locked({ me, reload, onLogout }: { me: Me; reload: () => void; onLogout: () => void }) {
+  // Aguarda a confirmação do pagamento (webhook) liberar o acesso.
+  useEffect(() => {
+    const timer = setInterval(() => { if (!document.hidden) reload(); }, 8000);
+    return () => clearInterval(timer);
+  }, [reload]);
+  return (
+    <div style={{ maxWidth: 1100, margin: "0 auto", padding: "24px 16px" }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16 }}>
+        <b>{me.organization}</b>
+        <button className="button secondary" onClick={onLogout}><LogOut size={16} /> Sair</button>
+      </div>
+      <p className="callout" role="alert">Seu período de teste terminou e o acesso está suspenso. Seus dados estão preservados: assine um plano para voltar de onde parou.</p>
+      <Plans meRole={me.role} />
+    </div>
+  );
 }
 
 function Shell({ me, branding, onBranding, metrics, leads, loadError, reload, onLogout }: {
@@ -135,6 +169,12 @@ function Shell({ me, branding, onBranding, metrics, leads, loadError, reload, on
         </header>
 
         <div className="content">
+          {me.subscription.status === "trialing" && (
+            <p className="callout" role="status">
+              Teste grátis: {me.subscription.daysLeft} {me.subscription.daysLeft === 1 ? "dia restante" : "dias restantes"}.{" "}
+              <button className="underline" onClick={() => go("plans")}>Assinar um plano</button>
+            </p>
+          )}
           {view === "overview" && <>
             <div className="page-heading">
               <div><p className="eyebrow">{today}</p><h1>Olá, {me.name.split(" ")[0]}!</h1><p>Resumo do seu funil comercial.</p></div>
