@@ -80,7 +80,7 @@ export default function AISettings({ canEdit }: { canEdit: boolean }) {
         <label><span><input type="checkbox" name="enabled" defaultChecked={settings.enabled} disabled={!canEdit} /> Responder automaticamente</span></label>
         <label>Nome do assistente<input name="assistantName" defaultValue={settings.assistantName} maxLength={60} disabled={!canEdit} /></label>
         <label>Instruções da empresa (tom, horários, políticas, o que nunca prometer)
-          <textarea name="instructions" rows={5} maxLength={4000} defaultValue={settings.instructions} disabled={!canEdit} />
+          <textarea name="instructions" rows={12} defaultValue={settings.instructions} disabled={!canEdit} />
         </label>
         {canEdit && <button className="button" disabled={busy}>Salvar</button>}
       </form>

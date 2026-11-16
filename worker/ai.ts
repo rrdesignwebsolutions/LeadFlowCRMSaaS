@@ -393,7 +393,8 @@ export async function aiRoutes(
     const body = await request.json<Record<string, unknown>>()
 
     const name = clip(body.assistantName, 60) ?? "Assistente"
-    const instructions = clip(body.instructions, 4000) ?? ""
+    const instructions =
+      typeof body.instructions === "string" ? body.instructions.trim() : ""
 
     await env.DB.prepare(
       `INSERT INTO ai_settings(organization_id,enabled,assistant_name,instructions) VALUES(?,?,?,?)
