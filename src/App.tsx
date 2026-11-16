@@ -352,7 +352,7 @@ function Shell({
     .slice(0, 5)
 
   return (
-    <div className="app-shell">
+    <div className={view === "inbox" ? "app-shell inbox-mode" : "app-shell"}>
       <aside className={sidebar ? "sidebar open" : "sidebar"}>
         <div className="brand">
           <img
@@ -474,7 +474,7 @@ function Shell({
         </header>
 
         <div className={view === "inbox" ? "content inbox-content" : "content"}>
-          {me.subscription.status === "trialing" && (
+          {view !== "inbox" && me.subscription.status === "trialing" && (
             <p className="callout" role="status">
               Teste grátis: {me.subscription.daysLeft}{" "}
               {me.subscription.daysLeft === 1
@@ -622,18 +622,11 @@ function Shell({
           )}
 
           {view === "inbox" && (
-            <>
-              <div className="page-heading inbox-page-heading">
-                <div>
-                  <h1>Caixa de entrada</h1>
-                  <p>Atenda seus clientes pelo WhatsApp.</p>
-                </div>
-              </div>
-              <InboxView
-                connected={wa.connected}
-                onRead={() => void refreshWa()}
-              />
-            </>
+            <InboxView
+              connected={wa.connected}
+              onRead={() => void refreshWa()}
+              onExit={() => setView("overview")}
+            />
           )}
 
           {view === "campaigns" && (

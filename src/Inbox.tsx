@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState, type FormEvent } from "react"
 
 import {
   ArrowLeft,
+  ArrowUpLeft,
   Check,
   CheckCheck,
   Circle,
@@ -90,10 +91,12 @@ export default function Inbox({
   connected,
 
   onRead,
+  onExit,
 }: {
   connected: boolean
 
   onRead: () => void
+  onExit: () => void
 }) {
   const [list, setList] = useState<Conversation[]>([])
 
@@ -208,10 +211,25 @@ export default function Inbox({
   )
 
   return (
-    <section
-      className={`inbox-shell${activeId ? " has-active" : ""}`}
-      aria-label="Caixa de entrada do WhatsApp"
-    >
+    <div className="inbox-fullscreen">
+      <div className="inbox-topbar">
+        <div className="inbox-brand">
+          <span className="inbox-brand-mark">
+            <MessageCircle size={18} />
+          </span>
+          <b>AV Flow <span>CRM</span></b>
+          <i />
+          <span>WhatsApp</span>
+        </div>
+        <button type="button" className="inbox-exit" onClick={onExit}>
+          <ArrowUpLeft size={17} />
+          <span>Voltar ao CRM</span>
+        </button>
+      </div>
+      <section
+        className={`inbox-shell${activeId ? " has-active" : ""}`}
+        aria-label="Caixa de entrada do WhatsApp"
+      >
       <aside className="inbox-sidebar">
         <div className="inbox-sidebar-head">
           <div>
@@ -432,6 +450,7 @@ export default function Inbox({
           </div>
         )}
       </div>
-    </section>
+      </section>
+    </div>
   )
 }

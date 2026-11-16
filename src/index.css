@@ -224,17 +224,30 @@ h3 { font: 700 14px var(--font-display); }
 .billing-note h3 { font-size: 12px; }
 .billing-note p { margin-top: 4px; color: var(--color-muted); font-size: 11px; line-height: 1.6; }
 .inbox-page-heading { margin-bottom: 18px; }
+.app-shell.inbox-mode { width: 100%; height: 100dvh; min-height: 0; overflow: hidden; }
+.app-shell.inbox-mode > .sidebar { display: none; }
+.app-shell.inbox-mode > main { width: 100%; height: 100dvh; min-height: 0; margin: 0; overflow: hidden; }
+.app-shell.inbox-mode > main > header { display: none; }
 .content.inbox-content {
   width: 100%;
   max-width: none;
-  height: calc(100dvh - 72px);
+  height: 100dvh;
+  min-height: 0;
   display: flex;
   flex-direction: column;
   overflow: hidden;
-  padding: 18px 24px 24px;
+  padding: 0;
 }
-.content.inbox-content > .callout { flex: 0 0 auto; margin: 0 0 12px; }
-.content.inbox-content .inbox-page-heading { flex: 0 0 auto; margin: 0 0 14px; }
+.inbox-fullscreen { display: flex; width: 100%; height: 100%; min-height: 0; flex: 1; flex-direction: column; overflow: hidden; background: #f5f8f6; }
+.inbox-topbar { height: 54px; min-height: 54px; display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 0 22px; border-bottom: 1px solid #e4ebe6; background: #fff; }
+.inbox-brand { display: flex; align-items: center; gap: 10px; color: #34443a; font-size: 12px; }
+.inbox-brand-mark { width: 30px; height: 30px; display: inline-flex; align-items: center; justify-content: center; border-radius: 9px; color: #fff; background: #128c5b; }
+.inbox-brand b { font-size: 13px; }
+.inbox-brand b span { color: #128c5b; }
+.inbox-brand > i { height: 20px; border-left: 1px solid #e3e9e5; }
+.inbox-brand > span:last-child { color: #718078; }
+.inbox-exit { display: inline-flex; align-items: center; gap: 6px; min-height: 34px; padding: 0 10px; border: 1px solid #e3e9e5; border-radius: 8px; color: #5a685f; background: #fff; font: inherit; font-size: 11px; font-weight: 600; }
+.inbox-exit:hover { color: #128c5b; background: #f4faf6; }
 .inbox-shell {
   height: auto;
   min-height: 0;
@@ -247,6 +260,7 @@ h3 { font: 700 14px var(--font-display); }
   border-radius: 16px;
   box-shadow: 0 8px 26px rgb(23 45 33 / 6%);
 }
+.inbox-fullscreen .inbox-shell { border: 0; border-radius: 0; box-shadow: none; }
 .inbox-sidebar { display: flex; min-width: 0; flex-direction: column; border-right: 1px solid #e8eeea; background: #fff; }
 .inbox-sidebar-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 20px 18px 14px; }
 .inbox-sidebar-head h2 { font-size: 19px; }
@@ -308,9 +322,7 @@ h3 { font: 700 14px var(--font-display); }
 .inbox-window-note { display: flex; align-items: center; justify-content: center; gap: 8px; padding: 13px 18px; color: #77632b; background: #fff8e6; font-size: 11px; line-height: 1.5; text-align: center; }
 .inbox-error { margin: 8px 12px; padding: 9px 11px; border: 1px solid #f3d0cc; border-radius: 9px; color: #a63228; background: #fff5f4; font-size: 11px; line-height: 1.5; }
 @media (max-width: 780px) {
-  .content.inbox-content { height: calc(100dvh - 72px); padding: 12px 12px 14px; }
-  .content.inbox-content .inbox-page-heading { margin-bottom: 10px; }
-  .content.inbox-content > .callout { margin-bottom: 8px; }
+  .inbox-topbar { height: 48px; min-height: 48px; padding: 0 12px; }
   .content.inbox-content .inbox-shell { grid-template-columns: minmax(0, 1fr); }
   .content.inbox-content .inbox-chat { display: none; }
   .content.inbox-content .inbox-shell.has-active .inbox-sidebar { display: none; }
@@ -320,8 +332,9 @@ h3 { font: 700 14px var(--font-display); }
   .content.inbox-content .inbox-bubble { max-width: 86%; }
 }
 @media (max-width: 520px) {
-  .content.inbox-content { padding: 10px 8px 10px; }
-  .content.inbox-content .inbox-shell { border-radius: 12px; }
+  .inbox-topbar { height: 44px; min-height: 44px; padding: 0 9px; }
+  .inbox-exit { width: 34px; min-height: 32px; justify-content: center; padding: 0; }
+  .inbox-exit span { display: none; }
   .content.inbox-content .inbox-sidebar-head { padding: 15px 13px 12px; }
   .content.inbox-content .inbox-chat-head { min-height: 62px; padding: 8px 10px; }
   .content.inbox-content .inbox-composer { padding: 9px 10px; }
