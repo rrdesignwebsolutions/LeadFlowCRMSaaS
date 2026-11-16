@@ -59,7 +59,8 @@ declare global {
           response_type: string
           override_default_response_type: boolean
           extras: {
-            setup: Record<string, never>
+            setup?: Record<string, never>
+            version?: "v4"
             featureType?: "whatsapp_business_app_onboarding"
             sessionInfoVersion?: "3"
           }
@@ -289,7 +290,8 @@ export default function WhatsAppSettings({
     const { appId } = data?.embeddedSignup ?? {}
     const configId =
       connectionMode === "coexistence"
-        ? data?.embeddedSignup.coexistenceConfigId
+        ? (data?.embeddedSignup.coexistenceConfigId ??
+          data?.embeddedSignup.configId)
         : data?.embeddedSignup.configId
 
     if (!window.FB || !appId || !configId) {
@@ -338,7 +340,7 @@ export default function WhatsAppSettings({
         extras:
           connectionMode === "coexistence"
             ? {
-                setup: {},
+                version: "v4",
                 featureType: "whatsapp_business_app_onboarding",
                 sessionInfoVersion: "3",
               }

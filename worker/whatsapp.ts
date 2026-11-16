@@ -1028,7 +1028,8 @@ export async function whatsappRoutes(
         embeddedSignup: {
           appId: env.META_APP_ID ?? null,
           configId: env.META_CONFIG_ID ?? null,
-          coexistenceConfigId: env.META_COEXISTENCE_CONFIG_ID ?? null,
+          coexistenceConfigId:
+            env.META_COEXISTENCE_CONFIG_ID ?? env.META_CONFIG_ID ?? null,
         },
 
         serverReady: {
