@@ -375,6 +375,8 @@ async function handleMessageEcho(
   echo: WaMessage,
 ) {
   if (!echo.to) throw new Error("eco sem destinatário")
+  if (echo.type === "edit" || echo.type === "revoke")
+    throw new Error("edição ou exclusão de mensagem do WhatsApp Business App ainda não suportada")
 
   await handleInbound(
     env,
@@ -501,6 +503,14 @@ export async function handleMetaPayload(
           key: `${item.id}:${item.status}`,
           run: () => handleStatus(env, integration!, item),
         })),
+        ...(["history", "smb_app_state_sync"].includes(change.field ?? "")
+          ? [{
+              key: `${change.field}:${entry.id ?? "unknown"}:${changeIndex}:${payloadHash}`,
+              run: async () => {
+                throw new Error(`O processamento de ${change.field} ainda não está disponível`)
+              },
+            }]
+          : []),
         ...(change.field === "account_update" && entry.id
           ? [
               {
@@ -693,20 +703,31 @@ async function connect(
     )
     .run()
 
-  const subscription = await graphFetch(
-    env,
-    `${wabaId}/subscribed_apps`,
-    token,
-    {},
-  ).catch(() => null)
+  let subscription: GraphResult | null = null
+  try {
+    subscription = await graphFetch(env, `${wabaId}/subscribed_apps`, token, {})
+  } catch (error) {
+    console.error(
+      "whatsapp_subscription_failed",
+      error instanceof Error ? error.message : "unknown",
+    )
+  }
+  const subscribed = !!subscription?.ok && subscription.data.success === true
+  const subscribeError = subscription && !subscription.ok
+    ? graphMessage(subscription)
+    : "A Meta não confirmou a assinatura do webhook. Verifique a conexão e tente novamente."
+
+  if (!subscribed)
+    await env.DB.prepare(
+      "UPDATE integrations SET status='error',error_code='webhook_subscription',error_summary=?,updated_at=CURRENT_TIMESTAMP WHERE id=? AND organization_id=?",
+    ).bind(subscribeError, integrationId, auth.organizationId).run()
 
   return json({
     ok: true,
     displayPhoneNumber: display,
     verifiedName,
-    subscribed: !!subscription?.ok,
-    subscribeError:
-      subscription && !subscription.ok ? graphMessage(subscription) : undefined,
+    subscribed,
+    subscribeError: subscribed ? undefined : subscribeError,
   })
 }
 
@@ -750,7 +771,11 @@ async function connectWithEmbeddedSignup(
       400,
     )
 
-  if (connectionMode === "coexistence" && !env.META_COEXISTENCE_CONFIG_ID)
+  if (
+    connectionMode === "coexistence" &&
+    !env.META_COEXISTENCE_CONFIG_ID &&
+    !env.META_CONFIG_ID
+  )
     return json(
       {
         error:
@@ -811,7 +836,7 @@ async function connectWithEmbeddedSignup(
     )
   }
 
-  if (!phoneNumberId && connectionMode === "coexistence") {
+  if (connectionMode === "coexistence") {
     const numbers = await graphFetch(
       env,
       `${wabaId}/phone_numbers?fields=id&limit=100`,
@@ -836,8 +861,23 @@ async function connectWithEmbeddedSignup(
       )
 
     const phoneNumbers = numbers.data.data as Array<{ id?: string }> | undefined
+    const paging = numbers.data.paging as { next?: string } | undefined
 
-    if (phoneNumbers?.length !== 1 || !phoneNumbers[0]?.id)
+    if (!Array.isArray(phoneNumbers))
+      return json(
+        { error: "A Meta retornou uma lista de números inválida." },
+        502,
+      )
+
+    if (phoneNumberId) {
+      if (!/^\d{5,25}$/.test(phoneNumberId))
+        return json({ error: "A Meta retornou um identificador de número inválido." }, 400)
+      if (!phoneNumbers.some((number) => number.id === phoneNumberId))
+        return json(
+          { error: "Não foi possível confirmar que o número pertence à conta WhatsApp selecionada." },
+          400,
+        )
+    } else if (phoneNumbers.length !== 1 || !phoneNumbers[0]?.id || paging?.next)
       return json(
         {
           error:
@@ -846,7 +886,7 @@ async function connectWithEmbeddedSignup(
         400,
       )
 
-    phoneNumberId = phoneNumbers[0].id
+    else phoneNumberId = phoneNumbers[0].id
   }
 
   return connect(env, auth, {

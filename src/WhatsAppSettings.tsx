@@ -90,6 +90,25 @@ export default function WhatsAppSettings({
   const [sdkReady, setSdkReady] = useState(false)
 
   const signupState = useRef<SignupState>({})
+  const signupTimeout = useRef<ReturnType<typeof setTimeout> | null>(null)
+
+  const clearSignupTimeout = useCallback(() => {
+    if (signupTimeout.current) clearTimeout(signupTimeout.current)
+    signupTimeout.current = null
+  }, [])
+
+  useEffect(() => () => clearSignupTimeout(), [clearSignupTimeout])
+
+  const waitForSignupResult = useCallback(() => {
+    if (signupTimeout.current) return
+    signupTimeout.current = setTimeout(() => {
+      signupTimeout.current = null
+      if (signupState.current.processing) return
+      signupState.current = {}
+      setBusy(false)
+      setError("A Meta não retornou todos os dados de autorização. A conexão não foi concluída no AV Flow; confira o status na Meta antes de tentar novamente.")
+    }, 30000)
+  }, [])
 
   const load = useCallback(async () => {
     try {
@@ -169,6 +188,7 @@ export default function WhatsAppSettings({
       return
 
     signup.processing = true
+    clearSignupTimeout()
 
     setBusy(true)
     setError("")
@@ -202,10 +222,10 @@ export default function WhatsAppSettings({
         result.subscribed
           ? `Número ${result.displayPhoneNumber} conectado em ${modeLabel}.${
               signup.connectionMode === "coexistence"
-            ? " Confirme no painel da Meta que o webhook está inscrito em messages, account_update e smb_message_echoes. O histórico antigo do WhatsApp Business App não é importado."
+                ? " Confirme no painel da Meta os campos de webhook necessários. O histórico e os contatos antigos do WhatsApp Business App ainda não são importados."
                 : ""
             }`
-          : `Número ${result.displayPhoneNumber} conectado em ${modeLabel}, mas a Meta não confirmou a assinatura do app aos eventos do WhatsApp. ${result.subscribeError ?? "Verifique a configuração do webhook."}`,
+          : `Número ${result.displayPhoneNumber} autorizado, mas a conexão está com erro porque a Meta não confirmou a assinatura dos eventos. ${result.subscribeError ?? "Verifique a configuração do webhook."}`,
       )
 
       await load()
@@ -217,7 +237,7 @@ export default function WhatsAppSettings({
 
       setBusy(false)
     }
-  }, [load, onChanged])
+  }, [clearSignupTimeout, load, onChanged])
 
   useEffect(() => {
     function receiveSignupMessage(event: MessageEvent) {
@@ -239,6 +259,7 @@ export default function WhatsAppSettings({
         if (!message || message.type !== "WA_EMBEDDED_SIGNUP") return
 
         if (message.event === "CANCEL") {
+          clearSignupTimeout()
           signupState.current = {}
 
           setBusy(false)
@@ -249,6 +270,7 @@ export default function WhatsAppSettings({
         }
 
         if (message.event === "ERROR") {
+          clearSignupTimeout()
           signupState.current = {}
 
           setBusy(false)
@@ -267,6 +289,18 @@ export default function WhatsAppSettings({
         )
           return
 
+        if (!signupState.current.connectionMode) return
+        if (
+          signupState.current.connectionMode === "coexistence" &&
+          message.event !== "FINISH_WHATSAPP_BUSINESS_APP_ONBOARDING"
+        ) {
+          clearSignupTimeout()
+          signupState.current = {}
+          setBusy(false)
+          setError("A Meta concluiu um fluxo diferente da coexistência. A conexão não foi salva.")
+          return
+        }
+
         const assets = message.data as SignupAssets | undefined
 
         signupState.current.phoneNumberId = assets?.phone_number_id
@@ -275,6 +309,7 @@ export default function WhatsAppSettings({
         if (message.event === "FINISH_WHATSAPP_BUSINESS_APP_ONBOARDING")
           signupState.current.connectionMode = "coexistence"
 
+        waitForSignupResult()
         void finishEmbeddedSignup()
       } catch {
         setError("Não foi possível ler a resposta do cadastro da Meta.")
@@ -284,7 +319,7 @@ export default function WhatsAppSettings({
     window.addEventListener("message", receiveSignupMessage)
 
     return () => window.removeEventListener("message", receiveSignupMessage)
-  }, [finishEmbeddedSignup])
+  }, [clearSignupTimeout, finishEmbeddedSignup, waitForSignupResult])
 
   function startEmbeddedSignup(connectionMode: "cloud_api" | "coexistence") {
     const { appId } = data?.embeddedSignup ?? {}
@@ -315,6 +350,7 @@ export default function WhatsAppSettings({
         const code = response.authResponse?.code
 
         if (!code) {
+          clearSignupTimeout()
           signupState.current = {}
 
           setBusy(false)
@@ -328,6 +364,7 @@ export default function WhatsAppSettings({
 
         signupState.current.code = code
 
+        waitForSignupResult()
         void finishEmbeddedSignup()
       },
       {
@@ -340,6 +377,7 @@ export default function WhatsAppSettings({
         extras:
           connectionMode === "coexistence"
             ? {
+                setup: {},
                 version: "v4",
                 featureType: "whatsapp_business_app_onboarding",
                 sessionInfoVersion: "3",
@@ -414,7 +452,7 @@ export default function WhatsAppSettings({
         <div className="whatsapp-connected">
           <span className="whatsapp-connected-mark">✓</span>
           <span>
-            <b>Número conectado</b>
+            <b>{i.status === "connected" ? "Número conectado" : "Conexão com erro"}</b>
             <small>
               {i.displayPhoneNumber ?? i.phoneNumberId} ·{" "}
               {i.connectionMode === "coexistence"
@@ -424,7 +462,7 @@ export default function WhatsAppSettings({
           </span>
           {i.errorSummary && (
             <span className="whatsapp-connection-issue">
-              Verifique a conexão no WhatsApp Business.
+              {i.errorSummary}
             </span>
           )}
         </div>
@@ -484,7 +522,8 @@ export default function WhatsAppSettings({
               {data?.embeddedSignup.coexistenceConfigId && (
                 <p className="muted">
                   A disponibilidade da coexistência depende da elegibilidade da
-                  empresa e da configuração aprovada pela Meta.
+                  empresa e da configuração aprovada pela Meta. O histórico e
+                  os contatos antigos ainda não são importados.
                 </p>
               )}
             </div>
