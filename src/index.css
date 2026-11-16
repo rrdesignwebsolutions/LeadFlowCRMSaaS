@@ -148,14 +148,6 @@ h3 { font: 700 14px var(--font-display); }
   .search span, .search kbd { display: none; }
   .content { padding: 30px 18px 60px; }
   .page-heading { align-items: flex-start; flex-direction: column; }
-  .inbox-page-heading { margin-bottom: 16px; }
-  .inbox-shell, .content:has(.inbox-shell) .inbox-shell { height: calc(100dvh - 205px); min-height: 440px; grid-template-columns: minmax(0, 1fr); }
-  .inbox-chat { display: none; }
-  .inbox-shell.has-active .inbox-sidebar { display: none; }
-  .inbox-shell.has-active .inbox-chat { display: flex; }
-  .inbox-back { display: inline-flex; }
-  .inbox-message-area { padding: 18px 13px; }
-  .inbox-bubble { max-width: 86%; }
   .steps, .grid { grid-template-columns: 1fr; }
   .step { border: 0; border-bottom: 1px solid var(--color-line); padding-bottom: 13px; margin: 0; }
 }
@@ -163,11 +155,6 @@ h3 { font: 700 14px var(--font-display); }
   .metrics { grid-template-columns: 1fr; }
   .setup-card { padding: 20px; }
   h1 { font-size: 24px; }
-  .inbox-shell, .content:has(.inbox-shell) .inbox-shell { height: calc(100dvh - 190px); min-height: 410px; border-radius: 12px; }
-  .inbox-sidebar-head { padding: 15px 13px 12px; }
-  .inbox-chat-head { min-height: 62px; padding: 8px 10px; }
-  .inbox-composer { padding: 9px 10px; }
-  .inbox-welcome { padding: 20px; }
 }
 
 .auth-page { min-height: 100vh; display: grid; place-items: center; padding: 24px; background: var(--color-canvas); }
@@ -237,9 +224,21 @@ h3 { font: 700 14px var(--font-display); }
 .billing-note h3 { font-size: 12px; }
 .billing-note p { margin-top: 4px; color: var(--color-muted); font-size: 11px; line-height: 1.6; }
 .inbox-page-heading { margin-bottom: 18px; }
+.content.inbox-content {
+  width: 100%;
+  max-width: none;
+  height: calc(100dvh - 72px);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  padding: 18px 24px 24px;
+}
+.content.inbox-content > .callout { flex: 0 0 auto; margin: 0 0 12px; }
+.content.inbox-content .inbox-page-heading { flex: 0 0 auto; margin: 0 0 14px; }
 .inbox-shell {
-  height: min(680px, calc(100dvh - 235px));
-  min-height: 500px;
+  height: auto;
+  min-height: 0;
+  flex: 1 1 auto;
   display: grid;
   grid-template-columns: minmax(270px, 340px) minmax(0, 1fr);
   overflow: hidden;
@@ -308,9 +307,26 @@ h3 { font: 700 14px var(--font-display); }
 .inbox-send:disabled { cursor: wait; opacity: .65; }
 .inbox-window-note { display: flex; align-items: center; justify-content: center; gap: 8px; padding: 13px 18px; color: #77632b; background: #fff8e6; font-size: 11px; line-height: 1.5; text-align: center; }
 .inbox-error { margin: 8px 12px; padding: 9px 11px; border: 1px solid #f3d0cc; border-radius: 9px; color: #a63228; background: #fff5f4; font-size: 11px; line-height: 1.5; }
-.inbox-error.chat-error { margin: 0; border-radius: 0; }
-.content:has(.inbox-shell) { max-width: 1420px; }
-.content:has(.inbox-shell) .inbox-shell { height: min(720px, calc(100dvh - 225px)); }
+@media (max-width: 780px) {
+  .content.inbox-content { height: calc(100dvh - 72px); padding: 12px 12px 14px; }
+  .content.inbox-content .inbox-page-heading { margin-bottom: 10px; }
+  .content.inbox-content > .callout { margin-bottom: 8px; }
+  .content.inbox-content .inbox-shell { grid-template-columns: minmax(0, 1fr); }
+  .content.inbox-content .inbox-chat { display: none; }
+  .content.inbox-content .inbox-shell.has-active .inbox-sidebar { display: none; }
+  .content.inbox-content .inbox-shell.has-active .inbox-chat { display: flex; }
+  .content.inbox-content .inbox-back { display: inline-flex; }
+  .content.inbox-content .inbox-message-area { padding: 18px 13px; }
+  .content.inbox-content .inbox-bubble { max-width: 86%; }
+}
+@media (max-width: 520px) {
+  .content.inbox-content { padding: 10px 8px 10px; }
+  .content.inbox-content .inbox-shell { border-radius: 12px; }
+  .content.inbox-content .inbox-sidebar-head { padding: 15px 13px 12px; }
+  .content.inbox-content .inbox-chat-head { min-height: 62px; padding: 8px 10px; }
+  .content.inbox-content .inbox-composer { padding: 9px 10px; }
+  .content.inbox-content .inbox-welcome { padding: 20px; }
+}
 .whatsapp-settings { min-height: 0; }
 .whatsapp-settings .panel-title { gap: 16px; }
 .whatsapp-settings .panel-title > div > p:last-child { max-width: 600px; }

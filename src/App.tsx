@@ -473,7 +473,7 @@ function Shell({
           <span className="header-title">{me.organization}</span>
         </header>
 
-        <div className="content">
+        <div className={view === "inbox" ? "content inbox-content" : "content"}>
           {me.subscription.status === "trialing" && (
             <p className="callout" role="status">
               Teste grátis: {me.subscription.daysLeft}{" "}
