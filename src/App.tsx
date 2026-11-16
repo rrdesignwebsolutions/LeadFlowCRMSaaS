@@ -5,6 +5,7 @@ import {
 } from "lucide-react";
 import AISettings from "./AISettings";
 import AuthScreen from "./AuthScreen";
+import InboxView from "./Inbox";
 import Leads from "./Leads";
 import Plans from "./Plans";
 import WhatsAppSettings from "./WhatsAppSettings";
@@ -219,9 +220,7 @@ function Shell({ me, branding, onBranding, metrics, leads, loadError, reload, on
 
           {view === "inbox" && <>
             <div className="page-heading"><div><h1>Caixa de entrada</h1></div></div>
-            <Empty icon={<MessageCircleMore size={25} />} title="WhatsApp ainda não conectado">
-              As conversas aparecerão aqui depois que a integração oficial com a Meta for concluída. Até lá, use a aba Leads para registrar seus contatos.
-            </Empty>
+            <InboxView connected={wa.connected} onRead={() => void refreshWa()} />
           </>}
 
           {view === "campaigns" && <>
