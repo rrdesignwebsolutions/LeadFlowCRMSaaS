@@ -7,13 +7,18 @@ type Status = {
     status: string
     phoneNumberId: string
     displayPhoneNumber: string | null
+    connectionMode: "cloud_api" | "coexistence"
     errorSummary: string | null
     connectedAt: string | null
   } | null
 
   webhookUrl: string
 
-  embeddedSignup: { appId: string | null; configId: string | null }
+  embeddedSignup: {
+    appId: string | null
+    configId: string | null
+    coexistenceConfigId: string | null
+  }
 
   serverReady: {
     appSecret: boolean
@@ -22,12 +27,16 @@ type Status = {
   }
 }
 
-type SignupAssets = { phone_number_id?: string; waba_id?: string }
+type SignupAssets = {
+  phone_number_id?: string;
+  waba_id?: string;
+}
 
 type SignupState = {
   code?: string
   phoneNumberId?: string
   wabaId?: string
+  connectionMode?: "cloud_api" | "coexistence"
   processing?: boolean
 }
 
@@ -36,7 +45,11 @@ type FacebookLoginResponse = { authResponse?: { code?: string } }
 declare global {
   interface Window {
     FB?: {
-      init: (options: { appId: string; xfbml: boolean; version: string }) => void
+      init: (options: {
+        appId: string;
+        xfbml: boolean;
+        version: string;
+      }) => void
 
       login: (
         callback: (response: FacebookLoginResponse) => void,
@@ -45,7 +58,11 @@ declare global {
           config_id: string
           response_type: string
           override_default_response_type: boolean
-          extras: { setup: Record<string, never> }
+          extras: {
+            setup: Record<string, never>
+            featureType?: "whatsapp_business_app_onboarding"
+            sessionInfoVersion?: "3"
+          }
         },
       ) => void
     }
@@ -144,8 +161,8 @@ export default function WhatsAppSettings({
 
     if (
       !signup.code ||
-      !signup.phoneNumberId ||
       !signup.wabaId ||
+      (!signup.phoneNumberId && signup.connectionMode !== "coexistence") ||
       signup.processing
     )
       return
@@ -170,14 +187,24 @@ export default function WhatsAppSettings({
             code: signup.code,
             phoneNumberId: signup.phoneNumberId,
             wabaId: signup.wabaId,
+            connectionMode: signup.connectionMode ?? "cloud_api",
           },
         },
       )
 
+      const modeLabel =
+        signup.connectionMode === "coexistence"
+          ? "modo de coexistência"
+          : "modo Cloud API"
+
       setNote(
         result.subscribed
-          ? `Número ${result.displayPhoneNumber} conectado.`
-          : `Número ${result.displayPhoneNumber} conectado. A ativação do canal ainda está sendo concluída; atualize em instantes.`,
+          ? `Número ${result.displayPhoneNumber} conectado em ${modeLabel}.${
+              signup.connectionMode === "coexistence"
+            ? " Confirme no painel da Meta que o webhook está inscrito em messages, account_update e smb_message_echoes. O histórico antigo do WhatsApp Business App não é importado."
+                : ""
+            }`
+          : `Número ${result.displayPhoneNumber} conectado em ${modeLabel}, mas a Meta não confirmou a assinatura do app aos eventos do WhatsApp. ${result.subscribeError ?? "Verifique a configuração do webhook."}`,
       )
 
       await load()
@@ -244,6 +271,8 @@ export default function WhatsAppSettings({
         signupState.current.phoneNumberId = assets?.phone_number_id
 
         signupState.current.wabaId = assets?.waba_id
+        if (message.event === "FINISH_WHATSAPP_BUSINESS_APP_ONBOARDING")
+          signupState.current.connectionMode = "coexistence"
 
         void finishEmbeddedSignup()
       } catch {
@@ -256,16 +285,24 @@ export default function WhatsAppSettings({
     return () => window.removeEventListener("message", receiveSignupMessage)
   }, [finishEmbeddedSignup])
 
-  function startEmbeddedSignup() {
-    const { appId, configId } = data?.embeddedSignup ?? {}
+  function startEmbeddedSignup(connectionMode: "cloud_api" | "coexistence") {
+    const { appId } = data?.embeddedSignup ?? {}
+    const configId =
+      connectionMode === "coexistence"
+        ? data?.embeddedSignup.coexistenceConfigId
+        : data?.embeddedSignup.configId
 
     if (!window.FB || !appId || !configId) {
-      setError("O cadastro incorporado ainda não está configurado.")
+      setError(
+        connectionMode === "coexistence"
+          ? "A configuração de coexistência da Meta ainda não está definida no servidor."
+          : "O cadastro incorporado ainda não está configurado.",
+      )
 
       return
     }
 
-    signupState.current = {}
+    signupState.current = { connectionMode }
 
     setError("")
     setNote("")
@@ -298,7 +335,14 @@ export default function WhatsAppSettings({
 
         override_default_response_type: true,
 
-        extras: { setup: {} },
+        extras:
+          connectionMode === "coexistence"
+            ? {
+                setup: {},
+                featureType: "whatsapp_business_app_onboarding",
+                sessionInfoVersion: "3",
+              }
+            : { setup: {} },
       },
     )
   }
@@ -333,6 +377,9 @@ export default function WhatsAppSettings({
     ready.verifyToken &&
     ready.encryptionKey
   )
+  const canConnectWithCoexistence = !!(
+    canConnect && data?.embeddedSignup.coexistenceConfigId
+  )
 
   const label = !i
     ? "Não conectado"
@@ -346,7 +393,10 @@ export default function WhatsAppSettings({
         <div>
           <p className="eyebrow green">CANAIS DE ATENDIMENTO</p>
           <h2>WhatsApp Business</h2>
-          <p>Conecte seu número oficial e prepare seu canal de atendimento para trabalhar com o AV Flow CRM.</p>
+          <p>
+            Conecte seu número oficial e prepare seu canal de atendimento para
+            trabalhar com o AV Flow CRM.
+          </p>
         </div>
         <span className={`tag ${i?.status === "connected" ? "ok" : "warning"}`}>
           {data ? label : "Verificando"}
@@ -361,8 +411,20 @@ export default function WhatsAppSettings({
       {i && (
         <div className="whatsapp-connected">
           <span className="whatsapp-connected-mark">✓</span>
-          <span><b>Número conectado</b><small>{i.displayPhoneNumber ?? i.phoneNumberId}</small></span>
-          {i.errorSummary && <span className="whatsapp-connection-issue">Verifique a conexão no WhatsApp Business.</span>}
+          <span>
+            <b>Número conectado</b>
+            <small>
+              {i.displayPhoneNumber ?? i.phoneNumberId} ·{" "}
+              {i.connectionMode === "coexistence"
+                ? "WhatsApp Business + AV Flow"
+                : "Cloud API"}
+            </small>
+          </span>
+          {i.errorSummary && (
+            <span className="whatsapp-connection-issue">
+              Verifique a conexão no WhatsApp Business.
+            </span>
+          )}
         </div>
       )}
       {i && isAdmin && (
@@ -374,16 +436,25 @@ export default function WhatsAppSettings({
       {!i && (
         <div className="whatsapp-connect-panel">
           <div className="whatsapp-benefits">
-            <span><b>Plataforma oficial</b><small>Conexão da sua conta empresarial pela Meta</small></span>
-            <span><b>Autorização segura</b><small>Você aprova o acesso diretamente com a Meta</small></span>
-            <span><b>Sem QR Code</b><small>Integração oficial, sem automação não autorizada</small></span>
+            <span>
+              <b>Plataforma oficial</b>
+              <small>Conexão da sua conta empresarial pela Meta</small>
+            </span>
+            <span>
+              <b>Autorização segura</b>
+              <small>Você aprova o acesso diretamente com a Meta</small>
+            </span>
+            <span>
+              <b>Sem QR Code</b>
+              <small>Integração oficial, sem automação não autorizada</small>
+            </span>
           </div>
           {isAdmin ? (
             <div className="whatsapp-connect-action">
               <button
                 className="button"
                 type="button"
-                onClick={startEmbeddedSignup}
+                onClick={() => startEmbeddedSignup("cloud_api")}
                 disabled={busy || !sdkReady || !canConnect}
               >
                 {busy
@@ -391,17 +462,41 @@ export default function WhatsAppSettings({
                   : !canConnect
                     ? "Conexão indisponível no momento"
                     : sdkReady
-                      ? "Conectar com a Meta"
+                      ? "Conectar WhatsApp Business (Cloud API)"
                       : "Preparando conexão…"}
               </button>
-              <p>Você será direcionado à Meta para autorizar sua conta WhatsApp Business.</p>
+              <button
+                className="button secondary"
+                type="button"
+                onClick={() => startEmbeddedSignup("coexistence")}
+                disabled={busy || !sdkReady || !canConnectWithCoexistence}
+              >
+                {canConnectWithCoexistence
+                  ? "Conectar mantendo o WhatsApp Business App"
+                  : "Coexistência ainda não configurada"}
+              </button>
+              <p>
+                Escolha Cloud API para uso no AV Flow, ou coexistência para
+                continuar usando o WhatsApp Business App com o mesmo número.
+              </p>
+              {data?.embeddedSignup.coexistenceConfigId && (
+                <p className="muted">
+                  A disponibilidade da coexistência depende da elegibilidade da
+                  empresa e da configuração aprovada pela Meta.
+                </p>
+              )}
             </div>
           ) : (
-            <p className="muted">Peça ao administrador da empresa para conectar o número.</p>
+            <p className="muted">
+              Peça ao administrador da empresa para conectar o número.
+            </p>
           )}
         </div>
       )}
-      <p className="whatsapp-footnote">A conexão usa a plataforma oficial do WhatsApp Business. Não utiliza QR Code nem automação do WhatsApp Web.</p>
+      <p className="whatsapp-footnote">
+        A conexão usa a plataforma oficial do WhatsApp Business. Não utiliza QR
+        Code nem automação do WhatsApp Web.
+      </p>
     </section>
   )
 }

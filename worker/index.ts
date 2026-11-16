@@ -33,6 +33,8 @@ export interface Env {
 
   META_CONFIG_ID?: string
 
+  META_COEXISTENCE_CONFIG_ID?: string
+
   META_APP_SECRET?: string
 
   META_VERIFY_TOKEN?: string

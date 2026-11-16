@@ -122,6 +122,7 @@ const graphMessage = (result: GraphResult) =>
 type WaMessage = {
   id?: string
   from?: string
+  to?: string
   timestamp?: string
   type?: string
 
@@ -151,6 +152,8 @@ type WaValue = {
   contacts?: Array<{ wa_id?: string; profile?: { name?: string } }>
 
   messages?: WaMessage[]
+
+  message_echoes?: WaMessage[]
 
   statuses?: WaStatus[]
 
@@ -269,6 +272,7 @@ async function handleInbound(
   integration: Integration,
   value: WaValue,
   m: WaMessage,
+  direction: "inbound" | "outbound" = "inbound",
 ) {
   const waId = m.from?.replace(/\D/g, "")
 
@@ -307,6 +311,7 @@ async function handleInbound(
     : new Date().toISOString()
 
   const { type, body } = describeMessage(m)
+  const inbound = direction === "inbound"
 
   const batch: D1PreparedStatement[] = []
 
@@ -338,19 +343,46 @@ async function handleInbound(
 
   batch.push(
     env.DB.prepare(
-      "INSERT INTO messages(id,organization_id,conversation_id,external_id,direction,type,body,status,external_created_at) VALUES(?,?,?,?,'inbound',?,?,'received',?)",
+      "INSERT OR IGNORE INTO messages(id,organization_id,conversation_id,external_id,direction,type,body,status,external_created_at) VALUES(?,?,?,?,?,?,?, ?,?)",
     )
 
-      .bind(uid(), org, conversationId, m.id, type, body, at),
+      .bind(
+        uid(),
+        org,
+        conversationId,
+        m.id,
+        direction,
+        type,
+        body,
+        inbound ? "received" : "sent",
+        at,
+      ),
 
     env.DB.prepare(
-      "UPDATE conversations SET last_message_at=?,unread_count=unread_count+1,status='open',updated_at=CURRENT_TIMESTAMP WHERE id=? AND organization_id=?",
-    ).bind(at, conversationId, org),
+      "UPDATE conversations SET last_message_at=?,unread_count=unread_count+?,status='open',updated_at=CURRENT_TIMESTAMP WHERE id=? AND organization_id=?",
+    ).bind(at, inbound ? 1 : 0, conversationId, org),
   )
 
   await env.DB.batch(batch)
 
   return { conversationId, type, externalId: m.id }
+}
+
+async function handleMessageEcho(
+  env: Env,
+  integration: Integration,
+  value: WaValue,
+  echo: WaMessage,
+) {
+  if (!echo.to) throw new Error("eco sem destinatário")
+
+  await handleInbound(
+    env,
+    integration,
+    value,
+    { ...echo, from: echo.to },
+    "outbound",
+  )
 }
 
 async function handleStatus(env: Env, integration: Integration, s: WaStatus) {
@@ -458,6 +490,13 @@ export async function handleMetaPayload(
           },
         })),
 
+        ...(change.field === "smb_message_echoes"
+          ? (value.message_echoes ?? []).map((item) => ({
+              key: `${item.id}:echo`,
+              run: () => handleMessageEcho(env, integration!, value, item),
+            }))
+          : []),
+
         ...(value.statuses ?? []).map((item) => ({
           key: `${item.id}:${item.status}`,
           run: () => handleStatus(env, integration!, item),
@@ -523,11 +562,20 @@ export async function handleMetaPayload(
 async function connect(
   env: Env,
   auth: Session,
-  body: { phoneNumberId?: string; wabaId?: string; accessToken?: string },
+  body: {
+    phoneNumberId?: string
+    wabaId?: string
+    accessToken?: string
+    connectionMode?: "cloud_api" | "coexistence"
+  },
 ) {
   const phoneNumberId = body.phoneNumberId?.trim(),
     wabaId = body.wabaId?.trim(),
-    token = body.accessToken?.trim()
+    token = body.accessToken?.trim(),
+    connectionMode = body.connectionMode ?? "cloud_api"
+
+  if (connectionMode !== "cloud_api" && connectionMode !== "coexistence")
+    return json({ error: "Modo de conexão inválido." }, 400)
 
   if (
     !phoneNumberId ||
@@ -605,13 +653,20 @@ async function connect(
   const integrationId = sameNumber?.id ?? uid()
 
   if (sameNumber) {
-    await env.DB.prepare(`UPDATE integrations SET status='connected',external_account_id=?,display_phone_number=?,access_token_enc=?,error_code=NULL,error_summary=NULL,
+    await env.DB.prepare(`UPDATE integrations SET status='connected',external_account_id=?,display_phone_number=?,access_token_enc=?,connection_mode=?,error_code=NULL,error_summary=NULL,
       connected_at=CURRENT_TIMESTAMP,updated_at=CURRENT_TIMESTAMP WHERE id=? AND organization_id=?`)
-      .bind(wabaId, display, encrypted, integrationId, auth.organizationId)
+      .bind(
+        wabaId,
+        display,
+        encrypted,
+        connectionMode,
+        integrationId,
+        auth.organizationId,
+      )
       .run()
   } else {
-    await env.DB.prepare(`INSERT INTO integrations(id,organization_id,provider,status,external_account_id,phone_number_id,display_phone_number,access_token_enc,connected_at)
-      VALUES(?,?,'meta_whatsapp','connected',?,?,?,?,CURRENT_TIMESTAMP)`)
+    await env.DB.prepare(`INSERT INTO integrations(id,organization_id,provider,status,external_account_id,phone_number_id,display_phone_number,access_token_enc,connection_mode,connected_at)
+      VALUES(?,?,'meta_whatsapp','connected',?,?,?,?,?,CURRENT_TIMESTAMP)`)
       .bind(
         integrationId,
         auth.organizationId,
@@ -619,6 +674,7 @@ async function connect(
         phoneNumberId,
         display,
         encrypted,
+        connectionMode,
       )
       .run()
   }
@@ -657,13 +713,22 @@ async function connect(
 async function connectWithEmbeddedSignup(
   env: Env,
   auth: Session,
-  body: { code?: string; phoneNumberId?: string; wabaId?: string },
+  body: {
+    code?: string
+    phoneNumberId?: string
+    wabaId?: string
+    connectionMode?: "cloud_api" | "coexistence"
+  },
 ) {
   const code = body.code?.trim()
 
-  const phoneNumberId = body.phoneNumberId?.trim()
+  let phoneNumberId = body.phoneNumberId?.trim()
 
   const wabaId = body.wabaId?.trim()
+  const connectionMode = body.connectionMode ?? "cloud_api"
+
+  if (connectionMode !== "cloud_api" && connectionMode !== "coexistence")
+    return json({ error: "Modo de conexão inválido." }, 400)
 
   if (!code || code.length > 4096 || /\s/.test(code))
     return json(
@@ -672,17 +737,26 @@ async function connectWithEmbeddedSignup(
     )
 
   if (
-    !phoneNumberId ||
-    !/^\d{5,25}$/.test(phoneNumberId) ||
+    (connectionMode === "cloud_api" &&
+      (!phoneNumberId || !/^\d{5,25}$/.test(phoneNumberId))) ||
     !wabaId ||
     !/^\d{5,25}$/.test(wabaId)
   )
     return json(
       {
         error:
-          "A Meta não retornou o Phone Number ID e o WABA ID. Inicie o cadastro novamente.",
+          "A Meta não retornou os identificadores necessários. Inicie o cadastro novamente.",
       },
       400,
+    )
+
+  if (connectionMode === "coexistence" && !env.META_COEXISTENCE_CONFIG_ID)
+    return json(
+      {
+        error:
+          "A configuração de coexistência da Meta ainda não está definida.",
+      },
+      503,
     )
 
   if (!env.META_APP_ID || !env.META_APP_SECRET || !env.ENCRYPTION_KEY)
@@ -737,10 +811,49 @@ async function connectWithEmbeddedSignup(
     )
   }
 
+  if (!phoneNumberId && connectionMode === "coexistence") {
+    const numbers = await graphFetch(
+      env,
+      `${wabaId}/phone_numbers?fields=id&limit=100`,
+      result.access_token,
+    ).catch(() => null)
+
+    if (!numbers)
+      return json(
+        {
+          error:
+            "Não foi possível consultar os números da conta WhatsApp na Meta. Tente novamente.",
+        },
+        502,
+      )
+
+    if (!numbers.ok)
+      return json(
+        {
+          error: `Não foi possível localizar o número na conta WhatsApp: ${graphMessage(numbers)}`,
+        },
+        400,
+      )
+
+    const phoneNumbers = numbers.data.data as Array<{ id?: string }> | undefined
+
+    if (phoneNumbers?.length !== 1 || !phoneNumbers[0]?.id)
+      return json(
+        {
+          error:
+            "A conta selecionada precisa ter exatamente um número elegível para concluir a coexistência.",
+        },
+        400,
+      )
+
+    phoneNumberId = phoneNumbers[0].id
+  }
+
   return connect(env, auth, {
     phoneNumberId,
     wabaId,
     accessToken: result.access_token,
+    connectionMode,
   })
 }
 
@@ -902,7 +1015,7 @@ export async function whatsappRoutes(
   ) {
     if (path === "/api/integrations/whatsapp" && request.method === "GET") {
       const integration =
-        await env.DB.prepare(`SELECT status,phone_number_id phoneNumberId,display_phone_number displayPhoneNumber,error_summary errorSummary,connected_at connectedAt
+        await env.DB.prepare(`SELECT status,phone_number_id phoneNumberId,display_phone_number displayPhoneNumber,connection_mode connectionMode,error_summary errorSummary,connected_at connectedAt
         FROM integrations WHERE organization_id=? AND provider='meta_whatsapp' AND status!='disconnected' ORDER BY created_at DESC LIMIT 1`)
           .bind(org)
           .first()
@@ -915,6 +1028,7 @@ export async function whatsappRoutes(
         embeddedSignup: {
           appId: env.META_APP_ID ?? null,
           configId: env.META_CONFIG_ID ?? null,
+          coexistenceConfigId: env.META_COEXISTENCE_CONFIG_ID ?? null,
         },
 
         serverReady: {
@@ -935,7 +1049,16 @@ export async function whatsappRoutes(
       path === "/api/integrations/whatsapp/embedded-signup" &&
       request.method === "POST"
     )
-      return connectWithEmbeddedSignup(env, auth, await request.json())
+      return connectWithEmbeddedSignup(
+        env,
+        auth,
+        (await request.json()) as {
+          code?: string
+          phoneNumberId?: string
+          wabaId?: string
+          connectionMode?: "cloud_api" | "coexistence"
+        },
+      )
 
     if (path === "/api/integrations/whatsapp" && request.method === "POST")
       return connect(env, auth, await request.json())
