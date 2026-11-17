@@ -31,6 +31,8 @@ type ProductRow = {
   specs: string
   priceText: string | null
   salePriceText: string | null
+  cardInstallments: string | null
+  cardInstallmentText: string | null
   status: string
   authorized: number
   availability: string
@@ -38,7 +40,7 @@ type ProductRow = {
   updatedAt: string
 }
 
-const PRODUCT_COLUMNS = `id,name,model,version,brand,category,description,specs,price_text priceText,sale_price_text salePriceText,status,authorized_for_sale authorized,availability,availability_updated_at availabilityAt,updated_at updatedAt`
+const PRODUCT_COLUMNS = `id,name,model,version,brand,category,description,specs,price_text priceText,sale_price_text salePriceText,card_installments cardInstallments,card_installment_text cardInstallmentText,status,authorized_for_sale authorized,availability,availability_updated_at availabilityAt,updated_at updatedAt`
 
 function parseSpecs(raw: unknown): Spec[] {
   let value = raw
@@ -208,7 +210,7 @@ export async function catalogRoutes(
     const id = uid()
 
     await env.DB.prepare(
-      "INSERT INTO catalog_products(id,organization_id,name,model,version,brand,category,description,specs,price_text,sale_price_text,status,authorized_for_sale,created_by) VALUES(?,?,?,?,?,?,?,?,?,?,?,'approved',1,?)",
+      "INSERT INTO catalog_products(id,organization_id,name,model,version,brand,category,description,specs,price_text,sale_price_text,card_installments,card_installment_text,status,authorized_for_sale,created_by) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,'approved',1,?)",
     )
       .bind(
         id,
@@ -222,6 +224,8 @@ export async function catalogRoutes(
         JSON.stringify(parseSpecs(body.specs)),
         clip(body.priceText, 80),
         clip(body.salePriceText, 80),
+        clip(body.cardInstallments, 10),
+        clip(body.cardInstallmentText, 80),
         auth.userId,
       )
       .run()
@@ -287,6 +291,8 @@ export async function catalogRoutes(
       text("description", "description", 2000)
       text("priceText", "price_text", 80)
       text("salePriceText", "sale_price_text", 80)
+      text("cardInstallments", "card_installments", 10)
+      text("cardInstallmentText", "card_installment_text", 80)
     } catch (error) {
       return json({ error: (error as Error).message }, 400)
     }
@@ -544,13 +550,13 @@ export const catalogTools = [
     type: "function",
     name: "enviarFotoProduto",
     description:
-      "Envia ao cliente, pelo WhatsApp, fotos aprovadas de um produto autorizado. Só diga que enviou se o retorno tiver enviadas > 0.",
+      "Envia ao cliente, pelo WhatsApp, fotos aprovadas de um produto autorizado (por padrão envie todas). Só diga que enviou se o retorno tiver enviadas > 0.",
     parameters: {
       type: "object",
       additionalProperties: false,
       properties: {
         busca: { type: "string", description: "Nome ou modelo do produto" },
-        quantidade: { type: "integer", description: "De 1 a 3 fotos" },
+        quantidade: { type: "integer", description: "Use 10 para enviar todas as fotos cadastradas" },
       },
       required: ["busca", "quantidade"],
     },
@@ -592,6 +598,16 @@ async function findProducts(env: Env, organizationId: string, query: string) {
   return rows.filter((p) => keys(p).some((k) => k.includes(wanted) || wanted.includes(k)))
 }
 
+const FINANCING_NOTE =
+  "Financiamos em até 36x pela Sicredi, com ou sem entrada, somente para pessoas com nome limpo, sem restrições."
+
+const cardLine = (p: ProductRow) =>
+  p.cardInstallments && p.cardInstallmentText
+    ? `${p.cardInstallments}x de ${p.cardInstallmentText} no cartão`
+    : p.cardInstallmentText
+      ? `No cartão: ${p.cardInstallmentText}`
+      : ""
+
 const summarize = (p: ProductRow) => ({
   nome: p.name,
   modelo: p.model,
@@ -602,6 +618,9 @@ const summarize = (p: ProductRow) => ({
   especificacoes: parseSpecs(p.specs),
   preco: p.priceText,
   precoOferta: p.salePriceText,
+  precoAVista: "Valores à vista são no Pix ou dinheiro.",
+  precoCartao: cardLine(p) || null,
+  financiamento: FINANCING_NOTE,
   ...(p.salePriceText
     ? {
         instrucaoPreco:
@@ -631,10 +650,12 @@ function productCaption(p: ProductRow) {
       (s) => (s ? [`${s.label}: ${s.value}`] : []),
     ),
     p.salePriceText && p.priceText
-      ? `De ~${p.priceText}~ por *${p.salePriceText}* 🔥`
+      ? `De ~${p.priceText}~ por *${p.salePriceText}* 🔥 (à vista no Pix ou dinheiro)`
       : p.salePriceText || p.priceText
-        ? `Valor: ${p.salePriceText || p.priceText}`
+        ? `Valor: ${p.salePriceText || p.priceText} (à vista no Pix ou dinheiro)`
         : "",
+    cardLine(p),
+    FINANCING_NOTE,
   ]
     .filter(Boolean)
     .join("\n")
@@ -671,8 +692,8 @@ export async function sendCatalog(
       conversationId,
       state,
       product,
-      1,
-      () => productCaption(product),
+      MAX_IMAGES_PER_PRODUCT,
+      (index) => (index === 0 ? productCaption(product) : ""),
       sender,
     )
 
@@ -845,7 +866,10 @@ export async function runCatalogTool(
   }
 
   if (name === "enviarFotoProduto") {
-    const quantity = Math.max(1, Math.min(3, Math.round(Number(args.quantidade) || 1)))
+    const quantity = Math.max(
+      1,
+      Math.min(MAX_IMAGES_PER_PRODUCT, Math.round(Number(args.quantidade) || MAX_IMAGES_PER_PRODUCT)),
+    )
 
     return {
       modelo: product.model,
