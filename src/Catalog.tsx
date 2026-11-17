@@ -5,7 +5,7 @@ import { api, errorMessage } from "./api";
 type Spec = { label: string; value: string };
 type Product = {
   id: string; name: string; model: string; version: string | null; brand: string | null; category: string | null;
-  description: string | null; specs: Spec[]; priceText: string | null; status: "draft" | "approved" | "rejected";
+  description: string | null; specs: Spec[]; priceText: string | null; salePriceText: string | null; status: "draft" | "approved" | "rejected";
   authorized: boolean; availability: "unknown" | "in_stock" | "out_of_stock"; availabilityAt: string | null;
   stockConfirmed: boolean; images: Array<{ id: string; isPrimary: boolean }>;
 };
@@ -26,7 +26,7 @@ function ProductForm({ product, busy, onSubmit, onCancel }: {
     const f = new FormData(event.currentTarget);
     onSubmit({
       name: f.get("name"), model: f.get("model"), version: f.get("version"), brand: f.get("brand"),
-      category: f.get("category"), priceText: f.get("priceText"), description: f.get("description"),
+      category: f.get("category"), priceText: f.get("priceText"), salePriceText: f.get("salePriceText"), description: f.get("description"),
       specs: textToSpecs(String(f.get("specs") ?? "")),
     });
     if (!product) event.currentTarget.reset();
@@ -39,7 +39,8 @@ function ProductForm({ product, busy, onSubmit, onCancel }: {
       <label>Versão<input name="version" maxLength={80} defaultValue={product?.version ?? ""} /></label>
       <label>Marca<input name="brand" maxLength={80} defaultValue={product?.brand ?? ""} /></label>
       <label>Categoria<input name="category" maxLength={80} defaultValue={product?.category ?? ""} /></label>
-      <label>Preço (texto exibido ao cliente, opcional)<input name="priceText" maxLength={80} defaultValue={product?.priceText ?? ""} placeholder="Ex.: R$ 12.990" /></label>
+      <label>Preço normal (opcional)<input name="priceText" maxLength={80} defaultValue={product?.priceText ?? ""} placeholder="Ex.: R$ 12.990" /></label>
+      <label>Preço de oferta (opcional, preencha quando houver promoção)<input name="salePriceText" maxLength={80} defaultValue={product?.salePriceText ?? ""} placeholder="Ex.: R$ 11.490" /></label>
       <label>Descrição<textarea name="description" rows={3} maxLength={2000} defaultValue={product?.description ?? ""} /></label>
       <label>Especificações (uma por linha, no formato "Item: valor")
         <textarea name="specs" rows={6} defaultValue={specsToText(product?.specs ?? [])} placeholder={"Motor: 800W\nAutonomia: 60 km\nBateria: Chumbo-ácido 60V"} />
@@ -112,7 +113,7 @@ export default function Catalog() {
           <div className="panel-title">
             <div>
               <h2>{p.name} <small>{p.model}{p.version ? ` · ${p.version}` : ""}</small></h2>
-              <p>{[p.brand, p.category, p.priceText].filter(Boolean).join(" · ") || "Sem detalhes comerciais"}</p>
+              <p>{[p.brand, p.category, p.salePriceText ? `${p.priceText ?? ""} → ${p.salePriceText}` : p.priceText].filter(Boolean).join(" · ") || "Sem detalhes comerciais"}</p>
             </div>
             <div className="catalog-tags">
               <span className={p.status === "approved" ? "tag" : "tag warning"}>{statusText[p.status]}</span>

@@ -30,6 +30,7 @@ type ProductRow = {
   description: string | null
   specs: string
   priceText: string | null
+  salePriceText: string | null
   status: string
   authorized: number
   availability: string
@@ -37,7 +38,7 @@ type ProductRow = {
   updatedAt: string
 }
 
-const PRODUCT_COLUMNS = `id,name,model,version,brand,category,description,specs,price_text priceText,status,authorized_for_sale authorized,availability,availability_updated_at availabilityAt,updated_at updatedAt`
+const PRODUCT_COLUMNS = `id,name,model,version,brand,category,description,specs,price_text priceText,sale_price_text salePriceText,status,authorized_for_sale authorized,availability,availability_updated_at availabilityAt,updated_at updatedAt`
 
 function parseSpecs(raw: unknown): Spec[] {
   let value = raw
@@ -203,7 +204,7 @@ export async function catalogRoutes(
     const id = uid()
 
     await env.DB.prepare(
-      "INSERT INTO catalog_products(id,organization_id,name,model,version,brand,category,description,specs,price_text,created_by) VALUES(?,?,?,?,?,?,?,?,?,?,?)",
+      "INSERT INTO catalog_products(id,organization_id,name,model,version,brand,category,description,specs,price_text,sale_price_text,created_by) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
     )
       .bind(
         id,
@@ -216,6 +217,7 @@ export async function catalogRoutes(
         clip(body.description, 2000),
         JSON.stringify(parseSpecs(body.specs)),
         clip(body.priceText, 80),
+        clip(body.salePriceText, 80),
         auth.userId,
       )
       .run()
@@ -249,6 +251,7 @@ export async function catalogRoutes(
       text("category", "category", 80)
       text("description", "description", 2000)
       text("priceText", "price_text", 80)
+      text("salePriceText", "sale_price_text", 80)
     } catch (error) {
       return json({ error: (error as Error).message }, 400)
     }
@@ -563,6 +566,13 @@ const summarize = (p: ProductRow) => ({
   descricao: p.description,
   especificacoes: parseSpecs(p.specs),
   preco: p.priceText,
+  precoOferta: p.salePriceText,
+  ...(p.salePriceText
+    ? {
+        instrucaoPreco:
+          "Há promoção: informe o preço normal (preco) e o preço de oferta (precoOferta) ao cliente.",
+      }
+    : {}),
   estoque: stockConfirmed(p)
     ? `disponível (confirmado em ${p.availabilityAt})`
     : "não confirmado: não afirme que há estoque, diga que vai confirmar com a equipe",
@@ -585,7 +595,11 @@ function productCaption(p: ProductRow) {
     ...CAPTION_SPECS.map((label) => specs.find((s) => s.label === label)).flatMap(
       (s) => (s ? [`${s.label}: ${s.value}`] : []),
     ),
-    p.priceText ? `Valor: ${p.priceText}` : "",
+    p.salePriceText && p.priceText
+      ? `De ~${p.priceText}~ por *${p.salePriceText}* 🔥`
+      : p.salePriceText || p.priceText
+        ? `Valor: ${p.salePriceText || p.priceText}`
+        : "",
   ]
     .filter(Boolean)
     .join("\n")
