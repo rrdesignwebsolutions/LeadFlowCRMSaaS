@@ -703,6 +703,43 @@ async function api(
     return json({ ...data, subscription: await subscriptionFor(env, auth.organizationId) })
   }
 
+  if (url.pathname === "/api/me/email" && request.method === "PUT") {
+    const body = await request.json<{ email?: string; password?: string }>().catch(() => ({}) as { email?: string; password?: string })
+    const email = body.email?.toLowerCase().trim() ?? ""
+
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) || email.length > 160)
+      return json({ error: "Informe um e-mail válido." }, 400)
+
+    const user = await env.DB.prepare(
+      "SELECT password_hash,password_salt FROM users WHERE id=?",
+    )
+      .bind(auth.userId)
+      .first<{ password_hash: string; password_salt: string }>()
+
+    if (
+      !user ||
+      !constantTimeEqual(
+        await passwordHash(body.password ?? "", user.password_salt),
+        user.password_hash,
+      )
+    )
+      return json({ error: "Senha atual incorreta." }, 403)
+
+    const taken = await env.DB.prepare(
+      "SELECT 1 x FROM users WHERE email=? COLLATE NOCASE AND id<>?",
+    )
+      .bind(email, auth.userId)
+      .first()
+
+    if (taken) return json({ error: "Este e-mail já está em uso." }, 409)
+
+    await env.DB.prepare("UPDATE users SET email=? WHERE id=?")
+      .bind(email, auth.userId)
+      .run()
+
+    return json({ ok: true, email })
+  }
+
   if (!(await hasAccess(env, auth.organizationId)))
     return json(
       {

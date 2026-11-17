@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react"
+import { useCallback, useEffect, useState, type FormEvent } from "react"
 
 import {
   Boxes,
@@ -71,6 +71,57 @@ const initials = (name: string) =>
     .slice(0, 2)
     .map((p) => p[0]!.toUpperCase())
     .join("")
+
+function EmailChange({ current, onChanged }: { current: string; onChanged: () => void }) {
+  const [open, setOpen] = useState(false)
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState("")
+
+  async function submit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    const f = new FormData(event.currentTarget)
+    setBusy(true)
+    setError("")
+
+    try {
+      await api("/api/me/email", {
+        method: "PUT",
+        body: { email: f.get("email"), password: f.get("password") },
+      })
+      setOpen(false)
+      onChanged()
+    } catch (e) {
+      setError(errorMessage(e))
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  if (!open)
+    return (
+      <button type="button" className="button secondary" onClick={() => setOpen(true)}>
+        Trocar e-mail
+      </button>
+    )
+
+  return (
+    <form className="form" onSubmit={submit}>
+      <label>
+        Novo e-mail
+        <input name="email" type="email" required maxLength={160} defaultValue={current} />
+      </label>
+      <label>
+        Senha atual (para confirmar)
+        <input name="password" type="password" required autoComplete="current-password" />
+      </label>
+      {error && <p className="auth-error" role="alert">{error}</p>}
+      <div className="catalog-actions">
+        <button className="button" disabled={busy}>Salvar e-mail</button>
+        <button type="button" className="button secondary" onClick={() => setOpen(false)}>Cancelar</button>
+      </div>
+    </form>
+  )
+}
 
 function Empty({
   icon,
@@ -681,6 +732,9 @@ function Shell({
                   <dt>Papel</dt>
                   <dd>{roleLabels[me.role] ?? me.role}</dd>
                 </dl>
+                <div style={{ padding: "0 24px 20px" }}>
+                  <EmailChange current={me.email} onChanged={reload} />
+                </div>
               </section>
               <BrandingSettings
                 branding={branding}
