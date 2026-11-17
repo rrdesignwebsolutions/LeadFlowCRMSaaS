@@ -219,7 +219,7 @@ export async function autoReply(
   const context = await env.DB.prepare(
     `SELECT l.id leadId,l.status,l.ai_handoff_at handoffAt,o.name organization,ct.name contactName,
       (SELECT u.name FROM messages hm JOIN users u ON u.id=hm.sent_by WHERE hm.organization_id=c.organization_id AND hm.conversation_id=c.id AND hm.sent_by IS NOT NULL ORDER BY hm.created_at DESC,hm.rowid DESC LIMIT 1) attendantName,
-      (SELECT 1 FROM messages m WHERE m.organization_id=c.organization_id AND m.conversation_id=c.id AND m.direction='outbound' AND m.sent_by IS NOT NULL AND m.created_at > datetime('now', ?)) humanActive
+      (SELECT 1 FROM messages m WHERE m.organization_id=c.organization_id AND m.conversation_id=c.id AND m.direction='outbound' AND m.is_ai=0 AND m.status<>'failed' AND datetime(COALESCE(m.external_created_at,m.created_at)) > datetime('now', ?)) humanActive
      FROM conversations c
      JOIN leads l ON l.contact_id=c.contact_id AND l.organization_id=c.organization_id
      JOIN contacts ct ON ct.id=c.contact_id AND ct.organization_id=c.organization_id
@@ -317,6 +317,15 @@ export async function autoReply(
   const reply = clip(decision.reply, 1500)
 
   if (!reply) return
+
+  // Um humano pode ter assumido enquanto a IA gerava a resposta.
+  const takenOver = await env.DB.prepare(
+    `SELECT 1 x FROM messages WHERE organization_id=? AND conversation_id=? AND direction='outbound' AND is_ai=0 AND status<>'failed' AND datetime(COALESCE(external_created_at,created_at)) > datetime('now', ?)`,
+  )
+    .bind(organizationId, conversationId, `-${HUMAN_PAUSE_MINUTES} minutes`)
+    .first()
+
+  if (takenOver) return
 
   const sent = await sendText(
     env,
