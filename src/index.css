@@ -224,14 +224,14 @@ h3 { font: 700 14px var(--font-display); }
 .billing-note h3 { font-size: 12px; }
 .billing-note p { margin-top: 4px; color: var(--color-muted); font-size: 11px; line-height: 1.6; }
 .inbox-page-heading { margin-bottom: 18px; }
-.app-shell.inbox-mode { width: 100%; height: 100dvh; min-height: 0; overflow: hidden; }
+.app-shell.inbox-mode { position: fixed; inset: 0; width: 100%; height: 100%; min-height: 0; overflow: hidden; }
 .app-shell.inbox-mode > .sidebar { display: none; }
-.app-shell.inbox-mode > main { width: 100%; height: 100dvh; min-height: 0; margin: 0; overflow: hidden; }
+.app-shell.inbox-mode > main { width: 100%; height: 100%; min-height: 0; margin: 0; overflow: hidden; }
 .app-shell.inbox-mode > main > header { display: none; }
 .content.inbox-content {
   width: 100%;
   max-width: none;
-  height: 100dvh;
+  height: 100%;
   min-height: 0;
   display: flex;
   flex-direction: column;
