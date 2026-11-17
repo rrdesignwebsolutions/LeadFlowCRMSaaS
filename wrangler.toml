@@ -17,7 +17,7 @@ migrations_dir = "migrations"
 crons = ["0 6 * * *"]
 
 [vars]
-APP_ORIGIN = "https://leadflowcrmsaas.contato-167.workers.dev"
+APP_ORIGIN = "https://avflowcrm.com.br"
 META_APP_ID = "2102727550349167"
 META_CONFIG_ID = "1746703063104476"
 INFINITEPAY_ESSENCIAL_URL = "https://invoice.infinitepay.io/plans/ruanramosdigital/inBSB8ZFu5"

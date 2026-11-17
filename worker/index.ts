@@ -18,7 +18,7 @@ import {
   emailVerificationEnabled,
   sendVerificationEmail,
 } from "./verification"
-import { handleMetaPayload, whatsappRoutes } from "./whatsapp"
+import { cleanupPendingWhatsappSignups, handleMetaPayload, whatsappRoutes } from "./whatsapp"
 
 export interface Env {
   DB: D1Database
@@ -1173,5 +1173,6 @@ export default {
   async scheduled(_event: ScheduledController, env: Env, ctx: ExecutionContext) {
     ctx.waitUntil(cleanupInactiveAccounts(env))
     ctx.waitUntil(sendBillingReminders(env))
+    ctx.waitUntil(cleanupPendingWhatsappSignups(env))
   },
 } satisfies ExportedHandler<Env>

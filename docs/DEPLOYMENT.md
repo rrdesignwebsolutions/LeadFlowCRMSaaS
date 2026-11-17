@@ -7,8 +7,8 @@
 3. Copie o `database_id` retornado para `wrangler.toml`.
 4. Aplique: `pnpm db:migrate:remote`.
 5. Cadastre segredos: `pnpm wrangler secret put SESSION_SECRET`, `META_APP_SECRET`, `META_VERIFY_TOKEN` e `ENCRYPTION_KEY`.
-6. Ajuste `APP_ORIGIN`, execute `pnpm build` e `pnpm cf:deploy`.
-7. Configure domínio customizado e confirme HTTPS, cookies, CSP e logs sem payloads sensíveis.
+6. Configure o domínio customizado `avflowcrm.com.br` e confirme HTTPS, cookies, CSP e logs sem payloads sensíveis.
+7. Confirme `APP_ORIGIN = "https://avflowcrm.com.br"`, execute `pnpm build` e `pnpm cf:deploy`. A origem também é usada na validação de requisições e nos links enviados por e-mail e ao checkout; após o deploy, acesse o app pelo domínio configurado, não pelo endereço antigo `workers.dev`.
 
 Para desenvolvimento, copie `.dev.vars.example` para `.dev.vars` (arquivo ignorado) e use valores locais. Nunca commite segredos.
 
@@ -23,11 +23,13 @@ Esta integração usa os links recorrentes criados no painel, não a API de chec
 
 ## Meta — checklist manual obrigatório
 
-No Meta for Developers: crie um app do tipo apropriado ao caso vigente; adicione WhatsApp; configure empresa, domínios e a URL pública `https://leadflowcrmsaas.contato-167.workers.dev/privacy.html`; registre a URL pública `/api/webhooks/meta`; use o mesmo verify token do secret; assine `messages` e `account_update`; configure o Embedded Signup v4; solicite permissões e acesso avançado exigidos pela documentação atual; conclua verificação empresarial e requisitos de Tech Provider quando aplicáveis. Defina `META_APP_ID` e `META_CONFIG_ID` nas vars do Worker e `META_APP_SECRET` como secret. O fluxo troca o código de uso único no backend e guarda o token resultante criptografado com `ENCRYPTION_KEY`.
+No Meta for Developers: crie um app do tipo apropriado ao caso vigente; adicione WhatsApp; configure empresa, domínio `avflowcrm.com.br` e a URL pública `https://avflowcrm.com.br/privacy.html`; registre a URL pública `https://avflowcrm.com.br/api/webhooks/meta`; use o mesmo verify token do secret; assine `messages` e `account_update`; configure o Embedded Signup v4; solicite permissões e acesso avançado exigidos pela documentação atual; conclua verificação empresarial e requisitos de Tech Provider quando aplicáveis. Confirme o novo domínio e a URL do webhook no painel antes de substituir qualquer configuração existente. Defina `META_APP_ID` e `META_CONFIG_ID` nas vars do Worker e `META_APP_SECRET` como secret. O fluxo troca o código de uso único no backend e guarda o token resultante criptografado com `ENCRYPTION_KEY`.
 
 Para oferecer coexistência com o WhatsApp Business App, use o `config_id` da configuração que a Meta forneceu com `featureType=whatsapp_business_app_onboarding`, `sessionInfoVersion=3` e Embedded Signup v4. O AV Flow usa `META_COEXISTENCE_CONFIG_ID` quando definido, ou `META_CONFIG_ID` como alternativa. No painel da Meta, assine os campos `messages`, `account_update`, `smb_message_echoes`, `history` e `smb_app_state_sync`; o Worker assina a conta de mensagens de cada cliente em `subscribed_apps`. A assinatura da conta não confirma que os campos estejam configurados no painel.
 
 O espelhamento de mensagens novas usa `smb_message_echoes`, mas edição e exclusão de mensagens, importação de histórico e sincronização de contatos ainda não são suportadas. Os eventos `history` e `smb_app_state_sync` recebidos são registrados como falhos, sem seus dados pessoais; não execute as chamadas `smb_app_data` até implementar e validar o processamento, pois a Meta informa que cada sincronização só pode ser solicitada uma vez e deve ser iniciada em até 24 horas após o onboarding. A Meta precisa aprovar a elegibilidade da plataforma/empresa; o link e a configuração, sozinhos, não concedem essa aprovação.
+
+Quando a conta retornada na coexistência contém vários números, o cliente seleciona o número no AV Flow. O token fica cifrado no servidor e a seleção fica válida por 15 minutos, vinculada à organização e ao usuário; registros expirados são excluídos pela rotina diária ou no próximo acesso da organização. A migração `0009_whatsapp_pending_signup.sql` é obrigatória antes do deploy. Eventos com falha retornam HTTP 500 para permitir reenvio pela Meta e são deduplicados por integração; isso não substitui uma fila persistente nem garante que os reenvios ocorram indefinidamente.
 
 Teste primeiro com o número de teste e use o fluxo Embedded Signup v4 integrado em Configurações. O callback fornece WABA ID, Phone Number ID e código de autorização de curta duração; o Worker troca o código imediatamente. No Login do Facebook para Empresas, habilite as opções OAuth e Login com SDK JavaScript exigidas pela documentação atual e permita o domínio HTTPS do app. Confirme `whatsapp_business_management` e `whatsapp_business_messaging` conforme o fluxo aprovado. A implementação está no repositório; App Review, acesso avançado, elegibilidade e liberação para produção dependem da Meta.
 

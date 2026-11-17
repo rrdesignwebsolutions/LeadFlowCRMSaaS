@@ -164,6 +164,12 @@ type WaValue = {
 
 type Integration = { id: string; organization_id: string }
 
+export async function cleanupPendingWhatsappSignups(env: Env) {
+  await env.DB.prepare(
+    "DELETE FROM whatsapp_pending_signups WHERE expires_at<=CURRENT_TIMESTAMP",
+  ).run()
+}
+
 export function accountUpdateAction(
   event: string | undefined,
   partnerAppId: string | undefined,
@@ -280,6 +286,12 @@ async function handleInbound(
 
   const org = integration.organization_id
 
+  const duplicate = await env.DB.prepare(
+    "SELECT conversation_id FROM messages WHERE organization_id=? AND external_id=?",
+  ).bind(org, m.id).first<{ conversation_id: string }>()
+  if (duplicate)
+    return { conversationId: duplicate.conversation_id, type: m.type ?? "unknown", externalId: m.id, inserted: false }
+
   const profileName =
     value.contacts
       ?.find((c) => c.wa_id === waId)
@@ -359,13 +371,13 @@ async function handleInbound(
       ),
 
     env.DB.prepare(
-      "UPDATE conversations SET last_message_at=?,unread_count=unread_count+?,status='open',updated_at=CURRENT_TIMESTAMP WHERE id=? AND organization_id=?",
-    ).bind(at, inbound ? 1 : 0, conversationId, org),
+      "UPDATE conversations SET last_message_at=CASE WHEN last_message_at IS NULL OR last_message_at<? THEN ? ELSE last_message_at END,unread_count=unread_count+?,status='open',updated_at=CURRENT_TIMESTAMP WHERE id=? AND organization_id=? AND changes()>0",
+    ).bind(at, at, inbound ? 1 : 0, conversationId, org),
   )
 
-  await env.DB.batch(batch)
+  const results = await env.DB.batch(batch)
 
-  return { conversationId, type, externalId: m.id }
+  return { conversationId, type, externalId: m.id, inserted: !!results[results.length - 2]?.meta.changes }
 }
 
 async function handleMessageEcho(
@@ -446,6 +458,7 @@ export async function handleMetaPayload(
 ) {
   if (payload.object !== "whatsapp_business_account") return
 
+  let processingFailed = false
   for (const entry of payload.entry ?? [])
     for (const [changeIndex, change] of (entry.changes ?? []).entries()) {
       const value = change.value
@@ -454,28 +467,35 @@ export async function handleMetaPayload(
 
       const phone = value.metadata?.phone_number_id
 
-      const integration = phone
+      const byPhone = phone
         ? await env.DB.prepare(
-            "SELECT id,organization_id FROM integrations WHERE provider='meta_whatsapp' AND phone_number_id=? AND status='connected'",
+            "SELECT id,organization_id FROM integrations WHERE provider='meta_whatsapp' AND phone_number_id=? AND external_account_id=? AND status='connected'",
           )
 
-            .bind(phone)
+            .bind(phone, entry.id ?? "")
             .first<Integration>()
-        : change.field === "account_update" && entry.id
+        : null
+      const accountIntegrations = !phone && change.field === "account_update" && entry.id
           ? await env.DB.prepare(
               "SELECT id,organization_id FROM integrations WHERE provider='meta_whatsapp' AND external_account_id=? AND status IN ('connected','error')",
             )
               .bind(entry.id)
-              .first<Integration>()
+              .all<Integration>()
           : null
+      const integrations: Array<Integration | null> = byPhone
+        ? [byPhone]
+        : accountIntegrations?.results?.length
+          ? accountIntegrations.results
+          : [null]
 
+      for (const integration of integrations) {
       const items = [
         ...(value.messages ?? []).map((item) => ({
           key: `${item.id}:message`,
           run: async () => {
             const result = await handleInbound(env, integration!, value, item)
 
-            if (result.type === "text")
+            if (result.inserted && result.type === "text")
               after(
                 autoReply(
                   env,
@@ -525,11 +545,15 @@ export async function handleMetaPayload(
         const eventId = uid()
 
         const inserted =
-          await env.DB.prepare(`INSERT OR IGNORE INTO webhook_events(id,provider,external_event_id,phone_number_id,organization_id,payload_hash,status)
-        VALUES(?,'meta_whatsapp',?,?,?,?,?)`)
+          await env.DB.prepare(`INSERT INTO webhook_events(id,provider,external_event_id,phone_number_id,organization_id,payload_hash,status)
+        VALUES(?,'meta_whatsapp',?,?,?,?,?)
+        ON CONFLICT(provider,external_event_id) DO UPDATE SET status='received',error_summary=NULL,received_at=CURRENT_TIMESTAMP
+        WHERE excluded.organization_id IS NOT NULL AND
+          (webhook_events.status='failed' OR
+          (webhook_events.status='received' AND webhook_events.received_at<datetime('now','-5 minutes')))`)
             .bind(
               eventId,
-              item.key,
+              `${integration?.id ?? "unmatched"}:${item.key}`,
               phone ?? null,
               integration?.organization_id ?? null,
               payloadHash,
@@ -539,13 +563,18 @@ export async function handleMetaPayload(
 
         if (!inserted.meta.changes || !integration) continue
 
+        const event = await env.DB.prepare(
+          "SELECT id FROM webhook_events WHERE provider='meta_whatsapp' AND external_event_id=?",
+        ).bind(`${integration.id}:${item.key}`).first<{ id: string }>()
+        if (!event) throw new Error("Evento de webhook não encontrado após registro")
+
         try {
           await item.run()
 
           await env.DB.prepare(
             "UPDATE webhook_events SET status='processed',processed_at=CURRENT_TIMESTAMP WHERE id=?",
           )
-            .bind(eventId)
+            .bind(event.id)
             .run()
         } catch (error) {
           console.error(
@@ -561,12 +590,15 @@ export async function handleMetaPayload(
               error instanceof Error
                 ? error.message.slice(0, 200)
                 : "erro desconhecido",
-              eventId,
+              event.id,
             )
             .run()
+          processingFailed = true
         }
       }
+      }
     }
+  if (processingFailed) throw new Error("Falha ao processar eventos do WhatsApp; reenvio necessário")
 }
 
 async function connect(
@@ -839,7 +871,7 @@ async function connectWithEmbeddedSignup(
   if (connectionMode === "coexistence") {
     const numbers = await graphFetch(
       env,
-      `${wabaId}/phone_numbers?fields=id&limit=100`,
+      `${wabaId}/phone_numbers?fields=id,display_phone_number,verified_name&limit=100`,
       result.access_token,
     ).catch(() => null)
 
@@ -860,7 +892,7 @@ async function connectWithEmbeddedSignup(
         400,
       )
 
-    const phoneNumbers = numbers.data.data as Array<{ id?: string }> | undefined
+    const phoneNumbers = numbers.data.data as Array<{ id?: string; display_phone_number?: string; verified_name?: string }> | undefined
     const paging = numbers.data.paging as { next?: string } | undefined
 
     if (!Array.isArray(phoneNumbers))
@@ -877,16 +909,36 @@ async function connectWithEmbeddedSignup(
           { error: "Não foi possível confirmar que o número pertence à conta WhatsApp selecionada." },
           400,
         )
-    } else if (phoneNumbers.length !== 1 || !phoneNumbers[0]?.id || paging?.next)
+    } else if (paging?.next)
       return json(
         {
           error:
-            "A conta selecionada precisa ter exatamente um número elegível para concluir a coexistência.",
+            "A conta possui mais números do que o limite suportado. Contate o suporte para concluir a conexão.",
         },
         400,
       )
-
-    else phoneNumberId = phoneNumbers[0].id
+    else if (phoneNumbers.length > 1) {
+      if (phoneNumbers.some((number) => !number.id || !/^\d{5,25}$/.test(number.id)))
+        return json({ error: "A Meta retornou identificadores de número inválidos." }, 502)
+      const pendingId = uid()
+      await env.DB.prepare(
+        "DELETE FROM whatsapp_pending_signups WHERE organization_id=? AND (user_id=? OR expires_at<=CURRENT_TIMESTAMP)",
+      ).bind(auth.organizationId, auth.userId).run()
+      await env.DB.prepare(
+        "INSERT INTO whatsapp_pending_signups(id,organization_id,user_id,waba_id,access_token_enc,expires_at) VALUES(?,?,?,?,?,datetime('now','+15 minutes'))",
+      ).bind(pendingId, auth.organizationId, auth.userId, wabaId, await encryptToken(env, result.access_token)).run()
+      return json({
+        selectionRequired: true,
+        pendingId,
+        phoneNumbers: phoneNumbers.map((number) => ({
+          id: number.id,
+          displayPhoneNumber: number.display_phone_number ?? number.id,
+          verifiedName: number.verified_name ?? null,
+        })),
+      })
+    } else if (!phoneNumbers[0]?.id) {
+      return json({ error: "A Meta não retornou um número para esta conta WhatsApp." }, 400)
+    } else phoneNumberId = phoneNumbers[0].id
   }
 
   return connect(env, auth, {
@@ -895,6 +947,44 @@ async function connectWithEmbeddedSignup(
     accessToken: result.access_token,
     connectionMode,
   })
+}
+
+async function selectSignupNumber(
+  env: Env,
+  auth: Session,
+  body: { pendingId?: string; phoneNumberId?: string },
+) {
+  if (!body.pendingId || !/^[0-9a-f-]{36}$/i.test(body.pendingId) ||
+      !body.phoneNumberId || !/^\d{5,25}$/.test(body.phoneNumberId))
+    return json({ error: "Seleção de número inválida." }, 400)
+
+  const pending = await env.DB.prepare(
+    "SELECT waba_id,access_token_enc FROM whatsapp_pending_signups WHERE id=? AND organization_id=? AND user_id=? AND expires_at>CURRENT_TIMESTAMP",
+  ).bind(body.pendingId, auth.organizationId, auth.userId).first<{ waba_id: string; access_token_enc: string }>()
+  if (!pending) return json({ error: "A seleção expirou ou não pertence à sua sessão. Inicie novamente o cadastro." }, 404)
+
+  const token = await decryptToken(env, pending.access_token_enc)
+  let numbers: GraphResult
+  try {
+    numbers = await graphFetch(env, `${pending.waba_id}/phone_numbers?fields=id&limit=100`, token)
+  } catch {
+    return json({ error: "Não foi possível consultar os números na Meta. Tente novamente." }, 502)
+  }
+  if (!numbers.ok) return json({ error: `Não foi possível validar o número: ${graphMessage(numbers)}` }, 400)
+  const data = numbers.data.data
+  if (!Array.isArray(data) || !data.some((item: { id?: string }) => item.id === body.phoneNumberId))
+    return json({ error: "O número selecionado não pertence à conta WhatsApp autorizada." }, 400)
+
+  const response = await connect(env, auth, {
+    phoneNumberId: body.phoneNumberId,
+    wabaId: pending.waba_id,
+    accessToken: token,
+    connectionMode: "coexistence",
+  })
+  if (response.ok)
+    await env.DB.prepare("DELETE FROM whatsapp_pending_signups WHERE id=? AND organization_id=? AND user_id=?")
+      .bind(body.pendingId, auth.organizationId, auth.userId).run()
+  return response
 }
 
 export async function sendText(
@@ -1051,9 +1141,13 @@ export async function whatsappRoutes(
 
   if (
     path === "/api/integrations/whatsapp" ||
-    path === "/api/integrations/whatsapp/embedded-signup"
+    path === "/api/integrations/whatsapp/embedded-signup" ||
+    path === "/api/integrations/whatsapp/embedded-signup/select-number"
   ) {
     if (path === "/api/integrations/whatsapp" && request.method === "GET") {
+      await env.DB.prepare(
+        "DELETE FROM whatsapp_pending_signups WHERE organization_id=? AND expires_at<=CURRENT_TIMESTAMP",
+      ).bind(org).run()
       const integration =
         await env.DB.prepare(`SELECT status,phone_number_id phoneNumberId,display_phone_number displayPhoneNumber,connection_mode connectionMode,error_summary errorSummary,connected_at connectedAt
         FROM integrations WHERE organization_id=? AND provider='meta_whatsapp' AND status!='disconnected' ORDER BY created_at DESC LIMIT 1`)
@@ -1100,6 +1194,9 @@ export async function whatsappRoutes(
           connectionMode?: "cloud_api" | "coexistence"
         },
       )
+
+    if (path === "/api/integrations/whatsapp/embedded-signup/select-number" && request.method === "POST")
+      return selectSignupNumber(env, auth, await request.json())
 
     if (path === "/api/integrations/whatsapp" && request.method === "POST")
       return connect(env, auth, await request.json())

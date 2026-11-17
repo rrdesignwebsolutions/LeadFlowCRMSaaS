@@ -42,6 +42,10 @@ type SignupState = {
 
 type FacebookLoginResponse = { authResponse?: { code?: string } }
 
+type SignupResult =
+  | { selectionRequired: true; pendingId: string; phoneNumbers: Array<{ id: string; displayPhoneNumber: string; verifiedName: string | null }> }
+  | { selectionRequired?: false; displayPhoneNumber: string; subscribed: boolean; subscribeError?: string }
+
 declare global {
   interface Window {
     FB?: {
@@ -88,6 +92,8 @@ export default function WhatsAppSettings({
   const [busy, setBusy] = useState(false)
 
   const [sdkReady, setSdkReady] = useState(false)
+  const [pendingSelection, setPendingSelection] = useState<Extract<SignupResult, { selectionRequired: true }> | null>(null)
+  const [selectedNumber, setSelectedNumber] = useState("")
 
   const signupState = useRef<SignupState>({})
   const signupTimeout = useRef<ReturnType<typeof setTimeout> | null>(null)
@@ -121,6 +127,15 @@ export default function WhatsAppSettings({
   useEffect(() => {
     void load()
   }, [load])
+
+  const showConnectionResult = useCallback(async (result: Exclude<SignupResult, { selectionRequired: true }>, mode: "cloud_api" | "coexistence") => {
+    const modeLabel = mode === "coexistence" ? "modo de coexistência" : "modo Cloud API"
+    setNote(result.subscribed
+      ? `Número ${result.displayPhoneNumber} conectado em ${modeLabel}.${mode === "coexistence" ? " Confirme no painel da Meta os campos de webhook necessários. O histórico e os contatos antigos do WhatsApp Business App ainda não são importados." : ""}`
+      : `Número ${result.displayPhoneNumber} autorizado, mas a conexão está com erro porque a Meta não confirmou a assinatura dos eventos. ${result.subscribeError ?? "Verifique a configuração do webhook."}`)
+    await load()
+    onChanged()
+  }, [load, onChanged])
 
   useEffect(() => {
     const appId = data?.embeddedSignup.appId
@@ -195,11 +210,7 @@ export default function WhatsAppSettings({
     setNote("")
 
     try {
-      const result = await api<{
-        displayPhoneNumber: string
-        subscribed: boolean
-        subscribeError?: string
-      }>(
+      const result = await api<SignupResult>(
         "/api/integrations/whatsapp/embedded-signup",
 
         {
@@ -213,23 +224,12 @@ export default function WhatsAppSettings({
         },
       )
 
-      const modeLabel =
-        signup.connectionMode === "coexistence"
-          ? "modo de coexistência"
-          : "modo Cloud API"
-
-      setNote(
-        result.subscribed
-          ? `Número ${result.displayPhoneNumber} conectado em ${modeLabel}.${
-              signup.connectionMode === "coexistence"
-                ? " Confirme no painel da Meta os campos de webhook necessários. O histórico e os contatos antigos do WhatsApp Business App ainda não são importados."
-                : ""
-            }`
-          : `Número ${result.displayPhoneNumber} autorizado, mas a conexão está com erro porque a Meta não confirmou a assinatura dos eventos. ${result.subscribeError ?? "Verifique a configuração do webhook."}`,
-      )
-
-      await load()
-      onChanged()
+      if (result.selectionRequired) {
+        setPendingSelection(result)
+        setSelectedNumber("")
+      } else {
+        await showConnectionResult(result, signup.connectionMode ?? "cloud_api")
+      }
     } catch (e) {
       setError(errorMessage(e))
     } finally {
@@ -237,7 +237,25 @@ export default function WhatsAppSettings({
 
       setBusy(false)
     }
-  }, [clearSignupTimeout, load, onChanged])
+  }, [clearSignupTimeout, showConnectionResult])
+
+  async function completeNumberSelection() {
+    if (!pendingSelection || !selectedNumber) return
+    setBusy(true)
+    setError("")
+    try {
+      const result = await api<Exclude<SignupResult, { selectionRequired: true }>>(
+        "/api/integrations/whatsapp/embedded-signup/select-number",
+        { method: "POST", body: { pendingId: pendingSelection.pendingId, phoneNumberId: selectedNumber } },
+      )
+      setPendingSelection(null)
+      await showConnectionResult(result, "coexistence")
+    } catch (e) {
+      setError(errorMessage(e))
+    } finally {
+      setBusy(false)
+    }
+  }
 
   useEffect(() => {
     function receiveSignupMessage(event: MessageEvent) {
@@ -473,7 +491,27 @@ export default function WhatsAppSettings({
         </button>
       )}
 
-      {!i && (
+      {!i && pendingSelection && (
+        <div className="whatsapp-connect-panel">
+          <div className="whatsapp-connect-action">
+            <label htmlFor="whatsapp-number-selection">Selecione o número autorizado na Meta</label>
+            <select id="whatsapp-number-selection" value={selectedNumber} onChange={(event) => setSelectedNumber(event.target.value)} disabled={busy}>
+              <option value="">Selecione um número</option>
+              {pendingSelection.phoneNumbers.map((number) => (
+                <option key={number.id} value={number.id}>{number.displayPhoneNumber}{number.verifiedName ? ` — ${number.verifiedName}` : ""}</option>
+              ))}
+            </select>
+            <p>A seleção fica disponível por 15 minutos.</p>
+            <button type="button" className="button" disabled={busy || !selectedNumber} onClick={() => void completeNumberSelection()}>
+              {busy ? "Concluindo conexão…" : "Concluir conexão"}
+            </button>
+            <button type="button" className="button secondary" disabled={busy} onClick={() => { setPendingSelection(null); setSelectedNumber(""); setError("") }}>
+              Cancelar seleção
+            </button>
+          </div>
+        </div>
+      )}
+      {!i && !pendingSelection && (
         <div className="whatsapp-connect-panel">
           <div className="whatsapp-benefits">
             <span>
