@@ -19,17 +19,19 @@ const textToSpecs = (text: string): Spec[] =>
   }).filter((s) => s.label && s.value);
 
 function ProductForm({ product, busy, onSubmit, onCancel }: {
-  product?: Product; busy: boolean; onSubmit: (body: Record<string, unknown>) => void; onCancel?: () => void;
+  product?: Product; busy: boolean; onSubmit: (body: Record<string, unknown>, files: File[]) => void; onCancel?: () => void;
 }) {
   function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    const f = new FormData(event.currentTarget);
+    const form = event.currentTarget;
+    const f = new FormData(form);
+    const files = f.getAll("photos").filter((x): x is File => x instanceof File && x.size > 0);
     onSubmit({
       name: f.get("name"), model: f.get("model"), version: f.get("version"), brand: f.get("brand"),
       category: f.get("category"), priceText: f.get("priceText"), salePriceText: f.get("salePriceText"), description: f.get("description"),
       specs: textToSpecs(String(f.get("specs") ?? "")),
-    });
-    if (!product) event.currentTarget.reset();
+    }, files);
+    if (!product) form.reset();
   }
 
   return (
@@ -45,6 +47,11 @@ function ProductForm({ product, busy, onSubmit, onCancel }: {
       <label>Especificações (uma por linha, no formato "Item: valor")
         <textarea name="specs" rows={6} defaultValue={specsToText(product?.specs ?? [])} placeholder={"Motor: 800W\nAutonomia: 60 km\nBateria: Chumbo-ácido 60V"} />
       </label>
+      {!product && (
+        <label>Fotos da moto (JPG ou PNG, até 5 MB cada, a primeira será a principal)
+          <input type="file" name="photos" accept="image/jpeg,image/png" multiple />
+        </label>
+      )}
       <div className="catalog-actions">
         <button className="button" disabled={busy}>{product ? "Salvar" : "Cadastrar produto"}</button>
         {onCancel && <button type="button" className="button secondary" onClick={onCancel}>Cancelar</button>}
@@ -77,17 +84,26 @@ export default function Catalog() {
   const update = (id: string, body: Record<string, unknown>) =>
     run(() => api(`/api/catalog/products/${id}`, { method: "PUT", body }));
 
+  const sendImage = async (id: string, file: File) => {
+    const body = new FormData();
+    body.set("file", file);
+    const response = await fetch(`/api/catalog/products/${id}/images`, { method: "POST", body, credentials: "same-origin" });
+    const data = await response.json().catch(() => ({})) as { error?: string };
+    if (!response.ok) throw new Error(data.error ?? `Falha ao enviar a foto ${file.name}.`);
+  };
+
+  async function create(body: Record<string, unknown>, files: File[]) {
+    await run(async () => {
+      const { id } = await api<{ id: string }>("/api/catalog/products", { method: "POST", body });
+      for (const file of files.slice(0, 10)) await sendImage(id, file);
+    });
+  }
+
   async function upload(id: string, event: ChangeEvent<HTMLInputElement>) {
     const input = event.currentTarget;
     const file = input.files?.[0];
     if (!file) return;
-    await run(async () => {
-      const body = new FormData();
-      body.set("file", file);
-      const response = await fetch(`/api/catalog/products/${id}/images`, { method: "POST", body, credentials: "same-origin" });
-      const data = await response.json().catch(() => ({})) as { error?: string };
-      if (!response.ok) throw new Error(data.error ?? "Falha ao enviar a foto.");
-    });
+    await run(() => sendImage(id, file));
     input.value = "";
   }
 
@@ -102,7 +118,7 @@ export default function Catalog() {
       {canEdit && (
         <section className="panel spaced">
           <div className="panel-title"><div><h2><Boxes size={18} /> Novo produto</h2><p>Todo produto novo começa como rascunho e não autorizado.</p></div></div>
-          <ProductForm busy={busy} onSubmit={(body) => void run(() => api("/api/catalog/products", { method: "POST", body }))} />
+          <ProductForm busy={busy} onSubmit={(body, files) => void create(body, files)} />
         </section>
       )}
 
