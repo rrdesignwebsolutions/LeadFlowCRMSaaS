@@ -35,6 +35,8 @@ type Message = {
 
   direction: "inbound" | "outbound"
 
+  type: string
+
   body: string | null
 
   status: string
@@ -395,7 +397,24 @@ export default function Inbox({
                   className={`inbox-message-row ${message.direction}`}
                 >
                   <div className={`inbox-bubble ${message.direction}`}>
-                    <p>{message.body}</p>
+                    {message.hasMedia &&
+                    (message.type === "image" ||
+                      message.type === "sticker") ? (
+                      <img
+                        className="inbox-image"
+                        src={`/api/messages/${message.id}/media?inline=1`}
+                        alt={message.type === "sticker" ? "Figurinha" : "Imagem"}
+                        loading="lazy"
+                      />
+                    ) : null}
+                    {message.body &&
+                    !(
+                      message.hasMedia &&
+                      (message.body === "[Imagem]" ||
+                        message.body === "[Figurinha]")
+                    ) ? (
+                      <p>{message.body}</p>
+                    ) : null}
                     {message.hasMedia ? (
                       <a
                         className="inbox-download"

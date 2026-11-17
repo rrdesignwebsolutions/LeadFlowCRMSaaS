@@ -1193,7 +1193,12 @@ async function requestHistorySync(env: Env, auth: Session) {
   return json({ ok: true, requestId })
 }
 
-async function downloadMedia(env: Env, auth: Session, messageId: string) {
+async function downloadMedia(
+  env: Env,
+  auth: Session,
+  messageId: string,
+  inline = false,
+) {
   const row = await env.DB.prepare(
     `SELECT m.media_id mediaId,m.media_filename filename,m.media_mime mime,m.type,i.access_token_enc token
     FROM messages m JOIN conversations c ON c.id=m.conversation_id AND c.organization_id=m.organization_id
@@ -1238,12 +1243,16 @@ async function downloadMedia(env: Env, auth: Session, messageId: string) {
   const name = (row.filename ?? `${row.type}-${messageId.slice(0, 8)}.${ext}`)
     .replace(/[\r\n"\\/]/g, "_")
 
+  const showInline =
+    inline && /^image\/(jpeg|png|webp|gif)$/.test(mime.split(";")[0]!.trim())
+
   return new Response(file.body, {
     headers: {
       "content-type": mime,
-      "content-disposition": `attachment; filename="${name.replace(/[^\x20-\x7e]/g, "_")}"; filename*=UTF-8''${encodeURIComponent(name)}`,
+      "content-disposition": `${showInline ? "inline" : "attachment"}; filename="${name.replace(/[^\x20-\x7e]/g, "_")}"; filename*=UTF-8''${encodeURIComponent(name)}`,
       "x-content-type-options": "nosniff",
-      "cache-control": "private, no-store",
+      "content-security-policy": "default-src 'none'; sandbox",
+      "cache-control": "private, max-age=3600",
     },
   })
 }
@@ -1497,7 +1506,12 @@ export async function whatsappRoutes(
   const mediaMatch = path.match(/^\/api\/messages\/([\w-]+)\/media$/)
 
   if (mediaMatch && request.method === "GET")
-    return downloadMedia(env, auth, mediaMatch[1]!)
+    return downloadMedia(
+      env,
+      auth,
+      mediaMatch[1]!,
+      new URL(request.url).searchParams.get("inline") === "1",
+    )
 
   const match = path.match(/^\/api\/conversations\/([\w-]+)\/(messages|read)$/)
 

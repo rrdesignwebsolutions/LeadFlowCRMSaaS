@@ -303,6 +303,7 @@ h3 { font: 700 14px var(--font-display); }
 .inbox-bubble.inbound { border-top-left-radius: 4px; background: #fff; }
 .inbox-bubble.outbound { border-color: #d4eee0; border-top-right-radius: 4px; background: #e4f7eb; }
 .inbox-bubble p { color: #26342c; font-size: 13px; line-height: 1.5; white-space: pre-wrap; overflow-wrap: anywhere; }
+.inbox-image { display: block; max-width: 100%; max-height: 360px; margin-bottom: 4px; border-radius: 8px; object-fit: cover; }
 .inbox-download { display: inline-flex; align-items: center; gap: 6px; margin-top: 6px; padding: 7px 10px; border-radius: 8px; color: #0f7a50; background: rgb(18 140 91 / 10%); font-size: 12px; font-weight: 600; text-decoration: none; overflow-wrap: anywhere; }
 .inbox-download:hover { background: rgb(18 140 91 / 18%); }
 .inbox-message-meta { display: flex; align-items: center; justify-content: flex-end; gap: 3px; min-height: 15px; margin-top: 3px; color: #89968e; font-size: 9px; }
