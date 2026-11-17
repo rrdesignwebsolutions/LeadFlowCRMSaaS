@@ -106,11 +106,13 @@ export default function Catalog() {
     });
   }
 
-  async function upload(id: string, event: ChangeEvent<HTMLInputElement>) {
+  async function upload(id: string, event: ChangeEvent<HTMLInputElement>, room: number) {
     const input = event.currentTarget;
-    const file = input.files?.[0];
-    if (!file) return;
-    await run(() => sendImage(id, file));
+    const files = Array.from(input.files ?? []).slice(0, room);
+    if (!files.length) return;
+    await run(async () => {
+      for (const file of files) await sendImage(id, file);
+    });
     input.value = "";
   }
 
@@ -170,7 +172,7 @@ export default function Catalog() {
               </figure>
             ))}
             {canEdit && storageReady && p.images.length < 10 && (
-              <label className="catalog-add-photo"><Upload size={16} /> Foto<input type="file" accept="image/jpeg,image/png" hidden disabled={busy} onChange={(e) => void upload(p.id, e)} /></label>
+              <label className="catalog-add-photo"><Upload size={16} /> Fotos<input type="file" accept="image/jpeg,image/png" multiple hidden disabled={busy} onChange={(e) => void upload(p.id, e, 10 - p.images.length)} /></label>
             )}
           </div>
 
