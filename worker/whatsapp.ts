@@ -130,9 +130,16 @@ type WaMessage = {
 
   text?: { body?: string }
 
-  image?: { caption?: string }
-  video?: { caption?: string }
-  document?: { caption?: string }
+  image?: { id?: string; caption?: string; mime_type?: string }
+  video?: { id?: string; caption?: string; mime_type?: string }
+  document?: {
+    id?: string
+    caption?: string
+    filename?: string
+    mime_type?: string
+  }
+  audio?: { id?: string; mime_type?: string }
+  sticker?: { id?: string; mime_type?: string }
 
   button?: { text?: string }
 
@@ -285,6 +292,7 @@ function describeMessage(m: WaMessage) {
     m.interactive?.list_reply?.title ??
     [
       labels[type] ?? `[${type}]`,
+      m.document?.filename,
       m.image?.caption ?? m.video?.caption ?? m.document?.caption,
     ]
       .filter(Boolean)
@@ -344,6 +352,8 @@ async function handleInbound(
     : new Date().toISOString()
 
   const { type, body } = describeMessage(m)
+  const media = m.document ?? m.image ?? m.video ?? m.audio ?? m.sticker
+  const mediaFilename = m.document?.filename?.slice(0, 255) ?? null
   const inbound = direction === "inbound"
 
   const batch: D1PreparedStatement[] = []
@@ -376,7 +386,7 @@ async function handleInbound(
 
   batch.push(
     env.DB.prepare(
-      "INSERT OR IGNORE INTO messages(id,organization_id,conversation_id,external_id,direction,type,body,status,external_created_at) VALUES(?,?,?,?,?,?,?, ?,?)",
+      "INSERT OR IGNORE INTO messages(id,organization_id,conversation_id,external_id,direction,type,body,status,external_created_at,media_id,media_filename,media_mime) VALUES(?,?,?,?,?,?,?, ?,?,?,?,?)",
     )
 
       .bind(
@@ -389,6 +399,9 @@ async function handleInbound(
         body,
         inbound ? "received" : "sent",
         at,
+        media?.id ?? null,
+        mediaFilename,
+        media?.mime_type ?? null,
       ),
 
     env.DB.prepare(
@@ -1175,6 +1188,61 @@ async function requestHistorySync(env: Env, auth: Session) {
   return json({ ok: true, requestId })
 }
 
+async function downloadMedia(env: Env, auth: Session, messageId: string) {
+  const row = await env.DB.prepare(
+    `SELECT m.media_id mediaId,m.media_filename filename,m.media_mime mime,m.type,i.access_token_enc token
+    FROM messages m JOIN conversations c ON c.id=m.conversation_id AND c.organization_id=m.organization_id
+    JOIN integrations i ON i.id=c.integration_id AND i.organization_id=c.organization_id
+    WHERE m.id=? AND m.organization_id=?`,
+  )
+    .bind(messageId, auth.organizationId)
+    .first<{
+      mediaId: string | null
+      filename: string | null
+      mime: string | null
+      type: string
+      token: string | null
+    }>()
+
+  if (!row?.mediaId) return json({ error: "Arquivo não encontrado." }, 404)
+
+  if (!row.token)
+    return json({ error: "WhatsApp desconectado. Reconecte para baixar." }, 409)
+
+  const token = await decryptToken(env, row.token)
+  const meta = await graphFetch(env, row.mediaId, token)
+  const url = typeof meta.data.url === "string" ? meta.data.url : null
+
+  if (!meta.ok || !url)
+    return json(
+      {
+        error:
+          "Não foi possível obter o arquivo. A Meta mantém mídias por 30 dias.",
+      },
+      502,
+    )
+
+  const file = await fetch(url, { headers: { authorization: `Bearer ${token}` } })
+
+  if (!file.ok || !file.body)
+    return json({ error: "Não foi possível baixar o arquivo da Meta." }, 502)
+
+  const mime =
+    row.mime ?? file.headers.get("content-type") ?? "application/octet-stream"
+  const ext = mime.split("/")[1]?.split(";")[0]?.replace(/[^\w]/g, "") || "bin"
+  const name = (row.filename ?? `${row.type}-${messageId.slice(0, 8)}.${ext}`)
+    .replace(/[\r\n"\\/]/g, "_")
+
+  return new Response(file.body, {
+    headers: {
+      "content-type": mime,
+      "content-disposition": `attachment; filename="${name.replace(/[^\x20-\x7e]/g, "_")}"; filename*=UTF-8''${encodeURIComponent(name)}`,
+      "x-content-type-options": "nosniff",
+      "cache-control": "private, no-store",
+    },
+  })
+}
+
 export async function sendText(
   env: Env,
   auth: Session,
@@ -1413,13 +1481,18 @@ export async function whatsappRoutes(
   if (path === "/api/conversations" && request.method === "GET") {
     return json(
       await env.DB.prepare(`SELECT c.id,c.unread_count unread,c.last_message_at lastMessageAt,ct.name,ct.phone_e164 phone,
-      (SELECT m.body FROM messages m WHERE m.conversation_id=c.id AND m.organization_id=c.organization_id ORDER BY COALESCE(m.external_created_at,m.created_at) DESC,m.rowid DESC LIMIT 1) preview
+      (SELECT m.body FROM messages m WHERE m.conversation_id=c.id AND m.organization_id=c.organization_id ORDER BY COALESCE(m.external_created_at,strftime('%Y-%m-%dT%H:%M:%fZ',m.created_at)) DESC,m.rowid DESC LIMIT 1) preview
       FROM conversations c JOIN contacts ct ON ct.id=c.contact_id AND ct.organization_id=c.organization_id
       WHERE c.organization_id=? ORDER BY c.last_message_at DESC LIMIT 200`)
         .bind(org)
         .all(),
     )
   }
+
+  const mediaMatch = path.match(/^\/api\/messages\/([\w-]+)\/media$/)
+
+  if (mediaMatch && request.method === "GET")
+    return downloadMedia(env, auth, mediaMatch[1]!)
 
   const match = path.match(/^\/api\/conversations\/([\w-]+)\/(messages|read)$/)
 
@@ -1455,8 +1528,8 @@ export async function whatsappRoutes(
 
   if (match[2] === "messages" && request.method === "GET") {
     const rows =
-      await env.DB.prepare(`SELECT id,direction,type,body,status,error_code errorCode,COALESCE(external_created_at,created_at) at
-      FROM messages WHERE organization_id=? AND conversation_id=? ORDER BY COALESCE(external_created_at,created_at) DESC,rowid DESC LIMIT 200`)
+      await env.DB.prepare(`SELECT id,direction,type,body,status,error_code errorCode,media_id IS NOT NULL hasMedia,media_filename mediaFilename,media_mime mediaMime,COALESCE(external_created_at,strftime('%Y-%m-%dT%H:%M:%fZ',created_at)) at
+      FROM messages WHERE organization_id=? AND conversation_id=? ORDER BY COALESCE(external_created_at,strftime('%Y-%m-%dT%H:%M:%fZ',created_at)) DESC,rowid DESC LIMIT 200`)
         .bind(org, conversationId)
         .all()
 

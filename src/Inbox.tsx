@@ -6,6 +6,7 @@ import {
   Check,
   CheckCheck,
   Circle,
+  Download,
   Info,
   MessageCircle,
   MoreVertical,
@@ -39,6 +40,10 @@ type Message = {
   status: string
 
   errorCode: string | null
+
+  hasMedia: number
+
+  mediaFilename: string | null
 
   at: string
 }
@@ -391,6 +396,16 @@ export default function Inbox({
                 >
                   <div className={`inbox-bubble ${message.direction}`}>
                     <p>{message.body}</p>
+                    {message.hasMedia ? (
+                      <a
+                        className="inbox-download"
+                        href={`/api/messages/${message.id}/media`}
+                        download
+                      >
+                        <Download size={15} />
+                        Baixar {message.mediaFilename ?? "arquivo"}
+                      </a>
+                    ) : null}
                     <span className="inbox-message-meta">
                       <time>{time(message.at)}</time>
                       {message.direction === "outbound" &&
