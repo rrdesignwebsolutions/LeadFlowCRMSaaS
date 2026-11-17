@@ -141,8 +141,10 @@ export default function Inbox({
 
   onRead,
   onExit,
+  isAdmin,
 }: {
   connected: boolean
+  isAdmin: boolean
 
   onRead: () => void
   onExit: () => void
@@ -169,6 +171,50 @@ export default function Inbox({
   const [members, setMembers] = useState<Member[]>([])
   const [assigning, setAssigning] = useState(false)
   const [assignmentNotice, setAssignmentNotice] = useState("")
+  const [contextMenu, setContextMenu] = useState<{ kind: "conversation" | "message"; id: string; x: number; y: number } | null>(null)
+
+  function showMenu(kind: "conversation" | "message", id: string, x: number, y: number) {
+    setContextMenu({ kind, id, x: Math.max(8, Math.min(x, window.innerWidth - 210)), y: Math.max(8, Math.min(y, window.innerHeight - 130)) })
+  }
+
+  useEffect(() => {
+    if (!contextMenu) return
+    const close = () => setContextMenu(null)
+    const escape = (event: KeyboardEvent) => { if (event.key === "Escape") close() }
+    window.addEventListener("click", close)
+    window.addEventListener("keydown", escape)
+    window.addEventListener("scroll", close, true)
+    return () => {
+      window.removeEventListener("click", close)
+      window.removeEventListener("keydown", escape)
+      window.removeEventListener("scroll", close, true)
+    }
+  }, [contextMenu])
+
+  async function markUnread(id: string) {
+    setContextMenu(null)
+    setError("")
+    try {
+      await api(`/api/conversations/${id}/unread`, { method: "POST" })
+      if (activeId === id) { setActiveId(null); setThread(null) }
+      await loadList()
+      onRead()
+    } catch (e) { setError(errorMessage(e)) }
+  }
+
+  async function removeItem(kind: "conversation" | "message", id: string) {
+    setContextMenu(null)
+    const label = kind === "conversation" ? "esta conversa e todo o histórico" : "esta mensagem"
+    if (!window.confirm(`Excluir ${label} permanentemente do AV Flow? Isso não apaga no WhatsApp do cliente.`)) return
+    setError("")
+    try {
+      await api(kind === "conversation" ? `/api/conversations/${id}` : `/api/messages/${id}`, { method: "DELETE" })
+      if (kind === "conversation" && activeId === id) { setActiveId(null); setThread(null) }
+      else if (activeId) await loadThread(activeId)
+      await loadList()
+      onRead()
+    } catch (e) { setError(errorMessage(e)) }
+  }
 
   useEffect(() => {
     api<Team>("/api/team")
@@ -415,14 +461,15 @@ export default function Inbox({
               const label = conversation.name ?? conversation.phone
 
               return (
+                <div className="inbox-conversation-wrap" key={conversation.id}>
                 <button
                   type="button"
                   role="listitem"
-                  key={conversation.id}
                   className={`inbox-conversation${
                     conversation.id === activeId ? " selected" : ""
                   }`}
                   onClick={() => void open(conversation.id)}
+                  onContextMenu={(event) => { event.preventDefault(); showMenu("conversation", conversation.id, event.clientX, event.clientY) }}
                 >
                   <span
                     className="inbox-avatar"
@@ -454,6 +501,11 @@ export default function Inbox({
                     </span>
                   </span>
                 </button>
+                <button type="button" className="inbox-item-menu" aria-label={`Opções da conversa ${label}`}
+                  onClick={(event) => { event.stopPropagation(); const box = event.currentTarget.getBoundingClientRect(); showMenu("conversation", conversation.id, box.left, box.bottom) }}>
+                  <MoreVertical size={16} />
+                </button>
+                </div>
               )
             })}
           </div>
@@ -553,8 +605,13 @@ export default function Inbox({
                 <div
                   key={message.id}
                   className={`inbox-message-row ${message.direction}`}
+                  onContextMenu={(event) => { if (isAdmin) { event.preventDefault(); showMenu("message", message.id, event.clientX, event.clientY) } }}
                 >
                   <div className={`inbox-bubble ${message.direction}`}>
+                    {isAdmin && <button type="button" className="inbox-message-menu" aria-label="Opções da mensagem"
+                      onClick={(event) => { event.stopPropagation(); const box = event.currentTarget.getBoundingClientRect(); showMenu("message", message.id, box.left, box.bottom) }}>
+                      <MoreVertical size={14} />
+                    </button>}
                     {message.hasMedia &&
                     (message.type === "image" ||
                       message.type === "sticker") ? (
@@ -634,6 +691,14 @@ export default function Inbox({
                       )}
                     </span>
                   </div>
+                  {contextMenu && (
+                    <div className="inbox-context-menu" role="menu" style={{ left: contextMenu.x, top: contextMenu.y }} onClick={(event) => event.stopPropagation()}>
+                      {contextMenu.kind === "conversation" && <button type="button" role="menuitem" onClick={() => void markUnread(contextMenu.id)}>Marcar como não lida</button>}
+                      {isAdmin && <button type="button" role="menuitem" className="destructive" onClick={() => void removeItem(contextMenu.kind, contextMenu.id)}>
+                        {contextMenu.kind === "conversation" ? "Excluir conversa" : "Excluir mensagem"}
+                      </button>}
+                    </div>
+                  )}
                 </div>
               ))}
               {thread?.messages.length === 0 && (

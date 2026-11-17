@@ -686,6 +686,7 @@ function Shell({
           {view === "inbox" && (
             <InboxView
               connected={wa.connected}
+              isAdmin={me.role === "admin"}
               onRead={() => void refreshWa()}
               onExit={() => setView("overview")}
             />
