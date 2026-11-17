@@ -204,7 +204,7 @@ export default function Inbox({
 
   async function removeItem(kind: "conversation" | "message", id: string) {
     setContextMenu(null)
-    const label = kind === "conversation" ? "esta conversa e todo o histórico" : "esta mensagem"
+    const label = kind === "conversation" ? "esta conversa, o histórico e as notas internas" : "esta mensagem"
     if (!window.confirm(`Excluir ${label} permanentemente do AV Flow? Isso não apaga no WhatsApp do cliente.`)) return
     setError("")
     try {
