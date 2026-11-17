@@ -320,6 +320,11 @@ h3 { font: 700 14px var(--font-display); }
 .inbox-composer input { min-width: 0; height: 42px; flex: 1; padding: 0 15px; border: 1px solid #e7ece9; border-radius: 22px; outline: 0; color: #26342c; background: #f7f9f8; font: inherit; font-size: 12px; }
 .inbox-composer input:focus { border-color: #a4d5ba; background: #fff; box-shadow: 0 0 0 3px rgb(23 166 106 / 8%); }
 .inbox-composer input:disabled { opacity: .7; }
+.inbox-attach { width: 38px; height: 38px; flex: 0 0 auto; display: inline-flex; align-items: center; justify-content: center; border: 0; border-radius: 50%; color: #6f7d75; background: transparent; }
+.inbox-attach:hover { color: #128c5b; background: #edf7f1; }
+.inbox-file-chip { display: inline-flex; max-width: 180px; align-items: center; gap: 6px; padding: 6px 8px 6px 10px; border-radius: 99px; color: #0f7a50; background: #e4f7eb; font-size: 11px; font-weight: 600; }
+.inbox-file-chip > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.inbox-file-chip button { display: inline-flex; border: 0; color: inherit; background: transparent; }
 .inbox-send { width: 42px; height: 42px; flex: 0 0 auto; display: inline-flex; align-items: center; justify-content: center; border: 0; border-radius: 50%; color: #fff; background: #128c5b; box-shadow: 0 4px 10px rgb(18 140 91 / 20%); transition: transform .15s ease, background .15s ease; }
 .inbox-send:hover { transform: translateY(-1px); background: #08784b; }
 .inbox-send:disabled { cursor: wait; opacity: .65; }

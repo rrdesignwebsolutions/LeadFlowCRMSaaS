@@ -10,8 +10,10 @@ import {
   Info,
   MessageCircle,
   MoreVertical,
+  Paperclip,
   Search,
   Send,
+  X,
 } from "lucide-react"
 
 import { api, errorMessage } from "./api"
@@ -137,6 +139,10 @@ export default function Inbox({
 
   const [sending, setSending] = useState(false)
 
+  const [file, setFile] = useState<File | null>(null)
+
+  const fileInput = useRef<HTMLInputElement>(null)
+
   const bottom = useRef<HTMLDivElement>(null)
 
   const composer = useRef<HTMLInputElement>(null)
@@ -200,18 +206,38 @@ export default function Inbox({
 
     const body = composer.current?.value.trim() ?? ""
 
-    if (!body || !activeId) return
+    if ((!body && !file) || !activeId) return
 
     setSending(true)
 
     setError("")
 
     try {
-      await api(`/api/conversations/${activeId}/messages`, {
-        method: "POST",
+      if (file) {
+        const form = new FormData()
+        form.set("file", file)
+        form.set("caption", body)
 
-        body: { body },
-      })
+        const response = await fetch(
+          `/api/conversations/${activeId}/attachments`,
+          { method: "POST", credentials: "same-origin", body: form },
+        )
+
+        if (!response.ok) {
+          const data = (await response.json().catch(() => ({}))) as {
+            error?: string
+          }
+          throw new Error(data.error ?? "Não foi possível enviar o arquivo.")
+        }
+
+        setFile(null)
+      } else {
+        await api(`/api/conversations/${activeId}/messages`, {
+          method: "POST",
+
+          body: { body },
+        })
+      }
 
       if (composer.current) composer.current.value = ""
     } catch (e) {
@@ -410,10 +436,16 @@ export default function Inbox({
                     {message.body &&
                     !(
                       message.hasMedia &&
-                      (message.body === "[Imagem]" ||
-                        message.body === "[Figurinha]")
+                      (message.type === "image" || message.type === "sticker") &&
+                      !message.body.replace(/^\[(Imagem|Figurinha)\]\s*/, "")
                     ) ? (
-                      <p>{message.body}</p>
+                      <p>
+                        {message.hasMedia &&
+                        (message.type === "image" ||
+                          message.type === "sticker")
+                          ? message.body.replace(/^\[(Imagem|Figurinha)\]\s*/, "")
+                          : message.body}
+                      </p>
                     ) : null}
                     {message.hasMedia ? (
                       <a
@@ -478,9 +510,42 @@ export default function Inbox({
             ) : (
               <form className="inbox-composer" onSubmit={send}>
                 <input
+                  ref={fileInput}
+                  type="file"
+                  hidden
+                  onChange={(event) => {
+                    setFile(event.target.files?.[0] ?? null)
+                    event.target.value = ""
+                  }}
+                />
+                <button
+                  type="button"
+                  className="inbox-attach"
+                  disabled={sending}
+                  onClick={() => fileInput.current?.click()}
+                  aria-label="Anexar arquivo"
+                  title="Anexar arquivo"
+                >
+                  <Paperclip size={19} />
+                </button>
+                {file && (
+                  <span className="inbox-file-chip" title={file.name}>
+                    <span>{file.name}</span>
+                    <button
+                      type="button"
+                      onClick={() => setFile(null)}
+                      aria-label="Remover anexo"
+                    >
+                      <X size={14} />
+                    </button>
+                  </span>
+                )}
+                <input
                   ref={composer}
                   name="body"
-                  placeholder="Digite uma mensagem"
+                  placeholder={
+                    file ? "Adicione uma legenda (opcional)" : "Digite uma mensagem"
+                  }
                   maxLength={4096}
                   autoComplete="off"
                   aria-label="Mensagem"

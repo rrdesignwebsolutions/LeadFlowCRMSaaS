@@ -1257,6 +1257,198 @@ async function downloadMedia(
   })
 }
 
+const MEDIA_LIMITS: Record<string, number> = {
+  image: 5 * 1024 * 1024,
+  video: 16 * 1024 * 1024,
+  audio: 16 * 1024 * 1024,
+  document: 25 * 1024 * 1024,
+}
+
+function mediaKind(mime: string) {
+  if (/^image\/(jpeg|png)$/.test(mime)) return "image"
+  if (/^video\/(mp4|3gpp)$/.test(mime)) return "video"
+  if (/^audio\/(aac|mp4|mpeg|amr|ogg)$/.test(mime)) return "audio"
+  return "document"
+}
+
+async function sendAttachment(
+  env: Env,
+  auth: Session,
+  conversationId: string,
+  request: Request,
+) {
+  const form = await request.formData().catch(() => null)
+  const file = form?.get("file")
+  const caption = String(form?.get("caption") ?? "").trim().slice(0, 1024)
+
+  if (!(file instanceof File) || file.size === 0)
+    return json({ error: "Selecione um arquivo." }, 400)
+
+  const mime = (file.type || "application/octet-stream").split(";")[0]!.trim()
+  const kind = mediaKind(mime)
+
+  if (file.size > MEDIA_LIMITS[kind]!)
+    return json(
+      {
+        error: `Arquivo muito grande. O limite para ${kind === "image" ? "imagens" : "este tipo"} é ${MEDIA_LIMITS[kind]! / 1024 / 1024} MB.`,
+      },
+      413,
+    )
+
+  const conversation = await env.DB.prepare(
+    `SELECT ct.phone_e164 phone,i.phone_number_id phoneNumberId,i.access_token_enc token,i.status integrationStatus,i.id integrationId
+    FROM conversations c JOIN contacts ct ON ct.id=c.contact_id AND ct.organization_id=c.organization_id
+    JOIN integrations i ON i.id=c.integration_id AND i.organization_id=c.organization_id
+    WHERE c.id=? AND c.organization_id=?`,
+  )
+    .bind(conversationId, auth.organizationId)
+    .first<{
+      phone: string
+      phoneNumberId: string
+      token: string | null
+      integrationStatus: string
+      integrationId: string
+    }>()
+
+  if (!conversation) return json({ error: "Conversa não encontrada." }, 404)
+
+  if (conversation.integrationStatus !== "connected" || !conversation.token)
+    return json(
+      {
+        error:
+          "O WhatsApp está desconectado ou com erro. Reconecte em Configurações.",
+      },
+      409,
+    )
+
+  const lastInbound = await env.DB.prepare(
+    "SELECT MAX(external_created_at) at FROM messages WHERE organization_id=? AND conversation_id=? AND direction='inbound'",
+  )
+    .bind(auth.organizationId, conversationId)
+    .first<{ at: string | null }>()
+
+  if (
+    !lastInbound?.at ||
+    Date.now() - new Date(lastInbound.at).getTime() > WINDOW_MS
+  )
+    return json(
+      {
+        error:
+          "A janela de 24 horas se encerrou. O cliente precisa enviar uma nova mensagem.",
+      },
+      422,
+    )
+
+  const messageId = uid()
+  const filename = (file.name || `arquivo.${mime.split("/")[1] ?? "bin"}`).slice(0, 255)
+  const label = { image: "[Imagem]", video: "[Vídeo]", audio: "[Áudio]", document: filename }[kind]!
+
+  await env.DB.prepare(
+    "INSERT INTO messages(id,organization_id,conversation_id,direction,type,body,status,sent_by,media_filename,media_mime) VALUES(?,?,?,'outbound',?,?,'queued',?,?,?)",
+  )
+    .bind(
+      messageId,
+      auth.organizationId,
+      conversationId,
+      kind,
+      caption && kind !== "audio" ? `${label}\n${caption}`.trim() : label,
+      auth.userId || null,
+      kind === "document" ? filename : null,
+      mime,
+    )
+    .run()
+
+  const fail = async (code: string, message: string, status = 502) => {
+    await env.DB.prepare(
+      "UPDATE messages SET status='failed',error_code=?,updated_at=CURRENT_TIMESTAMP WHERE id=? AND organization_id=?",
+    )
+      .bind(code, messageId, auth.organizationId)
+      .run()
+
+    return json({ error: message, messageId }, status)
+  }
+
+  let result: GraphResult
+
+  try {
+    const token = await decryptToken(env, conversation.token)
+    const base = `${env.GRAPH_API_BASE ?? "https://graph.facebook.com"}/${GRAPH_VERSION}`
+
+    const upload = new FormData()
+    upload.set("messaging_product", "whatsapp")
+    upload.set("type", mime)
+    upload.set("file", file, filename)
+
+    const uploaded = await fetch(`${base}/${conversation.phoneNumberId}/media`, {
+      method: "POST",
+      headers: { authorization: `Bearer ${token}` },
+      body: upload,
+    })
+    const uploadData = (await uploaded.json().catch(() => ({}))) as {
+      id?: string
+      error?: { message?: string; code?: number; error_user_msg?: string }
+    }
+
+    if (!uploaded.ok || !uploadData.id)
+      return fail(
+        String(uploadData.error?.code ?? uploaded.status),
+        `A Meta recusou o arquivo: ${uploadData.error?.error_user_msg ?? uploadData.error?.message ?? `HTTP ${uploaded.status}`}`,
+      )
+
+    await env.DB.prepare(
+      "UPDATE messages SET media_id=? WHERE id=? AND organization_id=?",
+    )
+      .bind(uploadData.id, messageId, auth.organizationId)
+      .run()
+
+    const media: Record<string, string> = { id: uploadData.id }
+    if (caption && kind !== "audio") media.caption = caption
+    if (kind === "document") media.filename = filename
+
+    result = await graphFetch(
+      env,
+      `${conversation.phoneNumberId}/messages`,
+      token,
+      {
+        messaging_product: "whatsapp",
+        recipient_type: "individual",
+        to: conversation.phone.replace(/\D/g, ""),
+        type: kind,
+        [kind]: media,
+      },
+    )
+  } catch (error) {
+    console.error(
+      "send_attachment_failed",
+      error instanceof Error ? error.message : "unknown",
+    )
+
+    return fail("network", "Não foi possível enviar agora. Tente novamente.")
+  }
+
+  if (!result.ok)
+    return fail(
+      String(result.data.error?.code ?? result.status),
+      `A Meta recusou o envio: ${graphMessage(result)}`,
+    )
+
+  const externalId =
+    (result.data.messages as Array<{ id?: string }> | undefined)?.[0]?.id ??
+    null
+
+  await env.DB.batch([
+    env.DB.prepare(
+      "UPDATE messages SET status='accepted',external_id=?,updated_at=CURRENT_TIMESTAMP WHERE id=? AND organization_id=?",
+    ).bind(externalId, messageId, auth.organizationId),
+
+    env.DB.prepare(
+      "UPDATE conversations SET last_message_at=?,updated_at=CURRENT_TIMESTAMP WHERE id=? AND organization_id=?",
+    ).bind(new Date().toISOString(), conversationId, auth.organizationId),
+  ])
+
+  return json({ ok: true, messageId }, 201)
+}
+
 export async function sendText(
   env: Env,
   auth: Session,
@@ -1513,11 +1705,16 @@ export async function whatsappRoutes(
       new URL(request.url).searchParams.get("inline") === "1",
     )
 
-  const match = path.match(/^\/api\/conversations\/([\w-]+)\/(messages|read)$/)
+  const match = path.match(
+    /^\/api\/conversations\/([\w-]+)\/(messages|read|attachments)$/,
+  )
 
   if (!match) return null
 
   const conversationId = match[1]!
+
+  if (match[2] === "attachments" && request.method === "POST")
+    return sendAttachment(env, auth, conversationId, request)
 
   if (match[2] === "messages" && request.method === "POST")
     return sendText(
