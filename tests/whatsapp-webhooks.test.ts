@@ -14,7 +14,7 @@ function database() {
           return this
         },
         async first() {
-          if (sql.includes("FROM integrations")) return { id: "integration", organization_id: "org" }
+          if (sql.includes("FROM integrations")) return { id: "integration", organization_id: "org", display_phone_number: "+15550000000" }
           if (sql.includes("FROM webhook_events")) return { id: "event" }
           return null
         },
@@ -53,19 +53,57 @@ describe("WhatsApp coexistence webhooks", () => {
     expect(after).not.toHaveBeenCalled()
   })
 
-  it("records unsupported history events as failed rather than claiming synchronization succeeded", async () => {
+  it("imports historical messages without marking them unread and records sync progress", async () => {
     const { env, statements } = database()
-    const log = vi.spyOn(console, "error").mockImplementation(() => {})
-    try {
-      await expect(handleMetaPayload(env, {
-        object: "whatsapp_business_account",
-        entry: [{ id: "12345", changes: [{ field: "history", value: { metadata: { phone_number_id: "98765" } } }] }],
-      }, "hash")).rejects.toThrow("Falha ao processar eventos")
-      expect(statements.some((s) => s.sql.includes("status='failed'"))).toBe(true)
-      expect(statements.some((s) => s.sql.includes("status='processed'"))).toBe(false)
-    } finally {
-      log.mockRestore()
-    }
+    await handleMetaPayload(env, {
+      object: "whatsapp_business_account",
+      entry: [{
+        id: "12345",
+        changes: [{
+          field: "history",
+          value: {
+            metadata: { phone_number_id: "98765" },
+            history: [{
+              metadata: { phase: 0, chunk_order: 0, progress: 100 },
+              threads: [{
+                id: "15551234567",
+                context: { wa_id: "15551234567" },
+                messages: [
+                  { id: "wamid.inbound", from: "15551234567", type: "text", text: { body: "Mensagem antiga" }, timestamp: "1700000000" },
+                  { id: "wamid.outbound", from: "15550000000", type: "text", text: { body: "Resposta antiga" }, timestamp: "1700000001" },
+                ],
+              }],
+            }],
+          },
+        }],
+      }],
+    }, "history-hash")
+
+    const messages = statements.filter((s) => s.sql.includes("INSERT OR IGNORE INTO messages"))
+    expect(messages.map((message) => message.args[4])).toEqual(["inbound", "outbound"])
+    expect(messages.map((message) => message.args[6])).toEqual(["Mensagem antiga", "Resposta antiga"])
+    expect(statements.filter((s) => s.sql.includes("unread_count=unread_count+?")).map((s) => s.args[2])).toEqual([0, 0])
+    expect(statements.some((s) => s.sql.includes("history_sync_status=CASE WHEN ?=100 THEN 'completed'"))).toBe(true)
+    expect(statements.some((s) => s.sql.includes("UPDATE webhook_events SET status='failed'"))).toBe(false)
+  })
+
+  it("marks the sync declined when the WhatsApp Business App denied history sharing", async () => {
+    const { env, statements } = database()
+    await handleMetaPayload(env, {
+      object: "whatsapp_business_account",
+      entry: [{
+        id: "12345",
+        changes: [{
+          field: "history",
+          value: {
+            metadata: { phone_number_id: "98765" },
+            errors: [{ code: 2593109 }],
+          },
+        }],
+      }],
+    }, "declined-hash")
+
+    expect(statements.some((s) => s.sql.includes("history_sync_status='declined'"))).toBe(true)
   })
 
   it("applies account updates to all integrations sharing a WABA", async () => {

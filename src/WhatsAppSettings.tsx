@@ -10,6 +10,10 @@ type Status = {
     connectionMode: "cloud_api" | "coexistence"
     errorSummary: string | null
     connectedAt: string | null
+    historySyncStatus: "not_started" | "requesting" | "requested" | "completed" | "declined" | "failed"
+    historySyncProgress: number
+    historySyncError: string | null
+    historySyncAvailable: number
   } | null
 
   webhookUrl: string
@@ -128,14 +132,46 @@ export default function WhatsAppSettings({
     void load()
   }, [load])
 
+  useEffect(() => {
+    const status = data?.integration?.historySyncStatus
+    if (status !== "requesting" && status !== "requested") return
+
+    const timer = setInterval(() => void load(), 5000)
+    return () => clearInterval(timer)
+  }, [data?.integration?.historySyncStatus, load])
+
   const showConnectionResult = useCallback(async (result: Exclude<SignupResult, { selectionRequired: true }>, mode: "cloud_api" | "coexistence") => {
     const modeLabel = mode === "coexistence" ? "modo de coexistência" : "modo Cloud API"
     setNote(result.subscribed
-      ? `Número ${result.displayPhoneNumber} conectado em ${modeLabel}.${mode === "coexistence" ? " Confirme no painel da Meta os campos de webhook necessários. O histórico e os contatos antigos do WhatsApp Business App ainda não são importados." : ""}`
+      ? `Número ${result.displayPhoneNumber} conectado em ${modeLabel}.${mode === "coexistence" ? " Confirme no painel da Meta os campos de webhook necessários. O histórico pode ser solicitado na seção abaixo, dentro de 24 horas, se o cliente autorizou o compartilhamento." : ""}`
       : `Número ${result.displayPhoneNumber} autorizado, mas a conexão está com erro porque a Meta não confirmou a assinatura dos eventos. ${result.subscribeError ?? "Verifique a configuração do webhook."}`)
     await load()
     onChanged()
   }, [load, onChanged])
+
+  async function startHistorySync() {
+    if (
+      !window.confirm(
+        "Confirme que o cliente autorizou compartilhar o histórico no WhatsApp Business App. A solicitação da Meta só pode ser feita uma vez.",
+      )
+    )
+      return
+
+    setBusy(true)
+    setError("")
+    setNote("")
+    try {
+      await api<{ requestId: string }>("/api/integrations/whatsapp/history-sync", {
+        method: "POST",
+      })
+      setNote("Solicitação enviada à Meta. O histórico aparecerá na caixa de entrada assim que os webhooks forem processados.")
+      await load()
+    } catch (e) {
+      setError(errorMessage(e))
+    } finally {
+      setBusy(false)
+    }
+  }
 
   useEffect(() => {
     const appId = data?.embeddedSignup.appId
@@ -485,6 +521,60 @@ export default function WhatsAppSettings({
           )}
         </div>
       )}
+      {i?.connectionMode === "coexistence" && i.status === "connected" && (
+        <div className="whatsapp-connect-panel">
+          <div className="whatsapp-connect-action">
+            <b>Histórico do WhatsApp Business</b>
+            {i.historySyncStatus === "not_started" ? (
+              <>
+                <p>
+                  A importação não começa automaticamente. A Meta aceita uma
+                  única solicitação nas primeiras 24 horas após a conexão.
+                  Continue somente se o cliente autorizou compartilhar o
+                  histórico no WhatsApp Business App.
+                </p>
+                <button
+                  className="button"
+                  type="button"
+                  onClick={() => void startHistorySync()}
+                  disabled={
+                    busy ||
+                    !isAdmin ||
+                    !i.historySyncAvailable
+                  }
+                >
+                  {busy ? "Solicitando histórico…" : "Importar histórico"}
+                </button>
+                {!i.historySyncAvailable && (
+                    <p className="muted">
+                      O prazo de 24 horas terminou. É necessário refazer a
+                      conexão pela coexistência na Meta para solicitar o
+                      histórico.
+                    </p>
+                  )}
+              </>
+            ) : i.historySyncStatus === "requesting" || i.historySyncStatus === "requested" ? (
+              <p>
+                Sincronização em andamento pela Meta
+                {i.historySyncProgress > 0 ? ` (${i.historySyncProgress}%)` : ""}.
+                A caixa de entrada será atualizada automaticamente.
+              </p>
+            ) : i.historySyncStatus === "completed" ? (
+              <p>Histórico sincronizado ({i.historySyncProgress}%).</p>
+            ) : i.historySyncStatus === "declined" ? (
+              <p>
+                O compartilhamento do histórico não foi autorizado no WhatsApp
+                Business App; a Meta não enviou conversas antigas.
+              </p>
+            ) : (
+              <p role="alert">
+                {i.historySyncError ??
+                  "A Meta não confirmou a sincronização. Por segurança, a solicitação não pode ser repetida."}
+              </p>
+            )}
+          </div>
+        </div>
+      )}
       {i && isAdmin && (
         <button className="button secondary" onClick={() => void disconnect()}>
           Desconectar
@@ -560,8 +650,9 @@ export default function WhatsAppSettings({
               {data?.embeddedSignup.coexistenceConfigId && (
                 <p className="muted">
                   A disponibilidade da coexistência depende da elegibilidade da
-                  empresa e da configuração aprovada pela Meta. O histórico e
-                  os contatos antigos ainda não são importados.
+                  empresa e da configuração aprovada pela Meta. O histórico
+                  antigo pode ser importado após a conexão, se autorizado pelo
+                  cliente.
                 </p>
               )}
             </div>

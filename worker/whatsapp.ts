@@ -122,9 +122,11 @@ const graphMessage = (result: GraphResult) =>
 type WaMessage = {
   id?: string
   from?: string
+  from_user_id?: string
   to?: string
   timestamp?: string
   type?: string
+  history_context?: { status?: string }
 
   text?: { body?: string }
 
@@ -147,7 +149,7 @@ type WaStatus = {
 }
 
 type WaValue = {
-  metadata?: { phone_number_id?: string }
+  metadata?: { phone_number_id?: string; display_phone_number?: string }
 
   contacts?: Array<{ wa_id?: string; profile?: { name?: string } }>
 
@@ -157,12 +159,28 @@ type WaValue = {
 
   statuses?: WaStatus[]
 
+  history?: Array<{
+    metadata?: { phase?: number; chunk_order?: number; progress?: number }
+    threads?: Array<{
+      id?: string
+      context?: { wa_id?: string; user_id?: string }
+      messages?: WaMessage[]
+    }>
+    errors?: Array<{ code?: number }>
+  }>
+
+  errors?: Array<{ code?: number }>
+
   event?: string
 
   waba_info?: { partner_app_id?: string }
 }
 
-type Integration = { id: string; organization_id: string }
+type Integration = {
+  id: string
+  organization_id: string
+  display_phone_number?: string
+}
 
 export async function cleanupPendingWhatsappSignups(env: Env) {
   await env.DB.prepare(
@@ -279,6 +297,7 @@ async function handleInbound(
   value: WaValue,
   m: WaMessage,
   direction: "inbound" | "outbound" = "inbound",
+  countUnread = direction === "inbound",
 ) {
   const waId = m.from?.replace(/\D/g, "")
 
@@ -372,7 +391,7 @@ async function handleInbound(
 
     env.DB.prepare(
       "UPDATE conversations SET last_message_at=CASE WHEN last_message_at IS NULL OR last_message_at<? THEN ? ELSE last_message_at END,unread_count=unread_count+?,status='open',updated_at=CURRENT_TIMESTAMP WHERE id=? AND organization_id=? AND changes()>0",
-    ).bind(at, at, inbound ? 1 : 0, conversationId, org),
+    ).bind(at, at, countUnread && inbound ? 1 : 0, conversationId, org),
   )
 
   const results = await env.DB.batch(batch)
@@ -397,6 +416,70 @@ async function handleMessageEcho(
     { ...echo, from: echo.to },
     "outbound",
   )
+}
+
+async function handleHistory(
+  env: Env,
+  integration: Integration,
+  value: WaValue,
+) {
+  const history = value.history ?? []
+  const errors = [...(value.errors ?? []), ...history.flatMap((item) => item.errors ?? [])]
+
+  if (errors.some((error) => error.code === 2593109)) {
+    await env.DB.prepare(`UPDATE integrations
+      SET history_sync_status='declined',history_sync_error='O compartilhamento do histórico não foi autorizado no WhatsApp Business App.',updated_at=CURRENT_TIMESTAMP
+      WHERE id=? AND organization_id=?`)
+      .bind(integration.id, integration.organization_id)
+      .run()
+    return
+  }
+
+  if (errors.length)
+    throw new Error("A Meta retornou um erro ao sincronizar o histórico")
+
+  const businessNumber = integration.display_phone_number?.replace(/\D/g, "")
+
+  for (const item of history) {
+    for (const thread of item.threads ?? []) {
+      const contactNumber = (thread.id ?? thread.context?.wa_id)?.replace(/\D/g, "")
+
+      if (!contactNumber || !/^\d{5,20}$/.test(contactNumber)) {
+        console.warn("whatsapp_history_contact_without_phone")
+        continue
+      }
+
+      for (const message of thread.messages ?? []) {
+        if (!message.id) throw new Error("mensagem histórica sem identificador")
+
+        const from = message.from?.replace(/\D/g, "")
+        const direction =
+          from && businessNumber && from === businessNumber
+            ? "outbound"
+            : "inbound"
+
+        await handleInbound(
+          env,
+          integration,
+          value,
+          { ...message, from: contactNumber },
+          direction,
+          false,
+        )
+      }
+    }
+
+    const progress = item.metadata?.progress
+    if (typeof progress === "number" && progress >= 0 && progress <= 100) {
+      await env.DB.prepare(`UPDATE integrations
+        SET history_sync_progress=MAX(history_sync_progress,?),
+        history_sync_status=CASE WHEN ?=100 THEN 'completed' ELSE history_sync_status END,
+        history_sync_error=NULL,updated_at=CURRENT_TIMESTAMP
+        WHERE id=? AND organization_id=?`)
+        .bind(progress, progress, integration.id, integration.organization_id)
+        .run()
+    }
+  }
 }
 
 async function handleStatus(env: Env, integration: Integration, s: WaStatus) {
@@ -469,7 +552,7 @@ export async function handleMetaPayload(
 
       const byPhone = phone
         ? await env.DB.prepare(
-            "SELECT id,organization_id FROM integrations WHERE provider='meta_whatsapp' AND phone_number_id=? AND external_account_id=? AND status='connected'",
+            "SELECT id,organization_id,display_phone_number FROM integrations WHERE provider='meta_whatsapp' AND phone_number_id=? AND external_account_id=? AND status='connected'",
           )
 
             .bind(phone, entry.id ?? "")
@@ -523,7 +606,13 @@ export async function handleMetaPayload(
           key: `${item.id}:${item.status}`,
           run: () => handleStatus(env, integration!, item),
         })),
-        ...(["history", "smb_app_state_sync"].includes(change.field ?? "")
+        ...(change.field === "history"
+          ? [{
+              key: `${change.field}:${entry.id ?? "unknown"}:${changeIndex}:${payloadHash}`,
+              run: () => handleHistory(env, integration!, value),
+            }]
+          : []),
+        ...(["smb_app_state_sync"].includes(change.field ?? "")
           ? [{
               key: `${change.field}:${entry.id ?? "unknown"}:${changeIndex}:${payloadHash}`,
               run: async () => {
@@ -581,6 +670,13 @@ export async function handleMetaPayload(
             "webhook_item_failed",
             error instanceof Error ? error.message : "unknown",
           )
+
+          if (change.field === "history")
+            await env.DB.prepare(`UPDATE integrations
+              SET history_sync_status='failed',history_sync_error='A Meta enviou histórico que não pôde ser processado.',updated_at=CURRENT_TIMESTAMP
+              WHERE id=? AND organization_id=?`)
+              .bind(integration!.id, integration!.organization_id)
+              .run()
 
           await env.DB.prepare(
             "UPDATE webhook_events SET status='failed',error_summary=? WHERE id=?",
@@ -987,6 +1083,96 @@ async function selectSignupNumber(
   return response
 }
 
+async function requestHistorySync(env: Env, auth: Session) {
+  const integration = await env.DB.prepare(`SELECT id,phone_number_id phoneNumberId,
+    access_token_enc accessTokenEnc,connection_mode connectionMode,connected_at connectedAt,
+    history_sync_status historySyncStatus,
+    CASE WHEN connected_at>=datetime('now','-24 hours') THEN 1 ELSE 0 END canSyncHistory
+    FROM integrations WHERE organization_id=? AND provider='meta_whatsapp' AND status='connected'
+    ORDER BY created_at DESC LIMIT 1`)
+    .bind(auth.organizationId)
+    .first<{
+      id: string
+      phoneNumberId: string
+      accessTokenEnc: string
+      connectionMode: string
+      connectedAt: string | null
+      historySyncStatus: string
+      canSyncHistory: number
+    }>()
+
+  if (!integration)
+    return json({ error: "Nenhuma conexão ativa do WhatsApp foi encontrada." }, 404)
+
+  if (integration.connectionMode !== "coexistence")
+    return json({ error: "A importação de histórico só está disponível no modo de coexistência." }, 409)
+
+  if (!integration.canSyncHistory)
+    return json({ error: "O prazo de 24 horas para solicitar o histórico expirou. Será necessário refazer a conexão pela coexistência na Meta." }, 409)
+
+  if (integration.historySyncStatus !== "not_started")
+    return json({ error: "A solicitação de histórico já foi iniciada e não pode ser repetida." }, 409)
+
+  const started = await env.DB.prepare(`UPDATE integrations
+    SET history_sync_status='requesting',history_sync_requested_at=CURRENT_TIMESTAMP,
+    history_sync_error=NULL,updated_at=CURRENT_TIMESTAMP
+    WHERE id=? AND organization_id=? AND status='connected' AND history_sync_status='not_started'`)
+    .bind(integration.id, auth.organizationId)
+    .run()
+
+  if (!started.meta.changes)
+    return json({ error: "A solicitação de histórico já foi iniciada e não pode ser repetida." }, 409)
+
+  await env.DB.prepare(
+    "INSERT INTO audit_logs(id,organization_id,actor_user_id,action,resource_type,resource_id) VALUES(?,?,?,'integration.history_sync_requested','integration',?)",
+  )
+    .bind(uid(), auth.organizationId, auth.userId, integration.id)
+    .run()
+
+  let result: GraphResult
+  try {
+    result = await graphFetch(
+      env,
+      `${integration.phoneNumberId}/smb_app_data`,
+      await decryptToken(env, integration.accessTokenEnc),
+      { messaging_product: "whatsapp", sync_type: "history" },
+    )
+  } catch (error) {
+    console.error("whatsapp_history_sync_failed", error instanceof Error ? error.message : "unknown")
+    await env.DB.prepare(`UPDATE integrations
+      SET history_sync_status='failed',history_sync_error='Não foi possível confirmar a solicitação com a Meta.',updated_at=CURRENT_TIMESTAMP
+      WHERE id=? AND organization_id=? AND history_sync_status='requesting'`)
+      .bind(integration.id, auth.organizationId)
+      .run()
+    return json({ error: "Não foi possível confirmar a solicitação com a Meta. Por segurança, ela não pode ser repetida." }, 502)
+  }
+
+  const requestId =
+    typeof result.data.request_id === "string" && result.data.request_id
+      ? result.data.request_id
+      : null
+  if (!result.ok || !requestId) {
+    const message = result.ok
+      ? "A Meta não confirmou o identificador da solicitação."
+      : graphMessage(result)
+    await env.DB.prepare(`UPDATE integrations
+      SET history_sync_status='failed',history_sync_error=?,updated_at=CURRENT_TIMESTAMP
+      WHERE id=? AND organization_id=? AND history_sync_status='requesting'`)
+      .bind(message.slice(0, 200), integration.id, auth.organizationId)
+      .run()
+    return json({ error: `A Meta não aceitou a sincronização: ${message}` }, 502)
+  }
+
+  await env.DB.prepare(`UPDATE integrations
+    SET history_sync_status=CASE WHEN history_sync_status='completed' THEN 'completed' ELSE 'requested' END,
+    history_sync_request_id=?,updated_at=CURRENT_TIMESTAMP
+    WHERE id=? AND organization_id=?`)
+    .bind(requestId, integration.id, auth.organizationId)
+    .run()
+
+  return json({ ok: true, requestId })
+}
+
 export async function sendText(
   env: Env,
   auth: Session,
@@ -1142,14 +1328,17 @@ export async function whatsappRoutes(
   if (
     path === "/api/integrations/whatsapp" ||
     path === "/api/integrations/whatsapp/embedded-signup" ||
-    path === "/api/integrations/whatsapp/embedded-signup/select-number"
+    path === "/api/integrations/whatsapp/embedded-signup/select-number" ||
+    path === "/api/integrations/whatsapp/history-sync"
   ) {
     if (path === "/api/integrations/whatsapp" && request.method === "GET") {
       await env.DB.prepare(
         "DELETE FROM whatsapp_pending_signups WHERE organization_id=? AND expires_at<=CURRENT_TIMESTAMP",
       ).bind(org).run()
       const integration =
-        await env.DB.prepare(`SELECT status,phone_number_id phoneNumberId,display_phone_number displayPhoneNumber,connection_mode connectionMode,error_summary errorSummary,connected_at connectedAt
+        await env.DB.prepare(`SELECT status,phone_number_id phoneNumberId,display_phone_number displayPhoneNumber,connection_mode connectionMode,error_summary errorSummary,connected_at connectedAt,
+        history_sync_status historySyncStatus,history_sync_progress historySyncProgress,history_sync_error historySyncError,
+        CASE WHEN connected_at>=datetime('now','-24 hours') THEN 1 ELSE 0 END historySyncAvailable
         FROM integrations WHERE organization_id=? AND provider='meta_whatsapp' AND status!='disconnected' ORDER BY created_at DESC LIMIT 1`)
           .bind(org)
           .first()
@@ -1179,6 +1368,9 @@ export async function whatsappRoutes(
         { error: "Apenas administradores podem alterar a integração." },
         403,
       )
+
+    if (path === "/api/integrations/whatsapp/history-sync" && request.method === "POST")
+      return requestHistorySync(env, auth)
 
     if (
       path === "/api/integrations/whatsapp/embedded-signup" &&
@@ -1219,7 +1411,7 @@ export async function whatsappRoutes(
   if (path === "/api/conversations" && request.method === "GET") {
     return json(
       await env.DB.prepare(`SELECT c.id,c.unread_count unread,c.last_message_at lastMessageAt,ct.name,ct.phone_e164 phone,
-      (SELECT m.body FROM messages m WHERE m.conversation_id=c.id AND m.organization_id=c.organization_id ORDER BY m.created_at DESC,m.rowid DESC LIMIT 1) preview
+      (SELECT m.body FROM messages m WHERE m.conversation_id=c.id AND m.organization_id=c.organization_id ORDER BY COALESCE(m.external_created_at,m.created_at) DESC,m.rowid DESC LIMIT 1) preview
       FROM conversations c JOIN contacts ct ON ct.id=c.contact_id AND ct.organization_id=c.organization_id
       WHERE c.organization_id=? ORDER BY c.last_message_at DESC LIMIT 200`)
         .bind(org)
@@ -1262,7 +1454,7 @@ export async function whatsappRoutes(
   if (match[2] === "messages" && request.method === "GET") {
     const rows =
       await env.DB.prepare(`SELECT id,direction,type,body,status,error_code errorCode,COALESCE(external_created_at,created_at) at
-      FROM messages WHERE organization_id=? AND conversation_id=? ORDER BY created_at DESC,rowid DESC LIMIT 200`)
+      FROM messages WHERE organization_id=? AND conversation_id=? ORDER BY COALESCE(external_created_at,created_at) DESC,rowid DESC LIMIT 200`)
         .bind(org, conversationId)
         .all()
 
