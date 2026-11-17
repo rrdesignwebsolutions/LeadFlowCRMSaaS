@@ -208,7 +208,7 @@ export async function catalogRoutes(
     const id = uid()
 
     await env.DB.prepare(
-      "INSERT INTO catalog_products(id,organization_id,name,model,version,brand,category,description,specs,price_text,sale_price_text,created_by) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
+      "INSERT INTO catalog_products(id,organization_id,name,model,version,brand,category,description,specs,price_text,sale_price_text,status,authorized_for_sale,created_by) VALUES(?,?,?,?,?,?,?,?,?,?,?,'approved',1,?)",
     )
       .bind(
         id,

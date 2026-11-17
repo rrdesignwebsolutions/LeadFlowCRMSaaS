@@ -117,7 +117,7 @@ export default function Catalog() {
 
       {canEdit && (
         <section className="panel spaced">
-          <div className="panel-title"><div><h2><Boxes size={18} /> Novo produto</h2><p>Todo produto novo começa como rascunho e não autorizado.</p></div></div>
+          <div className="panel-title"><div><h2><Boxes size={18} /> Novo produto</h2><p>Novos produtos já ficam aprovados e autorizados; desative aqui se não quiser que a IA ofereça.</p></div></div>
           <ProductForm busy={busy} onSubmit={(body, files) => void create(body, files)} />
         </section>
       )}
