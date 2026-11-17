@@ -35,4 +35,4 @@ EMAIL_FROM = "AV Flow CRM <contato@rrdesignwebsolutions.com.br>"
 # INFINITEPAY_API_KEY (ativa a liberação automática após o pagamento)
 
 [migrations]
-remote = { command = "pnpm db:migrate:remote" }
+remote = { command = "pnpm db:migrate:local" }
