@@ -31,6 +31,7 @@ type TestDecision = {
     budgetRange: string | null
     paymentMethod: string | null
     purchaseTimeline: string | null
+    paymentViability: "blocked" | "viable" | "unknown"
   }
 }
 
@@ -83,7 +84,7 @@ function decision(overrides: Partial<TestDecision> = {}): TestDecision {
     offerSalesperson: false,
     lead: {
       status: "hot", score: 70, summary: null, productInterest: null,
-      mainInterest: null, budgetRange: null, paymentMethod: null, purchaseTimeline: null,
+      mainInterest: null, budgetRange: null, paymentMethod: null, purchaseTimeline: null, paymentViability: "viable",
     },
     ...overrides,
   }
@@ -116,6 +117,8 @@ describe("oferta de vendedor pela IA", () => {
     ["nota abaixo de 70", decision({ offerSalesperson: true, lead: { ...decision().lead, score: 69 } })],
     ["nota ausente", decision({ offerSalesperson: true, lead: { ...decision().lead, score: null } })],
     ["nota inválida", decision({ offerSalesperson: true, lead: { ...decision().lead, score: 101 } })],
+    ["pagamento impedido", decision({ offerSalesperson: true, lead: { ...decision().lead, paymentViability: "blocked" } })],
+    ["viabilidade desconhecida", decision({ offerSalesperson: true, lead: { ...decision().lead, paymentViability: "unknown" } })],
   ])("não oferece o botão: %s", async (_label, result) => {
     const { env } = setup(result)
     await autoReply(env, "org", "conversation", "latest")

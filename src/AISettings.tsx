@@ -105,6 +105,7 @@ export default function AISettings({ canEdit }: { canEdit: boolean }) {
       {error && <p className="auth-error" role="alert">{error}</p>}
       <p className="muted">A IA oferece falar com um vendedor quando identifica um lead quente que precisa de ajuda para fechar a compra. Ela encaminha à equipe pedidos diretos de atendimento, reclamações e dúvidas que não consegue responder, e pausa por 30 minutos sempre que um atendente responde.</p>
       <p className="muted">Na caixa de entrada, atribua uma conversa a um membro para manter a IA pausada até devolvê-la ao assistente. Ao retomar, a IA tenta responder à última mensagem de texto pendente, respeitando a janela de 24 horas do WhatsApp.</p>
+      <p className="muted">Leads interessados sem uma forma de pagamento viável ficam em Pendência financeira, não como Quente. A IA reavalia quando surgir uma alternativa de pagamento.</p>
     </section>
   );
 }

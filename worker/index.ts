@@ -1,6 +1,7 @@
 /// <reference types="@cloudflare/workers-types" />
 
 import { aiRoutes } from "./ai"
+import { effectiveLeadStatus } from "./lead-status"
 import { catalogRoutes } from "./catalog"
 import { brandingRoutes } from "./branding"
 import {
@@ -391,6 +392,7 @@ const LEAD_STATUSES = [
   "qualified",
   "negotiating",
   "follow_up",
+  "financial_pending",
   "cold",
   "lost",
   "sold",
@@ -765,7 +767,7 @@ async function api(
 
   if (url.pathname === "/api/reports") {
     const byStatus = await env.DB.prepare(
-      "SELECT status, COUNT(*) count FROM leads WHERE organization_id=? GROUP BY status",
+      `SELECT ${effectiveLeadStatus("l")} status, COUNT(*) count FROM leads l WHERE l.organization_id=? GROUP BY ${effectiveLeadStatus("l")}`,
     )
       .bind(auth.organizationId)
       .all()
@@ -781,7 +783,7 @@ async function api(
 
   if (url.pathname === "/api/leads" && request.method === "GET") {
     return json(
-      await env.DB.prepare(`SELECT l.id,l.status,l.product_interest productInterest,l.notes,l.next_action nextAction,l.follow_up_at followUpAt,
+      await env.DB.prepare(`SELECT l.id,${effectiveLeadStatus("l")} status,l.product_interest productInterest,l.notes,l.next_action nextAction,l.follow_up_at followUpAt,
       l.loss_reason lossReason,l.ai_score aiScore,l.ai_summary aiSummary,l.updated_at updatedAt,c.name,c.phone_e164 phone,c.email,
       (SELECT amount_cents FROM sales s WHERE s.lead_id=l.id AND s.organization_id=l.organization_id ORDER BY s.created_at DESC LIMIT 1) saleCents
       FROM leads l JOIN contacts c ON c.id=l.contact_id AND c.organization_id=l.organization_id
@@ -870,7 +872,7 @@ async function api(
       return json({ error: "Data da venda inválida." }, 400)
 
     const lead = await env.DB.prepare(
-      "SELECT status FROM leads WHERE id=? AND organization_id=?",
+      `SELECT ${effectiveLeadStatus("leads")} status FROM leads WHERE id=? AND organization_id=?`,
     )
       .bind(leadId, auth.organizationId)
       .first<{ status: string }>()
@@ -895,7 +897,7 @@ async function api(
         ),
 
       env.DB.prepare(
-        "UPDATE leads SET status='sold',updated_at=CURRENT_TIMESTAMP WHERE id=? AND organization_id=?",
+        "UPDATE leads SET status='sold',financial_pending=0,updated_at=CURRENT_TIMESTAMP WHERE id=? AND organization_id=?",
       ).bind(leadId, auth.organizationId),
 
       env.DB.prepare(
@@ -913,7 +915,7 @@ async function api(
       body = await request.json<Record<string, unknown>>()
 
     const lead = await env.DB.prepare(
-      "SELECT status FROM leads WHERE id=? AND organization_id=?",
+      `SELECT ${effectiveLeadStatus("leads")} status FROM leads WHERE id=? AND organization_id=?`,
     )
       .bind(leadId, auth.organizationId)
       .first<{ status: string }>()
@@ -964,8 +966,8 @@ async function api(
       if (lead.status === "sold")
         return json({ error: "Leads vendidos não podem mudar de status." }, 422)
 
-      sets.push("status=?")
-      values.push(body.status)
+      sets.push("status=?", "financial_pending=?", "ai_score=CASE WHEN ?=1 THEN MIN(COALESCE(ai_score,69),69) ELSE ai_score END")
+      values.push(body.status === "financial_pending" ? "follow_up" : body.status, body.status === "financial_pending" ? 1 : 0, body.status === "financial_pending" ? 1 : 0)
 
       statements.push(
         env.DB.prepare(

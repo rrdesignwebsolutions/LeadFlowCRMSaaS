@@ -99,6 +99,7 @@ const temperature: Record<string, string> = {
   negotiating: "Negociando",
   qualified: "Qualificado",
   follow_up: "Follow-up",
+  financial_pending: "Pendência financeira",
   cold: "Frio",
 }
 

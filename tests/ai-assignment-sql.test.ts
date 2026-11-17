@@ -46,7 +46,7 @@ function setup() {
     output: [{ type: "message", content: [{ type: "output_text", text: JSON.stringify({
       reply: "Olá!", handoff: false, offerSalesperson: false,
       lead: { status: "in_service", score: 35, summary: null, productInterest: null,
-        mainInterest: null, budgetRange: null, paymentMethod: null, purchaseTimeline: null },
+        mainInterest: null, budgetRange: null, paymentMethod: null, purchaseTimeline: null, paymentViability: "unknown" },
     }) }] }],
   }))))
   return { db, env: { DB: adapter, OPENAI_API_KEY: "test" } as unknown as Env }

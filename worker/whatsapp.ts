@@ -1,5 +1,6 @@
 import type { Env, Session } from "./index"
 import { autoReply, classifyLead, requestHuman, TALK_TO_HUMAN_ID } from "./ai"
+import { effectiveLeadStatus } from "./lead-status"
 
 const GRAPH_VERSION = "v26.0"
 
@@ -1782,7 +1783,7 @@ export async function whatsappRoutes(
   if (path === "/api/conversations" && request.method === "GET") {
     return json(
       await env.DB.prepare(`SELECT c.id,c.unread_count unread,c.last_message_at lastMessageAt,c.human_requested_at humanRequestedAt,c.assigned_to assignedTo,ct.name,ct.phone_e164 phone,
-      (SELECT l.status FROM leads l WHERE l.contact_id=ct.id AND l.organization_id=c.organization_id LIMIT 1) leadStatus,
+      (SELECT ${effectiveLeadStatus("l")} FROM leads l WHERE l.contact_id=ct.id AND l.organization_id=c.organization_id LIMIT 1) leadStatus,
       (SELECT m.body FROM messages m WHERE m.conversation_id=c.id AND m.organization_id=c.organization_id ORDER BY COALESCE(m.external_created_at,strftime('%Y-%m-%dT%H:%M:%fZ',m.created_at)) DESC,m.rowid DESC LIMIT 1) preview
       FROM conversations c JOIN contacts ct ON ct.id=c.contact_id AND ct.organization_id=c.organization_id
       WHERE c.organization_id=? ORDER BY (c.human_requested_at IS NOT NULL) DESC,c.last_message_at DESC LIMIT 200`)

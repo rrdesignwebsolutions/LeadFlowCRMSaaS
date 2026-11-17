@@ -125,7 +125,7 @@ function ScoreBadge({ score }: { score: number | null }) {
 export default function Leads({ leads, loadError, onChanged }: { leads: Lead[]; loadError: string; onChanged: () => void }) {
   const [query, setQuery] = useState("");
   const [filter, setFilter] = useState("all");
-  const priority: Record<string, number> = { hot: 0, negotiating: 1, qualified: 2, follow_up: 3, in_service: 4, new: 5, not_contacted: 6, cold: 7, sold: 8, lost: 9 };
+  const priority: Record<string, number> = { hot: 0, negotiating: 1, qualified: 2, follow_up: 3, financial_pending: 4, in_service: 5, new: 6, not_contacted: 7, cold: 8, sold: 9, lost: 10 };
   const [creating, setCreating] = useState(false);
   const [openId, setOpenId] = useState<string | null>(null);
   const open = leads.find((l) => l.id === openId) ?? null;

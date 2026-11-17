@@ -37,6 +37,7 @@ export const statusLabels: Record<string, string> = {
   qualified: "Qualificado",
   negotiating: "Negociando",
   follow_up: "Follow-up",
+  financial_pending: "Pendência financeira",
   cold: "Frio",
   lost: "Perdido",
   sold: "Vendido",
