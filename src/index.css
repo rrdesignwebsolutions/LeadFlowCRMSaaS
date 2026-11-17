@@ -273,6 +273,14 @@ h3 { font: 700 14px var(--font-display); }
 .inbox-search input { width: 100%; min-width: 0; border: 0; outline: 0; color: #26332c; background: transparent; font: inherit; font-size: 12px; }
 .inbox-search input::placeholder { color: #98a39c; }
 .inbox-conversations { min-height: 0; overflow-y: auto; }
+.inbox-conversation-wrap { position: relative; }
+.inbox-conversation-wrap .inbox-conversation { padding-right: 36px; }
+.inbox-item-menu { position: absolute; right: 6px; top: 50%; transform: translateY(-50%); display: inline-flex; padding: 5px; border: 0; border-radius: 6px; color: #758279; background: transparent; }
+.inbox-item-menu:hover, .inbox-message-menu:hover { background: #e8f4ec; }
+.inbox-context-menu { position: fixed; z-index: 1000; display: flex; min-width: 190px; flex-direction: column; padding: 5px; border: 1px solid #dfe9e2; border-radius: 8px; background: #fff; box-shadow: 0 6px 22px rgb(0 0 0 / 15%); }
+.inbox-context-menu button { padding: 9px 10px; border: 0; border-radius: 5px; background: transparent; text-align: left; font-size: 12px; }
+.inbox-context-menu button:hover { background: #edf8f2; }
+.inbox-context-menu .destructive { color: #b3261e; }
 .inbox-conversation { display: flex; align-items: center; width: 100%; gap: 11px; padding: 12px 14px; border: 0; border-top: 1px solid #f0f3f1; background: #fff; text-align: left; transition: background .15s ease; }
 .inbox-conversation:hover { background: #f7faf8; }
 .inbox-conversation.selected { background: #edf8f2; }
@@ -305,6 +313,7 @@ h3 { font: 700 14px var(--font-display); }
 .inbox-message-row.inbound { justify-content: flex-start; }
 .inbox-message-row.outbound { justify-content: flex-end; }
 .inbox-bubble { max-width: min(76%, 520px); padding: 9px 11px 6px; border: 1px solid #e8eeea; border-radius: 12px; box-shadow: 0 2px 5px rgb(31 47 37 / 5%); }
+.inbox-message-menu { float: right; display: inline-flex; margin: -4px -6px 0 4px; padding: 3px; border: 0; border-radius: 5px; color: #758279; background: transparent; }
 .inbox-bubble.inbound { border-top-left-radius: 4px; background: #fff; }
 .inbox-bubble.outbound { border-color: #d4eee0; border-top-right-radius: 4px; background: #e4f7eb; }
 .inbox-bubble p { color: #26342c; font-size: 13px; line-height: 1.5; white-space: pre-wrap; overflow-wrap: anywhere; }

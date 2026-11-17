@@ -3,7 +3,7 @@ import { readdirSync, readFileSync } from "node:fs"
 import { join } from "node:path"
 import { afterEach, describe, expect, it, vi } from "vitest"
 import type { Env } from "../worker/index"
-import { autoReply } from "../worker/ai"
+import { autoReply, classifyLead } from "../worker/ai"
 import { sendText } from "../worker/whatsapp"
 
 vi.mock("../worker/whatsapp", () => ({
@@ -16,7 +16,7 @@ vi.mock("../worker/verification", () => ({
   escapeHtml: (text: string) => text, sendNotificationEmail: vi.fn(),
 }))
 
-function setup() {
+function setup(paymentViability: "blocked" | "viable" | "unknown" = "unknown", leadStatus = "in_service", score = 35) {
   const db = new DatabaseSync(":memory:")
   for (const file of readdirSync("migrations").filter((name) => name.endsWith(".sql")).sort())
     db.exec(readFileSync(join("migrations", file), "utf8"))
@@ -45,8 +45,8 @@ function setup() {
   vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({
     output: [{ type: "message", content: [{ type: "output_text", text: JSON.stringify({
       reply: "Olá!", handoff: false, offerSalesperson: false,
-      lead: { status: "in_service", score: 35, summary: null, productInterest: null,
-        mainInterest: null, budgetRange: null, paymentMethod: null, purchaseTimeline: null, paymentViability: "unknown" },
+      lead: { status: leadStatus, score, summary: null, productInterest: null,
+        mainInterest: null, budgetRange: null, paymentMethod: null, purchaseTimeline: null, paymentViability },
     }) }] }],
   }))))
   return { db, env: { DB: adapter, OPENAI_API_KEY: "test" } as unknown as Env }
@@ -77,6 +77,51 @@ describe("atribuição com SQL real", () => {
     expect(await autoReply(env, "org", "conv", "wamid")).toBe(true)
     expect(sendText).toHaveBeenCalledOnce()
     expect(db.prepare("SELECT ai_reply_lock FROM conversations WHERE id='conv'").get()).toMatchObject({ ai_reply_lock: null })
+    db.close()
+  })
+
+  it("não classifica como quente nem oferece vendedor quando o pagamento está impedido", async () => {
+    const { db, env } = setup("blocked", "hot", 90)
+    await autoReply(env, "org", "conv", "wamid")
+    expect(db.prepare("SELECT status,financial_pending,ai_score FROM leads").get()).toMatchObject({
+      status: "follow_up", financial_pending: 1, ai_score: 69,
+    })
+    expect(vi.mocked(sendText).mock.calls[0][4]).toMatchObject({ talkButton: false })
+    db.close()
+  })
+
+  it("permite reclassificar como quente quando há pagamento viável", async () => {
+    const { db, env } = setup("viable", "hot", 80)
+    db.exec("UPDATE leads SET status='follow_up',financial_pending=1")
+    await autoReply(env, "org", "conv", "wamid")
+    expect(db.prepare("SELECT status,financial_pending,ai_score FROM leads").get()).toMatchObject({
+      status: "hot", financial_pending: 0, ai_score: 80,
+    })
+    db.close()
+  })
+
+  it("mantém pendência se não houver alternativa viável identificada", async () => {
+    const { db, env } = setup("unknown", "hot", 90)
+    db.exec("UPDATE leads SET status='follow_up',financial_pending=1")
+    await autoReply(env, "org", "conv", "wamid")
+    expect(db.prepare("SELECT status,financial_pending,ai_score FROM leads").get()).toMatchObject({
+      status: "follow_up", financial_pending: 1, ai_score: 69,
+    })
+    db.close()
+  })
+
+  it("aplica a mesma regra ao classificar sem responder", async () => {
+    const { db, env } = setup()
+    vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({
+      output: [{ type: "message", content: [{ type: "output_text", text: JSON.stringify({
+        status: "hot", score: 90, summary: "Sem alternativa viável", productInterest: null,
+        mainInterest: null, budgetRange: null, paymentMethod: null, purchaseTimeline: null, paymentViability: "blocked",
+      }) }] }],
+    }))))
+    await classifyLead(env, "org", "conv", "wamid")
+    expect(db.prepare("SELECT status,financial_pending,ai_score FROM leads").get()).toMatchObject({
+      status: "follow_up", financial_pending: 1, ai_score: 69,
+    })
     db.close()
   })
 })

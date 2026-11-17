@@ -691,14 +691,6 @@ export default function Inbox({
                       )}
                     </span>
                   </div>
-                  {contextMenu && (
-                    <div className="inbox-context-menu" role="menu" style={{ left: contextMenu.x, top: contextMenu.y }} onClick={(event) => event.stopPropagation()}>
-                      {contextMenu.kind === "conversation" && <button type="button" role="menuitem" onClick={() => void markUnread(contextMenu.id)}>Marcar como não lida</button>}
-                      {isAdmin && <button type="button" role="menuitem" className="destructive" onClick={() => void removeItem(contextMenu.kind, contextMenu.id)}>
-                        {contextMenu.kind === "conversation" ? "Excluir conversa" : "Excluir mensagem"}
-                      </button>}
-                    </div>
-                  )}
                 </div>
               ))}
               {thread?.messages.length === 0 && (
@@ -852,6 +844,14 @@ export default function Inbox({
         )}
       </div>
       </section>
+      {contextMenu && (
+        <div className="inbox-context-menu" role="menu" style={{ left: contextMenu.x, top: contextMenu.y }} onClick={(event) => event.stopPropagation()}>
+          {contextMenu.kind === "conversation" && <button type="button" role="menuitem" onClick={() => void markUnread(contextMenu.id)}>Marcar como não lida</button>}
+          {isAdmin && <button type="button" role="menuitem" className="destructive" onClick={() => void removeItem(contextMenu.kind, contextMenu.id)}>
+            {contextMenu.kind === "conversation" ? "Excluir conversa" : "Excluir mensagem"}
+          </button>}
+        </div>
+      )}
     </div>
   )
 }
