@@ -321,6 +321,12 @@ async function handleInbound(
 
   const org = integration.organization_id
 
+  const deleted = await env.DB.prepare(
+    "SELECT 1 FROM deleted_whatsapp_messages WHERE organization_id=? AND external_id=?",
+  ).bind(org, m.id).first()
+  if (deleted)
+    return { conversationId: "", type: m.type ?? "unknown", externalId: m.id, inserted: false }
+
   const duplicate = await env.DB.prepare(
     "SELECT conversation_id FROM messages WHERE organization_id=? AND external_id=?",
   ).bind(org, m.id).first<{ conversation_id: string }>()
@@ -1383,9 +1389,12 @@ export async function sendFile(
     )
 
   const lastInbound = await env.DB.prepare(
-    "SELECT MAX(external_created_at) at FROM messages WHERE organization_id=? AND conversation_id=? AND direction='inbound'",
+    `SELECT MAX(at) at FROM (
+      SELECT external_created_at at FROM messages WHERE organization_id=? AND conversation_id=? AND direction='inbound'
+      UNION ALL SELECT external_created_at at FROM deleted_whatsapp_messages WHERE organization_id=? AND conversation_id=? AND direction='inbound'
+    )`,
   )
-    .bind(auth.organizationId, conversationId)
+    .bind(auth.organizationId, conversationId, auth.organizationId, conversationId)
     .first<{ at: string | null }>()
 
   if (
@@ -1564,10 +1573,13 @@ export async function sendText(
     )
 
   const lastInbound = await env.DB.prepare(
-    "SELECT MAX(external_created_at) at FROM messages WHERE organization_id=? AND conversation_id=? AND direction='inbound'",
+    `SELECT MAX(at) at FROM (
+      SELECT external_created_at at FROM messages WHERE organization_id=? AND conversation_id=? AND direction='inbound'
+      UNION ALL SELECT external_created_at at FROM deleted_whatsapp_messages WHERE organization_id=? AND conversation_id=? AND direction='inbound'
+    )`,
   )
 
-    .bind(auth.organizationId, conversationId)
+    .bind(auth.organizationId, conversationId, auth.organizationId, conversationId)
     .first<{ at: string | null }>()
 
   if (
