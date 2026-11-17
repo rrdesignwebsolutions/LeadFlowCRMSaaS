@@ -103,7 +103,7 @@ export default function AISettings({ canEdit }: { canEdit: boolean }) {
       )}
       {message && <p className="muted" role="status">{message}</p>}
       {error && <p className="auth-error" role="alert">{error}</p>}
-      <p className="muted">A IA passa a conversa para a equipe quando o cliente pede um atendente, quer negociar ou quando ela não encontra a resposta no material. Ela pausa por 30 minutos sempre que um atendente responde.</p>
+      <p className="muted">A IA oferece falar com um vendedor quando identifica um lead quente que precisa de ajuda para fechar a compra. Ela encaminha à equipe pedidos diretos de atendimento, reclamações e dúvidas que não consegue responder, e pausa por 30 minutos sempre que um atendente responde.</p>
     </section>
   );
 }
