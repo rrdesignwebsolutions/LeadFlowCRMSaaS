@@ -3,3 +3,4 @@ META_APP_SECRET=
 META_VERIFY_TOKEN=
 META_ACCESS_TOKEN=
 INFINITEPAY_API_KEY=
+pnpm exec wrangler d1 execute av-flow-crm-db --remote --command "UPDATE messages SET body='[Mensagem indisponível no histórico]' WHERE body='[errors]'"

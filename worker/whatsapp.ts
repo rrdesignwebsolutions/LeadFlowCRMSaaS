@@ -274,6 +274,8 @@ function describeMessage(m: WaMessage) {
     location: "[Localização]",
     contacts: "[Contato]",
     reaction: "[Reação]",
+    errors: "[Mensagem indisponível no histórico]",
+    unsupported: "[Mensagem não suportada]",
   }
 
   const body =
