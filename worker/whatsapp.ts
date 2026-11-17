@@ -130,6 +130,8 @@ type WaMessage = {
 
   text?: { body?: string }
 
+  reaction?: { message_id?: string; emoji?: string }
+
   image?: { id?: string; caption?: string; mime_type?: string }
   video?: { id?: string; caption?: string; mime_type?: string }
   document?: {
@@ -286,6 +288,9 @@ function describeMessage(m: WaMessage) {
   }
 
   const body =
+    (type === "reaction" && m.reaction?.emoji
+      ? `Reagiu com ${m.reaction.emoji}`
+      : null) ??
     m.text?.body ??
     m.button?.text ??
     m.interactive?.button_reply?.title ??
