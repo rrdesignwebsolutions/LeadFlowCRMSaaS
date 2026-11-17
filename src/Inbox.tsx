@@ -20,7 +20,7 @@ import { Boxes } from "lucide-react"
 
 import { api, errorMessage } from "./api"
 
-type CatalogItem = { id: string; name: string; version: string | null; status: string; authorized: boolean; images: unknown[] }
+type CatalogItem = { id: string; name: string; version: string | null; status: string; authorized: boolean; images: Array<{ id: string; isPrimary: boolean }> }
 
 type Conversation = {
   id: string
@@ -645,20 +645,29 @@ export default function Inbox({
                           <button type="button" role="menuitem" className="all" onClick={() => void sendCatalog(null)}>
                             Catálogo completo ({catalogItems.length})
                           </button>
-                          {catalogItems.map((p) => (
-                            <label key={p.id} className="inbox-catalog-option">
-                              <input
-                                type="checkbox"
-                                checked={selected.includes(p.id)}
-                                onChange={() =>
-                                  setSelected((s) =>
-                                    s.includes(p.id) ? s.filter((x) => x !== p.id) : [...s, p.id],
-                                  )
-                                }
-                              />
-                              {p.name}{p.version ? ` ${p.version}` : ""}
-                            </label>
-                          ))}
+                          <div className="inbox-catalog-grid">
+                            {catalogItems.map((p) => {
+                              const on = selected.includes(p.id)
+                              const photo = p.images.find((i) => i.isPrimary) ?? p.images[0]
+                              return (
+                                <button
+                                  type="button"
+                                  key={p.id}
+                                  className={on ? "inbox-catalog-card on" : "inbox-catalog-card"}
+                                  aria-pressed={on}
+                                  onClick={() =>
+                                    setSelected((s) =>
+                                      s.includes(p.id) ? s.filter((x) => x !== p.id) : [...s, p.id],
+                                    )
+                                  }
+                                >
+                                  <img src={`/api/catalog/images/${photo.id}`} alt="" loading="lazy" />
+                                  <span>{p.name}{p.version ? ` ${p.version}` : ""}</span>
+                                  {on && <em>✓</em>}
+                                </button>
+                              )
+                            })}
+                          </div>
                           <button
                             type="button"
                             className="all send"

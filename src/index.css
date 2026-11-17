@@ -410,3 +410,10 @@ h3 { font: 700 14px var(--font-display); }
 .inbox-catalog-option:hover { background: #f0f4f2; }
 .inbox-catalog-menu button.send { background: #128c5a; color: #fff; font-weight: 600; text-align: center; margin-top: 4px; border-bottom: 0; border-radius: 8px; }
 .inbox-catalog-menu button.send:disabled { background: #cfd8d3; }
+
+.inbox-catalog-menu { width: min(420px, 86vw); }
+.inbox-catalog-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; padding: 8px 2px; }
+.inbox-catalog-menu button.inbox-catalog-card { position: relative; display: flex; flex-direction: column; align-items: center; gap: 4px; padding: 6px; border: 2px solid transparent; border-radius: 10px; text-align: center; font-size: 12px; font-weight: 600; }
+.inbox-catalog-card img { width: 100%; aspect-ratio: 1; object-fit: contain; background: #fff; border-radius: 8px; }
+.inbox-catalog-menu button.inbox-catalog-card.on { border-color: #128c5a; background: #e8f5ee; }
+.inbox-catalog-card em { position: absolute; top: 4px; right: 4px; width: 20px; height: 20px; border-radius: 50%; background: #128c5a; color: #fff; font-style: normal; font-size: 12px; line-height: 20px; text-align: center; }
