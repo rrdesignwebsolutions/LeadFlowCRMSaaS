@@ -556,7 +556,10 @@ export default function WhatsAppSettings({
             ) : i.historySyncStatus === "requesting" || i.historySyncStatus === "requested" ? (
               <p>
                 Sincronização em andamento pela Meta
-                {i.historySyncProgress > 0 ? ` (${i.historySyncProgress}%)` : ""}.
+ ({i.historySyncProgress}%).
+                {i.historySyncProgress === 0
+                  ? " Aguardando a Meta enviar as primeiras mensagens; isso pode levar alguns minutos. "
+                  : " "}
                 A caixa de entrada será atualizada automaticamente.
               </p>
             ) : i.historySyncStatus === "completed" ? (
