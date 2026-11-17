@@ -196,7 +196,15 @@ export default function Inbox({
 
   const bottom = useRef<HTMLDivElement>(null)
 
-  const composer = useRef<HTMLInputElement>(null)
+  const composer = useRef<HTMLTextAreaElement>(null)
+
+  // Ajusta a altura ao conteúdo (até ~6 linhas).
+  const fitComposer = () => {
+    const el = composer.current
+    if (!el) return
+    el.style.height = "auto"
+    el.style.height = `${Math.min(el.scrollHeight, 140)}px`
+  }
 
   const loadList = useCallback(async () => {
     try {
@@ -290,7 +298,10 @@ export default function Inbox({
         })
       }
 
-      if (composer.current) composer.current.value = ""
+      if (composer.current) {
+        composer.current.value = ""
+        fitComposer()
+      }
     } catch (e) {
       setError(errorMessage(e))
     } finally {
@@ -648,9 +659,11 @@ export default function Inbox({
                     </button>
                   </span>
                 )}
-                <input
+                <textarea
                   ref={composer}
                   name="body"
+                  rows={1}
+                  onInput={fitComposer}
                   placeholder={
                     file ? "Adicione uma legenda (opcional)" : "Digite uma mensagem"
                   }
