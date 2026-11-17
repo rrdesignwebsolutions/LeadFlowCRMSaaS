@@ -1,5 +1,5 @@
 import type { Env, Session } from "./index"
-import { autoReply } from "./ai"
+import { autoReply, classifyLead } from "./ai"
 
 const GRAPH_VERSION = "v26.0"
 
@@ -605,12 +605,23 @@ export async function handleMetaPayload(
                   integration!.organization_id,
                   result.conversationId,
                   result.externalId,
-                ).catch((error) =>
-                  console.error(
-                    "ai_reply_failed",
-                    error instanceof Error ? error.message : "unknown",
+                )
+                  .then((classified) =>
+                    classified
+                      ? undefined
+                      : classifyLead(
+                          env,
+                          integration!.organization_id,
+                          result.conversationId,
+                          result.externalId,
+                        ),
+                  )
+                  .catch((error) =>
+                    console.error(
+                      "ai_reply_failed",
+                      error instanceof Error ? error.message : "unknown",
+                    ),
                   ),
-                ),
               )
           },
         })),
@@ -1198,6 +1209,7 @@ async function downloadMedia(
   auth: Session,
   messageId: string,
   inline = false,
+  range: string | null = null,
 ) {
   const row = await env.DB.prepare(
     `SELECT m.media_id mediaId,m.media_filename filename,m.media_mime mime,m.type,i.access_token_enc token
@@ -1232,7 +1244,7 @@ async function downloadMedia(
       502,
     )
 
-  const file = await fetch(url, { headers: { authorization: `Bearer ${token}` } })
+  const file = await fetch(url, { headers: { authorization: `Bearer ${token}`, ...(inline && range ? { range } : {}) } })
 
   if (!file.ok || !file.body)
     return json({ error: "Não foi possível baixar o arquivo da Meta." }, 502)
@@ -1244,17 +1256,26 @@ async function downloadMedia(
     .replace(/[\r\n"\\/]/g, "_")
 
   const showInline =
-    inline && /^image\/(jpeg|png|webp|gif)$/.test(mime.split(";")[0]!.trim())
+    inline &&
+    /^(image\/(jpeg|png|webp|gif)|audio\/(ogg|mpeg|mp4|aac|webm)|video\/(mp4|webm))$/.test(
+      mime.split(";")[0]!.trim(),
+    )
 
-  return new Response(file.body, {
-    headers: {
-      "content-type": mime,
-      "content-disposition": `${showInline ? "inline" : "attachment"}; filename="${name.replace(/[^\x20-\x7e]/g, "_")}"; filename*=UTF-8''${encodeURIComponent(name)}`,
-      "x-content-type-options": "nosniff",
-      "content-security-policy": "default-src 'none'; sandbox",
-      "cache-control": "private, max-age=3600",
-    },
-  })
+  const headers: Record<string, string> = {
+    "content-type": mime,
+    "content-disposition": `${showInline ? "inline" : "attachment"}; filename="${name.replace(/[^\x20-\x7e]/g, "_")}"; filename*=UTF-8''${encodeURIComponent(name)}`,
+    "x-content-type-options": "nosniff",
+    "content-security-policy": "default-src 'none'; sandbox",
+    "cache-control": "private, max-age=3600",
+    "accept-ranges": "bytes",
+  }
+
+  for (const key of ["content-range", "content-length"]) {
+    const value = file.headers.get(key)
+    if (value) headers[key] = value
+  }
+
+  return new Response(file.body, { status: file.status, headers })
 }
 
 const MEDIA_LIMITS: Record<string, number> = {
@@ -1687,6 +1708,7 @@ export async function whatsappRoutes(
   if (path === "/api/conversations" && request.method === "GET") {
     return json(
       await env.DB.prepare(`SELECT c.id,c.unread_count unread,c.last_message_at lastMessageAt,ct.name,ct.phone_e164 phone,
+      (SELECT l.status FROM leads l WHERE l.contact_id=ct.id AND l.organization_id=c.organization_id LIMIT 1) leadStatus,
       (SELECT m.body FROM messages m WHERE m.conversation_id=c.id AND m.organization_id=c.organization_id ORDER BY COALESCE(m.external_created_at,strftime('%Y-%m-%dT%H:%M:%fZ',m.created_at)) DESC,m.rowid DESC LIMIT 1) preview
       FROM conversations c JOIN contacts ct ON ct.id=c.contact_id AND ct.organization_id=c.organization_id
       WHERE c.organization_id=? ORDER BY c.last_message_at DESC LIMIT 200`)
@@ -1703,6 +1725,7 @@ export async function whatsappRoutes(
       auth,
       mediaMatch[1]!,
       new URL(request.url).searchParams.get("inline") === "1",
+      request.headers.get("range"),
     )
 
   const match = path.match(

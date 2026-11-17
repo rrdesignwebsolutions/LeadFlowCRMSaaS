@@ -119,6 +119,7 @@ function LeadDetail({ lead, onClose, onSaved }: { lead: Lead; onClose: () => voi
 export default function Leads({ leads, loadError, onChanged }: { leads: Lead[]; loadError: string; onChanged: () => void }) {
   const [query, setQuery] = useState("");
   const [filter, setFilter] = useState("all");
+  const priority: Record<string, number> = { hot: 0, negotiating: 1, qualified: 2, follow_up: 3, in_service: 4, new: 5, not_contacted: 6, cold: 7, sold: 8, lost: 9 };
   const [creating, setCreating] = useState(false);
   const [openId, setOpenId] = useState<string | null>(null);
   const open = leads.find((l) => l.id === openId) ?? null;
@@ -126,7 +127,8 @@ export default function Leads({ leads, loadError, onChanged }: { leads: Lead[]; 
   const visible = useMemo(() => {
     const q = query.trim().toLowerCase();
     return leads.filter((l) => (filter === "all" || l.status === filter)
-      && (!q || `${l.name ?? ""} ${l.phone} ${l.email ?? ""} ${l.productInterest ?? ""}`.toLowerCase().includes(q)));
+      && (!q || `${l.name ?? ""} ${l.phone} ${l.email ?? ""} ${l.productInterest ?? ""}`.toLowerCase().includes(q)))
+      .sort((a, b) => (priority[a.status] ?? 9) - (priority[b.status] ?? 9) || (b.aiScore ?? -1) - (a.aiScore ?? -1));
   }, [leads, query, filter]);
 
   return (
@@ -150,6 +152,7 @@ export default function Leads({ leads, loadError, onChanged }: { leads: Lead[]; 
             <tbody>{visible.map((l) => (
               <tr key={l.id} className="clickable" tabIndex={0} onClick={() => setOpenId(l.id)} onKeyDown={(e) => e.key === "Enter" && setOpenId(l.id)}>
                 <td>{l.name ?? "Sem nome"}</td><td>{l.phone}</td><td>{l.productInterest ?? "—"}</td>
+                <td>{l.aiScore ?? "—"}</td>
                 <td><span className={`badge ${l.status}`}>{statusLabels[l.status] ?? l.status}</span></td>
                 <td>{l.followUpAt ? new Date(l.followUpAt).toLocaleString("pt-BR", { dateStyle: "short", timeStyle: "short" }) : "—"}</td>
               </tr>

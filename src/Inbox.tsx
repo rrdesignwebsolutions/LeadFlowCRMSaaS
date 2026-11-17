@@ -30,6 +30,8 @@ type Conversation = {
   phone: string
 
   preview: string | null
+
+  leadStatus: string | null
 }
 
 type Message = {
@@ -82,6 +84,16 @@ const time = (iso: string | null) =>
         minute: "2-digit",
       })
     : ""
+
+const mediaLabel = /^\[(Imagem|Figurinha|Áudio|Vídeo)\]\s*/
+
+const temperature: Record<string, string> = {
+  hot: "Quente",
+  negotiating: "Negociando",
+  qualified: "Qualificado",
+  follow_up: "Follow-up",
+  cold: "Frio",
+}
 
 const avatarColors = [
   ["#1b6e4d", "#d9f2e6"],
@@ -333,6 +345,14 @@ export default function Inbox({
                   <span className="inbox-conversation-copy">
                     <span className="inbox-conversation-top">
                       <b>{label}</b>
+                      {conversation.leadStatus &&
+                        temperature[conversation.leadStatus] && (
+                          <span
+                            className={`inbox-temp ${conversation.leadStatus}`}
+                          >
+                            {temperature[conversation.leadStatus]}
+                          </span>
+                        )}
                       <time>{time(conversation.lastMessageAt)}</time>
                     </span>
                     <span className="inbox-conversation-bottom">
@@ -433,17 +453,36 @@ export default function Inbox({
                         loading="lazy"
                       />
                     ) : null}
+                    {message.hasMedia && message.type === "audio" ? (
+                      <audio
+                        className="inbox-audio"
+                        controls
+                        preload="none"
+                        src={`/api/messages/${message.id}/media?inline=1`}
+                      />
+                    ) : null}
+                    {message.hasMedia && message.type === "video" ? (
+                      <video
+                        className="inbox-image"
+                        controls
+                        preload="metadata"
+                        src={`/api/messages/${message.id}/media?inline=1`}
+                      />
+                    ) : null}
                     {message.body &&
                     !(
                       message.hasMedia &&
-                      (message.type === "image" || message.type === "sticker") &&
-                      !message.body.replace(/^\[(Imagem|Figurinha)\]\s*/, "")
+                      ["image", "sticker", "audio", "video"].includes(
+                        message.type,
+                      ) &&
+                      !message.body.replace(mediaLabel, "")
                     ) ? (
                       <p>
                         {message.hasMedia &&
-                        (message.type === "image" ||
-                          message.type === "sticker")
-                          ? message.body.replace(/^\[(Imagem|Figurinha)\]\s*/, "")
+                        ["image", "sticker", "audio", "video"].includes(
+                          message.type,
+                        )
+                          ? message.body.replace(mediaLabel, "")
                           : message.body}
                       </p>
                     ) : null}
