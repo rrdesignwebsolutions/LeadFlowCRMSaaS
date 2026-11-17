@@ -71,6 +71,28 @@ export async function sendVerificationEmail(
   return true
 }
 
+export async function sendNotificationEmail(
+  env: Env,
+  to: string[],
+  subject: string,
+  html: string,
+) {
+  if (!emailVerificationEnabled(env) || !to.length) return
+
+  const response = await fetch(RESEND_URL, {
+    method: "POST",
+    headers: {
+      authorization: "Bearer " + env.RESEND_API_KEY,
+      "content-type": "application/json",
+    },
+    body: JSON.stringify({ from: env.EMAIL_FROM, to, subject, html }),
+  })
+
+  if (!response.ok) console.error("notification_email_failed", response.status)
+}
+
+export { escapeHtml }
+
 export async function canResend(env: Env, userId: string) {
   const recent = await env.DB.prepare(
     "SELECT 1 FROM email_verifications WHERE user_id=? AND created_at > datetime('now', ?) LIMIT 1",

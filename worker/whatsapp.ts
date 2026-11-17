@@ -1,5 +1,5 @@
 import type { Env, Session } from "./index"
-import { autoReply, classifyLead } from "./ai"
+import { autoReply, classifyLead, requestHuman, TALK_TO_HUMAN_ID } from "./ai"
 
 const GRAPH_VERSION = "v26.0"
 
@@ -146,7 +146,7 @@ type WaMessage = {
   button?: { text?: string }
 
   interactive?: {
-    button_reply?: { title?: string }
+    button_reply?: { id?: string; title?: string }
     list_reply?: { title?: string }
   }
 }
@@ -597,6 +597,24 @@ export async function handleMetaPayload(
           key: `${item.id}:message`,
           run: async () => {
             const result = await handleInbound(env, integration!, value, item)
+
+            if (
+              result.inserted &&
+              item.interactive?.button_reply?.id === TALK_TO_HUMAN_ID
+            )
+              after(
+                requestHuman(
+                  env,
+                  integration!.organization_id,
+                  result.conversationId,
+                  true,
+                ).catch((error) =>
+                  console.error(
+                    "request_human_failed",
+                    error instanceof Error ? error.message : "unknown",
+                  ),
+                ),
+              )
 
             if (result.inserted && result.type === "text")
               after(
@@ -1474,8 +1492,13 @@ export async function sendFile(
     ).bind(externalId, messageId, auth.organizationId),
 
     env.DB.prepare(
-      "UPDATE conversations SET last_message_at=?,updated_at=CURRENT_TIMESTAMP WHERE id=? AND organization_id=?",
-    ).bind(new Date().toISOString(), conversationId, auth.organizationId),
+      "UPDATE conversations SET last_message_at=?,human_requested_at=CASE WHEN ? THEN NULL ELSE human_requested_at END,updated_at=CURRENT_TIMESTAMP WHERE id=? AND organization_id=?",
+    ).bind(
+      new Date().toISOString(),
+      auth.role === "ai" ? 0 : 1,
+      conversationId,
+      auth.organizationId,
+    ),
   ])
 
   return json({ ok: true, messageId }, 201)
@@ -1486,6 +1509,7 @@ export async function sendText(
   auth: Session,
   conversationId: string,
   text: unknown,
+  options: { talkButton?: boolean } = {},
 ) {
   const body = typeof text === "string" ? text.trim() : ""
 
@@ -1580,8 +1604,23 @@ export async function sendText(
         messaging_product: "whatsapp",
         recipient_type: "individual",
         to: conversation.phone.replace(/\D/g, ""),
-        type: "text",
-        text: { body, preview_url: false },
+        ...(options.talkButton && body.length <= 1024
+          ? {
+              type: "interactive",
+              interactive: {
+                type: "button",
+                body: { text: body },
+                action: {
+                  buttons: [
+                    {
+                      type: "reply",
+                      reply: { id: TALK_TO_HUMAN_ID, title: "Falar com vendedor" },
+                    },
+                  ],
+                },
+              },
+            }
+          : { type: "text", text: { body, preview_url: false } }),
       },
     )
   } catch (error) {
@@ -1616,8 +1655,13 @@ export async function sendText(
     ).bind(externalId, messageId, auth.organizationId),
 
     env.DB.prepare(
-      "UPDATE conversations SET last_message_at=?,updated_at=CURRENT_TIMESTAMP WHERE id=? AND organization_id=?",
-    ).bind(new Date().toISOString(), conversationId, auth.organizationId),
+      "UPDATE conversations SET last_message_at=?,human_requested_at=CASE WHEN ? THEN NULL ELSE human_requested_at END,updated_at=CURRENT_TIMESTAMP WHERE id=? AND organization_id=?",
+    ).bind(
+      new Date().toISOString(),
+      auth.role === "ai" ? 0 : 1,
+      conversationId,
+      auth.organizationId,
+    ),
   ])
 
   return json({ ok: true, messageId }, 201)
@@ -1718,11 +1762,11 @@ export async function whatsappRoutes(
 
   if (path === "/api/conversations" && request.method === "GET") {
     return json(
-      await env.DB.prepare(`SELECT c.id,c.unread_count unread,c.last_message_at lastMessageAt,ct.name,ct.phone_e164 phone,
+      await env.DB.prepare(`SELECT c.id,c.unread_count unread,c.last_message_at lastMessageAt,c.human_requested_at humanRequestedAt,ct.name,ct.phone_e164 phone,
       (SELECT l.status FROM leads l WHERE l.contact_id=ct.id AND l.organization_id=c.organization_id LIMIT 1) leadStatus,
       (SELECT m.body FROM messages m WHERE m.conversation_id=c.id AND m.organization_id=c.organization_id ORDER BY COALESCE(m.external_created_at,strftime('%Y-%m-%dT%H:%M:%fZ',m.created_at)) DESC,m.rowid DESC LIMIT 1) preview
       FROM conversations c JOIN contacts ct ON ct.id=c.contact_id AND ct.organization_id=c.organization_id
-      WHERE c.organization_id=? ORDER BY c.last_message_at DESC LIMIT 200`)
+      WHERE c.organization_id=? ORDER BY (c.human_requested_at IS NOT NULL) DESC,c.last_message_at DESC LIMIT 200`)
         .bind(org)
         .all(),
     )

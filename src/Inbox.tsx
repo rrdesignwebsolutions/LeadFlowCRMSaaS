@@ -36,6 +36,8 @@ type Conversation = {
   preview: string | null
 
   leadStatus: string | null
+
+  humanRequestedAt?: string | null
 }
 
 type Message = {
@@ -395,6 +397,9 @@ export default function Inbox({
                   <span className="inbox-conversation-copy">
                     <span className="inbox-conversation-top">
                       <b>{label}</b>
+                      {conversation.humanRequestedAt && (
+                        <span className="inbox-human">Quer falar com vendedor</span>
+                      )}
                       {conversation.leadStatus &&
                         temperature[conversation.leadStatus] && (
                           <span

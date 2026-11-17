@@ -308,15 +308,20 @@ function Shell({
             : "Com erro",
       })
 
-      if (ok)
+      if (ok) {
+        const list = (
+          await api<{
+            results: Array<{ unread: number; humanRequestedAt?: string | null }>
+          }>("/api/conversations")
+        ).results
+
         setUnread(
-          (
-            await api<{ results: Array<{ unread: number }> }>(
-              "/api/conversations",
-            )
-          ).results.reduce((n, c) => n + (c.unread > 0 ? 1 : 0), 0),
+          list.reduce(
+            (n, c) => n + (c.unread > 0 || c.humanRequestedAt ? 1 : 0),
+            0,
+          ),
         )
-      else setUnread(0)
+      } else setUnread(0)
     } catch {
       /* o indicador é apenas informativo */
     }

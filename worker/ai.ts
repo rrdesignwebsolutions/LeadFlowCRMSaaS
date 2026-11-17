@@ -1,5 +1,6 @@
 import type { Env, Session } from "./index"
 import { sendText } from "./whatsapp"
+import { escapeHtml, sendNotificationEmail } from "./verification"
 import {
   catalogEnabled,
   catalogTools,
@@ -414,6 +415,7 @@ export async function autoReply(
     { userId: "", organizationId, role: "ai" },
     conversationId,
     reply,
+    { talkButton: !decision.handoff },
   )
 
   const l = decision.lead ?? ({} as Decision["lead"])
@@ -461,7 +463,65 @@ export async function autoReply(
 
   if (!sent.ok) throw new Error(`envio da resposta da IA falhou (${sent.status})`)
 
+  if (decision.handoff) await requestHuman(env, organizationId, conversationId, false)
+
   return true
+}
+
+export const TALK_TO_HUMAN_ID = "talk_to_human"
+
+// Marca a conversa como "quer falar com o vendedor", pausa a IA e avisa a equipe.
+export async function requestHuman(
+  env: Env,
+  organizationId: string,
+  conversationId: string,
+  confirmToCustomer: boolean,
+) {
+  const info = await env.DB.prepare(
+    `SELECT ct.id contactId,ct.name,ct.phone_e164 phone,c.human_requested_at requestedAt
+     FROM conversations c JOIN contacts ct ON ct.id=c.contact_id
+     WHERE c.id=? AND c.organization_id=?`,
+  )
+    .bind(conversationId, organizationId)
+    .first<{ contactId: string; name: string | null; phone: string; requestedAt: string | null }>()
+
+  if (!info) return
+
+  await env.DB.batch([
+    env.DB.prepare(
+      "UPDATE conversations SET human_requested_at=CURRENT_TIMESTAMP,updated_at=CURRENT_TIMESTAMP WHERE id=? AND organization_id=?",
+    ).bind(conversationId, organizationId),
+    env.DB.prepare(
+      `UPDATE leads SET ai_handoff_at=CURRENT_TIMESTAMP,next_action='Cliente quer falar com o vendedor',updated_at=CURRENT_TIMESTAMP
+       WHERE contact_id=? AND organization_id=?`,
+    ).bind(info.contactId, organizationId),
+  ])
+
+  if (info.requestedAt) return
+
+  if (confirmToCustomer)
+    await sendText(
+      env,
+      { userId: "", organizationId, role: "ai" },
+      conversationId,
+      "Certo! Já avisei nossa equipe e um vendedor vai falar com você em instantes. 🙌",
+    )
+
+  const { results } = await env.DB.prepare(
+    `SELECT u.email FROM organization_members m JOIN users u ON u.id=m.user_id
+     WHERE m.organization_id=? AND m.status='active' AND m.role IN ('admin','manager')`,
+  )
+    .bind(organizationId)
+    .all<{ email: string }>()
+
+  const who = escapeHtml(info.name || info.phone)
+
+  await sendNotificationEmail(
+    env,
+    results.map((r) => r.email),
+    `${info.name || info.phone} quer falar com o vendedor`,
+    `<p><b>${who}</b> pediu para falar diretamente com um vendedor no WhatsApp.</p><p>Abra o AV Flow para responder.</p>`,
+  )
 }
 
 const classifySchema = {

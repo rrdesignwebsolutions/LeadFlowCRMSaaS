@@ -403,3 +403,5 @@ h3 { font: 700 14px var(--font-display); }
 .inbox-composer { align-items: flex-end; }
 .inbox-composer textarea { min-width: 0; flex: 1; height: 42px; max-height: 140px; padding: 11px 15px; border: 1px solid #e7ece9; border-radius: 22px; outline: 0; color: #26342c; background: #f7f9f8; font: inherit; font-size: 12px; line-height: 20px; resize: none; }
 .inbox-composer textarea:focus { border-color: #a4d5ba; background: #fff; box-shadow: 0 0 0 3px rgb(23 166 106 / 8%); }
+
+.inbox-human { background: #dc2626; color: #fff; font-size: 10px; font-weight: 700; padding: 2px 6px; border-radius: 999px; white-space: nowrap; }
