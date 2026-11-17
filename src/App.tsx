@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from "react"
 
 import {
+  Boxes,
   ChartNoAxesCombined,
   ChevronRight,
   ContactRound,
@@ -20,6 +21,8 @@ import {
 import AISettings from "./AISettings"
 
 import AuthScreen from "./AuthScreen"
+
+import Catalog from "./Catalog"
 
 import InboxView from "./Inbox"
 
@@ -45,7 +48,7 @@ import {
   type Metrics,
 } from "./api"
 
-type View = "overview" | "inbox" | "leads" | "campaigns" | "reports" | "team" | "plans" | "settings"
+type View = "overview" | "inbox" | "leads" | "catalog" | "campaigns" | "reports" | "team" | "plans" | "settings"
 
 const work: Array<{ id: View; label: string; icon: typeof Inbox }> = [
   { id: "overview", label: "Visão geral", icon: LayoutDashboard },
@@ -53,6 +56,8 @@ const work: Array<{ id: View; label: string; icon: typeof Inbox }> = [
   { id: "inbox", label: "Caixa de entrada", icon: Inbox },
 
   { id: "leads", label: "Leads", icon: ContactRound },
+
+  { id: "catalog", label: "Catálogo", icon: Boxes },
 
   { id: "campaigns", label: "Campanhas", icon: Megaphone },
 
@@ -615,6 +620,7 @@ function Shell({
           {view === "leads" && (
             <Leads leads={leads} loadError={loadError} onChanged={reload} />
           )}
+          {view === "catalog" && <Catalog />}
           {view === "team" && <TeamView meRole={me.role} onChanged={reload} />}
           {view === "plans" && <Plans meRole={me.role} />}
           {view === "reports" && (

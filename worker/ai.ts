@@ -1,5 +1,11 @@
 import type { Env, Session } from "./index"
 import { sendText } from "./whatsapp"
+import {
+  catalogEnabled,
+  catalogTools,
+  runCatalogTool,
+  type CatalogToolState,
+} from "./catalog"
 
 const OPENAI_URL = "https://api.openai.com/v1/responses"
 const MAX_PDF_BYTES = 10 * 1024 * 1024
@@ -33,14 +39,24 @@ function base64(bytes: Uint8Array) {
   return btoa(out)
 }
 
-async function llm(
-  env: Env,
-  body: {
-    instructions?: string
-    input: unknown
-    schema?: { name: string; schema: unknown }
-  },
-) {
+type LlmItem = {
+  type: string
+  call_id?: string
+  name?: string
+  arguments?: string
+  content?: Array<{ type: string; text?: string }>
+}
+
+type LlmBody = {
+  instructions?: string
+  input: unknown
+  schema?: { name: string; schema: unknown }
+  tools?: unknown[]
+}
+
+const MAX_TOOL_ROUNDS = 4
+
+async function llmOnce(env: Env, body: LlmBody) {
   if (!env.OPENAI_API_KEY) throw new Error("OPENAI_API_KEY não configurada")
 
   const response = await fetch(OPENAI_URL, {
@@ -55,6 +71,10 @@ async function llm(
       input: body.input,
       reasoning: { effort: "low" },
       store: false,
+      ...(body.tools && {
+        tools: body.tools,
+        include: ["reasoning.encrypted_content"],
+      }),
       ...(body.schema && {
         text: {
           format: {
@@ -70,22 +90,65 @@ async function llm(
 
   if (!response.ok) throw new Error(`OpenAI respondeu ${response.status}`)
 
-  const data = (await response.json()) as {
-    output?: Array<{
-      type: string
-      content?: Array<{ type: string; text?: string }>
-    }>
-  }
+  return (await response.json()) as { output?: LlmItem[] }
+}
 
-  return (
-    data.output
-      ?.filter((item) => item.type === "message")
-      .flatMap((item) => item.content ?? [])
-      .filter((part) => part.type === "output_text")
-      .map((part) => part.text ?? "")
-      .join("")
-      .trim() ?? ""
-  )
+const outputText = (items: LlmItem[] | undefined) =>
+  items
+    ?.filter((item) => item.type === "message")
+    .flatMap((item) => item.content ?? [])
+    .filter((part) => part.type === "output_text")
+    .map((part) => part.text ?? "")
+    .join("")
+    .trim() ?? ""
+
+async function llm(
+  env: Env,
+  body: LlmBody & {
+    runTool?: (name: string, args: Record<string, unknown>) => Promise<unknown>
+  },
+) {
+  const { runTool, ...request } = body
+  let input = request.input
+
+  for (let round = 0; ; round++) {
+    // Na última rodada as ferramentas saem para forçar a resposta final.
+    const data = await llmOnce(env, {
+      ...request,
+      input,
+      tools: runTool && round < MAX_TOOL_ROUNDS ? request.tools : undefined,
+    })
+
+    const calls = data.output?.filter((item) => item.type === "function_call") ?? []
+
+    if (!calls.length || !runTool || round >= MAX_TOOL_ROUNDS)
+      return outputText(data.output)
+
+    const results: unknown[] = []
+
+    for (const call of calls) {
+      let result: unknown
+
+      try {
+        result = await runTool(call.name ?? "", JSON.parse(call.arguments || "{}"))
+      } catch (error) {
+        console.error(
+          "ai_tool_failed",
+          call.name,
+          error instanceof Error ? error.message : "unknown",
+        )
+        result = { erro: "Falha ao executar a ferramenta." }
+      }
+
+      results.push({
+        type: "function_call_output",
+        call_id: call.call_id,
+        output: JSON.stringify(result),
+      })
+    }
+
+    input = [...(input as unknown[]), ...(data.output ?? []), ...results]
+  }
 }
 
 async function extractPdf(env: Env, bytes: Uint8Array) {
@@ -163,12 +226,21 @@ const decisionSchema = {
 const clip = (value: unknown, max: number) =>
   typeof value === "string" && value.trim() ? value.trim().slice(0, max) : null
 
+const CATALOG_RULES = `CATÁLOGO (ferramentas)
+- Para informações de produtos, modelos, fotos e disponibilidade, use as ferramentas do catálogo; elas são a fonte confiável. Ofereça espontaneamente apenas modelos retornados por listarModelosDisponiveis.
+- Só afirme que há estoque se a ferramenta indicar "disponível". Caso contrário, diga que vai confirmar com a equipe.
+- Só diga que enviou foto se enviarFotoProduto ou enviarCatalogoFiltrado retornar enviadas maior que 0. Se falhar, não diga que enviou; avise que vai pedir para a equipe enviar.
+- Se o cliente pedir um modelo não autorizado ou fora do catálogo, diga que precisa consultar a equipe comercial e marque handoff=true.
+- Não repita fotos já enviadas na conversa sem o cliente pedir.
+`
+
 function systemPrompt(
   settings: { assistant_name: string; instructions: string },
   organization: string,
   knowledge: string,
   clientName: string | null = null,
   attendantName: string | null = null,
+  catalog = false,
 ) {
   const people = JSON.stringify({
     cliente: { nome: clientName },
@@ -195,6 +267,7 @@ QUALIFICAÇÃO (campo lead; use null quando ainda não souber)
 - score: 0 a 100 de probabilidade de compra.
 - summary: resumo de 1-2 frases do que o cliente quer.
 
+${catalog ? CATALOG_RULES : ""}
 ${settings.instructions ? `INSTRUÇÕES DA EMPRESA\n${settings.instructions}\n` : ""}
 BASE DE CONHECIMENTO
 ${knowledge || "(vazia)"}`
@@ -284,6 +357,9 @@ export async function autoReply(
     .bind(context.leadId, organizationId)
     .first()
 
+  const useCatalog = await catalogEnabled(env, organizationId)
+  const toolState: CatalogToolState = { sentImages: new Set() }
+
   const raw = await llm(env, {
     instructions: systemPrompt(
       settings,
@@ -291,7 +367,13 @@ export async function autoReply(
       knowledge,
       context.contactName,
       context.attendantName,
+      useCatalog,
     ),
+    ...(useCatalog && {
+      tools: catalogTools,
+      runTool: (name: string, args: Record<string, unknown>) =>
+        runCatalogTool(env, organizationId, conversationId, name, args, toolState),
+    }),
     input: [
       {
         role: "user",

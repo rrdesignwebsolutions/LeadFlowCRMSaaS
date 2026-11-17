@@ -1,6 +1,7 @@
 /// <reference types="@cloudflare/workers-types" />
 
 import { aiRoutes } from "./ai"
+import { catalogRoutes } from "./catalog"
 import { brandingRoutes } from "./branding"
 import {
   confirmOrder,
@@ -24,6 +25,9 @@ export interface Env {
   DB: D1Database
 
   ASSETS: Fetcher
+
+  /** Bucket R2 privado com as fotos do catálogo. */
+  CATALOG?: R2Bucket
 
   APP_ORIGIN: string
 
@@ -1115,6 +1119,10 @@ async function api(
   const ai = await aiRoutes(request, env, url, auth)
 
   if (ai) return ai
+
+  const catalog = await catalogRoutes(request, env, url, auth)
+
+  if (catalog) return catalog
 
   const branding = await brandingRoutes(request, env, url, auth)
 

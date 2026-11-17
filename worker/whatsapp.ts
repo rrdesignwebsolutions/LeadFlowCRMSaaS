@@ -1302,6 +1302,16 @@ async function sendAttachment(
   const file = form?.get("file")
   const caption = String(form?.get("caption") ?? "").trim().slice(0, 1024)
 
+  return sendFile(env, auth, conversationId, file, caption)
+}
+
+export async function sendFile(
+  env: Env,
+  auth: Session,
+  conversationId: string,
+  file: unknown,
+  caption: string,
+) {
   if (!(file instanceof File) || file.size === 0)
     return json({ error: "Selecione um arquivo." }, 400)
 
@@ -1365,7 +1375,7 @@ async function sendAttachment(
   const label = { image: "[Imagem]", video: "[Vídeo]", audio: "[Áudio]", document: filename }[kind]!
 
   await env.DB.prepare(
-    "INSERT INTO messages(id,organization_id,conversation_id,direction,type,body,status,sent_by,media_filename,media_mime) VALUES(?,?,?,'outbound',?,?,'queued',?,?,?)",
+    "INSERT INTO messages(id,organization_id,conversation_id,direction,type,body,status,sent_by,media_filename,media_mime,is_ai) VALUES(?,?,?,'outbound',?,?,'queued',?,?,?,?)",
   )
     .bind(
       messageId,
@@ -1376,6 +1386,7 @@ async function sendAttachment(
       auth.userId || null,
       kind === "document" ? filename : null,
       mime,
+      auth.role === "ai" ? 1 : 0,
     )
     .run()
 
