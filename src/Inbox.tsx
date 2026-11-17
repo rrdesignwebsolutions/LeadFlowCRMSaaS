@@ -74,6 +74,26 @@ const time = (iso: string | null) =>
       })
     : ""
 
+const avatarColors = [
+  ["#1b6e4d", "#d9f2e6"],
+  ["#1f5f99", "#dcebfa"],
+  ["#8a4b9c", "#f1e1f6"],
+  ["#a8541a", "#fbe6d3"],
+  ["#2b7a78", "#d6f1ef"],
+  ["#a1335c", "#fbdfe9"],
+  ["#5a5fa8", "#e3e4f8"],
+  ["#7a6a14", "#f6efc9"],
+  ["#b23a3a", "#fbdcdc"],
+  ["#3f6b2a", "#e2f1d6"],
+]
+
+const avatarStyle = (seed: string) => {
+  let hash = 0
+  for (const char of seed) hash = (hash * 31 + char.charCodeAt(0)) >>> 0
+  const [color, background] = avatarColors[hash % avatarColors.length]
+  return { color, background }
+}
+
 const initials = (name: string) =>
   name
 
@@ -271,7 +291,12 @@ export default function Inbox({
                   }`}
                   onClick={() => void open(conversation.id)}
                 >
-                  <span className="inbox-avatar">{initials(label)}</span>
+                  <span
+                    className="inbox-avatar"
+                    style={avatarStyle(conversation.phone)}
+                  >
+                    {initials(label)}
+                  </span>
                   <span className="inbox-conversation-copy">
                     <span className="inbox-conversation-top">
                       <b>{label}</b>
@@ -329,7 +354,10 @@ export default function Inbox({
               >
                 <ArrowLeft size={19} />
               </button>
-              <span className="inbox-avatar">
+              <span
+                className="inbox-avatar"
+                style={avatarStyle(active.phone)}
+              >
                 {initials(active.name ?? active.phone)}
               </span>
               <span className="inbox-contact">
