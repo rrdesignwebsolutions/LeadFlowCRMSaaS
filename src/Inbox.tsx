@@ -163,9 +163,12 @@ export default function Inbox({
 
   const [catalogItems, setCatalogItems] = useState<CatalogItem[]>([])
 
+  const [selected, setSelected] = useState<string[]>([])
+
   async function toggleCatalog() {
     const next = !catalogOpen
     setCatalogOpen(next)
+    setSelected([])
     if (!next) return
     try {
       const data = await api<{ products: CatalogItem[] }>("/api/catalog/products")
@@ -175,7 +178,7 @@ export default function Inbox({
     }
   }
 
-  async function sendCatalog(productId: string | null) {
+  async function sendCatalog(productIds: string[] | null) {
     if (!activeId) return
     setCatalogOpen(false)
     setSending(true)
@@ -183,7 +186,7 @@ export default function Inbox({
     try {
       await api("/api/catalog/send", {
         method: "POST",
-        body: { conversationId: activeId, productId },
+        body: { conversationId: activeId, ...(productIds ? { productIds } : {}) },
       })
     } catch (e) {
       setError(errorMessage(e))
@@ -643,10 +646,27 @@ export default function Inbox({
                             Catálogo completo ({catalogItems.length})
                           </button>
                           {catalogItems.map((p) => (
-                            <button type="button" role="menuitem" key={p.id} onClick={() => void sendCatalog(p.id)}>
+                            <label key={p.id} className="inbox-catalog-option">
+                              <input
+                                type="checkbox"
+                                checked={selected.includes(p.id)}
+                                onChange={() =>
+                                  setSelected((s) =>
+                                    s.includes(p.id) ? s.filter((x) => x !== p.id) : [...s, p.id],
+                                  )
+                                }
+                              />
                               {p.name}{p.version ? ` ${p.version}` : ""}
-                            </button>
+                            </label>
                           ))}
+                          <button
+                            type="button"
+                            className="all send"
+                            disabled={!selected.length}
+                            onClick={() => void sendCatalog(selected)}
+                          >
+                            Enviar selecionados ({selected.length})
+                          </button>
                         </>
                       )}
                     </div>

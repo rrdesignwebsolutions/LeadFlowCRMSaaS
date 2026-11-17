@@ -405,3 +405,8 @@ h3 { font: 700 14px var(--font-display); }
 .inbox-composer textarea:focus { border-color: #a4d5ba; background: #fff; box-shadow: 0 0 0 3px rgb(23 166 106 / 8%); }
 
 .inbox-human { background: #dc2626; color: #fff; font-size: 10px; font-weight: 700; padding: 2px 6px; border-radius: 999px; white-space: nowrap; }
+
+.inbox-catalog-option { display: flex; align-items: center; gap: 8px; padding: 9px 12px; border-radius: 8px; font-size: 14px; cursor: pointer; }
+.inbox-catalog-option:hover { background: #f0f4f2; }
+.inbox-catalog-menu button.send { background: #128c5a; color: #fff; font-weight: 600; text-align: center; margin-top: 4px; border-bottom: 0; border-radius: 8px; }
+.inbox-catalog-menu button.send:disabled { background: #cfd8d3; }

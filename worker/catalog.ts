@@ -124,7 +124,11 @@ export async function catalogRoutes(
   if (path === "/api/catalog/send" && request.method === "POST") {
     const body = await request.json<Record<string, unknown>>().catch(() => ({}))
     const conversationId = typeof body.conversationId === "string" ? body.conversationId : ""
-    const productId = typeof body.productId === "string" ? body.productId : null
+    const productId = Array.isArray(body.productIds)
+      ? body.productIds.filter((x): x is string => typeof x === "string" && /^[\w-]+$/.test(x)).slice(0, MAX_CATALOG_SEND)
+      : typeof body.productId === "string"
+        ? body.productId
+        : null
 
     if (!/^[\w-]+$/.test(conversationId))
       return json({ error: "Conversa inválida." }, 400)
@@ -610,16 +614,17 @@ export async function sendCatalog(
   env: Env,
   sender: Session,
   conversationId: string,
-  productId: string | null,
+  productId: string | string[] | null,
   state: CatalogToolState = { sentImages: new Set() },
 ) {
   const organizationId = sender.organizationId
+  const ids = Array.isArray(productId) ? productId : productId ? [productId] : []
 
   const rows = await loadProducts(
     env,
     organizationId,
-    `AND status='approved' AND authorized_for_sale=1${productId ? " AND id=?" : ""}`,
-    productId ? [productId] : [],
+    `AND status='approved' AND authorized_for_sale=1${ids.length ? ` AND id IN (${ids.map(() => "?").join(",")})` : ""}`,
+    ids,
   )
 
   if (!rows.length)
