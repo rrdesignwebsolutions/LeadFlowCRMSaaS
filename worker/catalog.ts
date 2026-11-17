@@ -11,7 +11,8 @@ const uid = () => crypto.randomUUID()
 
 const MAX_IMAGE_BYTES = 5 * 1024 * 1024
 const MAX_IMAGES_PER_PRODUCT = 10
-const MAX_PHOTOS_PER_TURN = 6
+const MAX_PHOTOS_PER_TURN = 14
+const MAX_CATALOG_SEND = 12
 const STOCK_FRESH_DAYS = 7
 
 const clip = (value: unknown, max: number) =>
@@ -91,12 +92,17 @@ function imageMime(bytes: Uint8Array) {
   return null
 }
 
-async function loadProducts(env: Env, organizationId: string, where = "") {
+async function loadProducts(
+  env: Env,
+  organizationId: string,
+  where = "",
+  extra: unknown[] = [],
+) {
   return (
     await env.DB.prepare(
       `SELECT ${PRODUCT_COLUMNS} FROM catalog_products WHERE organization_id=? ${where} ORDER BY name,model`,
     )
-      .bind(organizationId)
+      .bind(organizationId, ...extra)
       .all<ProductRow>()
   ).results
 }
@@ -113,6 +119,25 @@ export async function catalogRoutes(
 
   const org = auth.organizationId
   const canEdit = auth.role === "admin" || auth.role === "manager"
+
+  if (path === "/api/catalog/send" && request.method === "POST") {
+    const body = await request.json<Record<string, unknown>>().catch(() => ({}))
+    const conversationId = typeof body.conversationId === "string" ? body.conversationId : ""
+    const productId = typeof body.productId === "string" ? body.productId : null
+
+    if (!/^[\w-]+$/.test(conversationId))
+      return json({ error: "Conversa inválida." }, 400)
+
+    if (!env.CATALOG)
+      return json({ error: "O armazenamento de fotos ainda não foi configurado." }, 503)
+
+    const result = await sendCatalog(env, auth, conversationId, productId)
+
+    if (!result.enviadas)
+      return json({ error: result.erro ?? "Nada foi enviado." }, 422)
+
+    return json({ ok: true, enviadas: result.enviadas, aviso: result.erro })
+  }
 
   if (path === "/api/catalog/products" && request.method === "GET") {
     const products = await loadProducts(env, org)
@@ -497,7 +522,7 @@ export const catalogTools = [
     type: "function",
     name: "enviarCatalogoFiltrado",
     description:
-      "Envia ao cliente a foto principal dos modelos autorizados com estoque confirmado (máx. 5).",
+      "Envia ao cliente a foto e a ficha resumida de todos os modelos aprovados e autorizados (catálogo completo). Use quando o cliente pedir o catálogo. Só diga que enviou se enviadas > 0.",
     parameters: {
       type: "object",
       additionalProperties: false,
@@ -549,6 +574,72 @@ const NOT_AUTHORIZED = {
     "Modelo não autorizado para oferta. Não ofereça nem descreva; diga que precisa consultar a equipe comercial (handoff=true).",
 }
 
+const CAPTION_SPECS = ["Motor", "Bateria", "Roda", "Cores disponíveis"]
+
+// Legenda com a ficha resumida; não menciona estoque.
+function productCaption(p: ProductRow) {
+  const specs = parseSpecs(p.specs)
+
+  return [
+    `*${p.name}${p.version ? ` ${p.version}` : ""}*`,
+    ...CAPTION_SPECS.map((label) => specs.find((s) => s.label === label)).flatMap(
+      (s) => (s ? [`${s.label}: ${s.value}`] : []),
+    ),
+    p.priceText ? `Valor: ${p.priceText}` : "",
+  ]
+    .filter(Boolean)
+    .join("\n")
+}
+
+// Envia o catálogo completo (modelos aprovados e autorizados) ou um modelo.
+export async function sendCatalog(
+  env: Env,
+  sender: Session,
+  conversationId: string,
+  productId: string | null,
+  state: CatalogToolState = { sentImages: new Set() },
+) {
+  const organizationId = sender.organizationId
+
+  const rows = await loadProducts(
+    env,
+    organizationId,
+    `AND status='approved' AND authorized_for_sale=1${productId ? " AND id=?" : ""}`,
+    productId ? [productId] : [],
+  )
+
+  if (!rows.length)
+    return { enviadas: 0, erro: "Nenhum produto aprovado e autorizado para enviar." }
+
+  let sent = 0
+  let error: string | null = null
+
+  for (const product of rows.slice(0, MAX_CATALOG_SEND)) {
+    const result = await sendProductPhotos(
+      env,
+      organizationId,
+      conversationId,
+      state,
+      product,
+      1,
+      () => productCaption(product),
+      sender,
+    )
+
+    sent += result.enviadas
+
+    if (result.erro) {
+      error = result.erro
+      break
+    }
+  }
+
+  return {
+    enviadas: sent,
+    erro: error ?? (sent ? null : "Os produtos não têm foto cadastrada."),
+  }
+}
+
 async function sendProductPhotos(
   env: Env,
   organizationId: string,
@@ -557,6 +648,7 @@ async function sendProductPhotos(
   product: ProductRow,
   limit: number,
   caption: (index: number) => string,
+  sender: Session = { userId: "", organizationId, role: "ai" },
 ) {
   const images = (
     await env.DB.prepare(
@@ -590,7 +682,7 @@ async function sendProductPhotos(
 
     const response = await sendFile(
       env,
-      { userId: "", organizationId, role: "ai" },
+      sender,
       conversationId,
       file,
       caption(index),
@@ -627,14 +719,14 @@ export async function runCatalogTool(
     )
 
     return {
-      disponiveis: rows.filter(stockConfirmed).map((p) => ({
+      modelosAutorizados: rows.map((p) => ({
         nome: p.name,
         modelo: p.model,
         versao: p.version,
+        estoque: stockConfirmed(p)
+          ? "confirmado"
+          : "não confirmado (não afirme que há estoque)",
       })),
-      autorizadosSemEstoqueConfirmado: rows
-        .filter((p) => !stockConfirmed(p))
-        .map((p) => p.model),
     }
   }
 
@@ -660,34 +752,19 @@ export async function runCatalogTool(
   const matches = await findProducts(env, organizationId, search)
 
   if (name === "enviarCatalogoFiltrado") {
-    const rows = (
-      await loadProducts(
-        env,
-        organizationId,
-        "AND status='approved' AND authorized_for_sale=1",
-      )
+    const result = await sendCatalog(
+      env,
+      { userId: "", organizationId, role: "ai" },
+      conversationId,
+      null,
+      state,
     )
-      .filter(stockConfirmed)
-      .slice(0, 5)
 
-    const results = []
-
-    for (const product of rows) {
-      results.push({
-        modelo: product.model,
-        ...(await sendProductPhotos(
-          env,
-          organizationId,
-          conversationId,
-          state,
-          product,
-          1,
-          () => [product.name, product.priceText].filter(Boolean).join(" - "),
-        )),
-      })
+    return {
+      ...result,
+      instrucao:
+        "As legendas das fotos não falam de estoque. Não afirme disponibilidade se não estiver confirmada.",
     }
-
-    return { produtos: results }
   }
 
   if (!matches.length)
@@ -729,7 +806,7 @@ export async function runCatalogTool(
         state,
         product,
         quantity,
-        (index) => (index === 0 ? product.name : ""),
+        (index) => (index === 0 ? productCaption(product) : ""),
       )),
     }
   }

@@ -16,7 +16,11 @@ import {
   X,
 } from "lucide-react"
 
+import { Boxes } from "lucide-react"
+
 import { api, errorMessage } from "./api"
+
+type CatalogItem = { id: string; name: string; version: string | null; status: string; authorized: boolean; images: unknown[] }
 
 type Conversation = {
   id: string
@@ -152,6 +156,41 @@ export default function Inbox({
   const [sending, setSending] = useState(false)
 
   const [file, setFile] = useState<File | null>(null)
+
+  const [catalogOpen, setCatalogOpen] = useState(false)
+
+  const [catalogItems, setCatalogItems] = useState<CatalogItem[]>([])
+
+  async function toggleCatalog() {
+    const next = !catalogOpen
+    setCatalogOpen(next)
+    if (!next) return
+    try {
+      const data = await api<{ products: CatalogItem[] }>("/api/catalog/products")
+      setCatalogItems(data.products.filter((p) => p.status === "approved" && p.authorized && p.images.length))
+    } catch (e) {
+      setError(errorMessage(e))
+    }
+  }
+
+  async function sendCatalog(productId: string | null) {
+    if (!activeId) return
+    setCatalogOpen(false)
+    setSending(true)
+    setError("")
+    try {
+      await api("/api/catalog/send", {
+        method: "POST",
+        body: { conversationId: activeId, productId },
+      })
+    } catch (e) {
+      setError(errorMessage(e))
+    } finally {
+      await loadThread(activeId)
+      void loadList()
+      setSending(false)
+    }
+  }
 
   const fileInput = useRef<HTMLInputElement>(null)
 
@@ -567,6 +606,36 @@ export default function Inbox({
                 >
                   <Paperclip size={19} />
                 </button>
+                <span className="inbox-catalog">
+                  <button
+                    type="button"
+                    className="inbox-attach"
+                    disabled={sending}
+                    onClick={() => void toggleCatalog()}
+                    aria-label="Enviar catálogo"
+                    title="Enviar catálogo ou modelo"
+                  >
+                    <Boxes size={19} />
+                  </button>
+                  {catalogOpen && (
+                    <div className="inbox-catalog-menu" role="menu">
+                      {catalogItems.length === 0 ? (
+                        <p>Nenhum modelo aprovado com foto.</p>
+                      ) : (
+                        <>
+                          <button type="button" role="menuitem" className="all" onClick={() => void sendCatalog(null)}>
+                            Catálogo completo ({catalogItems.length})
+                          </button>
+                          {catalogItems.map((p) => (
+                            <button type="button" role="menuitem" key={p.id} onClick={() => void sendCatalog(p.id)}>
+                              {p.name}{p.version ? ` ${p.version}` : ""}
+                            </button>
+                          ))}
+                        </>
+                      )}
+                    </div>
+                  )}
+                </span>
                 {file && (
                   <span className="inbox-file-chip" title={file.name}>
                     <span>{file.name}</span>

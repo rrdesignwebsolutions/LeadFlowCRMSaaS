@@ -392,3 +392,10 @@ h3 { font: 700 14px var(--font-display); }
 .catalog-add-photo { display: inline-flex; flex-direction: column; align-items: center; justify-content: center; gap: 4px; width: 112px; height: 112px; border: 2px dashed #c9d3ce; border-radius: 10px; color: #6b7a72; font-size: 12px; cursor: pointer; }
 .catalog-specs { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 4px 16px; margin: 0 0 14px; padding: 0; list-style: none; font-size: 13px; }
 .catalog-actions { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 12px; }
+
+.inbox-catalog { position: relative; display: inline-flex; }
+.inbox-catalog-menu { position: absolute; bottom: 110%; left: 0; z-index: 20; min-width: 220px; max-height: 320px; overflow-y: auto; background: #fff; border: 1px solid #dfe6e2; border-radius: 12px; box-shadow: 0 8px 28px rgba(0, 0, 0, 0.14); padding: 6px; display: flex; flex-direction: column; }
+.inbox-catalog-menu button { text-align: left; padding: 9px 12px; border-radius: 8px; font-size: 14px; }
+.inbox-catalog-menu button:hover { background: #f0f4f2; }
+.inbox-catalog-menu button.all { font-weight: 600; border-bottom: 1px solid #eef2f0; border-radius: 8px 8px 0 0; }
+.inbox-catalog-menu p { padding: 10px 12px; font-size: 13px; color: #6b7a72; }
