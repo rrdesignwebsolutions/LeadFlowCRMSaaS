@@ -1815,8 +1815,59 @@ export async function whatsappRoutes(
       request.headers.get("range"),
     )
 
+  const messageDelete = path.match(/^\/api\/messages\/([\w-]+)$/)
+  if (messageDelete && request.method === "DELETE") {
+    if (auth.role !== "admin") return json({ error: "Apenas administradores podem excluir mensagens." }, 403)
+    const message = await env.DB.prepare(
+      "SELECT conversation_id conversationId,status FROM messages WHERE id=? AND organization_id=?",
+    ).bind(messageDelete[1], org).first<{ conversationId: string; status: string }>()
+    if (!message) return json({ error: "Mensagem não encontrada." }, 404)
+    if (message.status === "queued") return json({ error: "Aguarde o envio da mensagem antes de excluí-la." }, 409)
+    await env.DB.batch([
+      env.DB.prepare(
+        `INSERT OR IGNORE INTO deleted_whatsapp_messages(organization_id,external_id,conversation_id,direction,external_created_at)
+         SELECT organization_id,external_id,conversation_id,direction,external_created_at FROM messages WHERE id=? AND organization_id=? AND external_id IS NOT NULL`,
+      ).bind(messageDelete[1], org),
+      env.DB.prepare("DELETE FROM messages WHERE id=? AND organization_id=?").bind(messageDelete[1], org),
+      env.DB.prepare(
+        `UPDATE conversations SET last_message_at=(SELECT MAX(COALESCE(external_created_at,created_at)) FROM messages WHERE conversation_id=? AND organization_id=?),
+         unread_count=MIN(unread_count,(SELECT COUNT(*) FROM messages WHERE conversation_id=? AND organization_id=? AND direction='inbound')),
+         updated_at=CURRENT_TIMESTAMP WHERE id=? AND organization_id=?`,
+      ).bind(message.conversationId, org, message.conversationId, org, message.conversationId, org),
+      env.DB.prepare(
+        "INSERT INTO audit_logs(id,organization_id,actor_user_id,action,resource_type,resource_id) VALUES(?,?,?,'message.deleted','message',?)",
+      ).bind(uid(), org, auth.userId, messageDelete[1]),
+    ])
+    return json({ ok: true })
+  }
+
+  const conversationDelete = path.match(/^\/api\/conversations\/([\w-]+)$/)
+  if (conversationDelete && request.method === "DELETE") {
+    if (auth.role !== "admin") return json({ error: "Apenas administradores podem excluir conversas." }, 403)
+    const conversation = await env.DB.prepare(
+      `SELECT c.id, EXISTS(SELECT 1 FROM messages m WHERE m.organization_id=c.organization_id AND m.conversation_id=c.id AND m.status='queued') queued,
+       (c.ai_reply_lock IS NOT NULL AND c.ai_reply_lock_until>CURRENT_TIMESTAMP) aiBusy
+       FROM conversations c WHERE c.id=? AND c.organization_id=?`,
+    ).bind(conversationDelete[1], org).first<{ id: string; queued: number; aiBusy: number }>()
+    if (!conversation) return json({ error: "Conversa não encontrada." }, 404)
+    if (conversation.queued || conversation.aiBusy)
+      return json({ error: "Aguarde o término do envio ou da resposta da IA antes de excluir." }, 409)
+    await env.DB.batch([
+      env.DB.prepare(
+        `INSERT OR IGNORE INTO deleted_whatsapp_messages(organization_id,external_id,conversation_id,direction,external_created_at)
+         SELECT organization_id,external_id,conversation_id,direction,external_created_at FROM messages
+         WHERE organization_id=? AND conversation_id=? AND external_id IS NOT NULL`,
+      ).bind(org, conversationDelete[1]),
+      env.DB.prepare("DELETE FROM conversations WHERE id=? AND organization_id=?").bind(conversationDelete[1], org),
+      env.DB.prepare(
+        "INSERT INTO audit_logs(id,organization_id,actor_user_id,action,resource_type,resource_id) VALUES(?,?,?,'conversation.deleted','conversation',?)",
+      ).bind(uid(), org, auth.userId, conversationDelete[1]),
+    ])
+    return json({ ok: true })
+  }
+
   const match = path.match(
-    /^\/api\/conversations\/([\w-]+)\/(messages|read|attachments|assignment)$/,
+    /^\/api\/conversations\/([\w-]+)\/(messages|read|unread|attachments|assignment)$/,
   )
 
   if (!match) return null
@@ -1912,6 +1963,13 @@ export async function whatsappRoutes(
     return json({ ok: true })
   }
 
+  if (match[2] === "unread" && request.method === "POST") {
+    await env.DB.prepare(
+      "UPDATE conversations SET unread_count=MAX(unread_count,1),updated_at=CURRENT_TIMESTAMP WHERE id=? AND organization_id=?",
+    ).bind(conversationId, org).run()
+    return json({ ok: true })
+  }
+
   if (match[2] === "messages" && request.method === "GET") {
     const rows =
       await env.DB.prepare(`SELECT id,direction,type,body,status,error_code errorCode,media_id IS NOT NULL hasMedia,media_filename mediaFilename,media_mime mediaMime,COALESCE(external_created_at,strftime('%Y-%m-%dT%H:%M:%fZ',created_at)) at
@@ -1920,9 +1978,12 @@ export async function whatsappRoutes(
         .all()
 
     const last = await env.DB.prepare(
-      "SELECT MAX(external_created_at) at FROM messages WHERE organization_id=? AND conversation_id=? AND direction='inbound'",
+      `SELECT MAX(at) at FROM (
+        SELECT external_created_at at FROM messages WHERE organization_id=? AND conversation_id=? AND direction='inbound'
+        UNION ALL SELECT external_created_at at FROM deleted_whatsapp_messages WHERE organization_id=? AND conversation_id=? AND direction='inbound'
+      )`,
     )
-      .bind(org, conversationId)
+      .bind(org, conversationId, org, conversationId)
       .first<{ at: string | null }>()
 
     const windowEndsAt = last?.at
