@@ -229,6 +229,37 @@ export async function catalogRoutes(
     return json({ ok: true, id }, 201)
   }
 
+  const orderMatch = path.match(/^\/api\/catalog\/products\/([\w-]+)\/images\/order$/)
+
+  if (orderMatch && request.method === "PUT") {
+    const body = await request.json<Record<string, unknown>>().catch(() => ({}))
+
+    const ids = Array.isArray(body.ids)
+      ? body.ids.filter((x): x is string => typeof x === "string")
+      : []
+
+    const owned = (
+      await env.DB.prepare(
+        "SELECT id FROM catalog_images WHERE product_id=? AND organization_id=?",
+      )
+        .bind(orderMatch[1], org)
+        .all<{ id: string }>()
+    ).results.map((r) => r.id)
+
+    if (ids.length !== owned.length || !ids.every((id) => owned.includes(id)))
+      return json({ error: "Ordem inválida." }, 400)
+
+    await env.DB.batch(
+      ids.map((id, index) =>
+        env.DB.prepare(
+          "UPDATE catalog_images SET position=?,is_primary=? WHERE id=? AND product_id=? AND organization_id=?",
+        ).bind(index, index === 0 ? 1 : 0, id, orderMatch[1], org),
+      ),
+    )
+
+    return json({ ok: true })
+  }
+
   const productMatch = path.match(/^\/api\/catalog\/products\/([\w-]+)$/)
 
   if (productMatch && request.method === "PUT") {

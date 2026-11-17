@@ -417,3 +417,7 @@ h3 { font: 700 14px var(--font-display); }
 .inbox-catalog-card img { width: 100%; aspect-ratio: 1; object-fit: contain; background: #fff; border-radius: 8px; }
 .inbox-catalog-menu button.inbox-catalog-card.on { border-color: #128c5a; background: #e8f5ee; }
 .inbox-catalog-card em { position: absolute; top: 4px; right: 4px; width: 20px; height: 20px; border-radius: 50%; background: #128c5a; color: #fff; font-style: normal; font-size: 12px; line-height: 20px; text-align: center; }
+
+.catalog-gallery figure[draggable=true] { cursor: grab; }
+.catalog-gallery figcaption .icon-button { width: 28px; height: 28px; background: rgba(255,255,255,0.92); color: #26342c; border-radius: 7px; }
+.catalog-gallery figcaption .icon-button:disabled { opacity: 0.4; }

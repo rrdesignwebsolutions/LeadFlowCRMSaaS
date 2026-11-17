@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState, type ChangeEvent, type FormEvent } from "react";
-import { Boxes, Pencil, Star, Trash2, Upload } from "lucide-react";
+import { Boxes, ChevronLeft, ChevronRight, Pencil, Trash2, Upload } from "lucide-react";
 import { api, errorMessage } from "./api";
 
 type Spec = { label: string; value: string };
@@ -84,6 +84,13 @@ export default function Catalog() {
   const update = (id: string, body: Record<string, unknown>) =>
     run(() => api(`/api/catalog/products/${id}`, { method: "PUT", body }));
 
+  const moveImage = (p: Product, from: number, to: number) => {
+    if (from === to || to < 0 || to >= p.images.length) return;
+    const ids = p.images.map((i) => i.id);
+    ids.splice(to, 0, ids.splice(from, 1)[0]);
+    void run(() => api(`/api/catalog/products/${p.id}/images/order`, { method: "PUT", body: { ids } }));
+  };
+
   const sendImage = async (id: string, file: File) => {
     const body = new FormData();
     body.set("file", file);
@@ -139,12 +146,24 @@ export default function Catalog() {
           </div>
 
           <div className="catalog-gallery">
-            {p.images.map((image) => (
-              <figure key={image.id} className={image.isPrimary ? "primary" : ""}>
-                <img src={`/api/catalog/images/${image.id}`} alt={`${p.name}`} loading="lazy" />
+            {p.images.map((image, index) => (
+              <figure
+                key={image.id}
+                className={image.isPrimary ? "primary" : ""}
+                draggable={canEdit}
+                onDragStart={(e) => { e.dataTransfer.setData("text/plain", image.id); }}
+                onDragOver={(e) => e.preventDefault()}
+                onDrop={(e) => {
+                  e.preventDefault();
+                  const from = p.images.findIndex((i) => i.id === e.dataTransfer.getData("text/plain"));
+                  if (from >= 0) moveImage(p, from, index);
+                }}
+              >
+                <img src={`/api/catalog/images/${image.id}`} alt={`${p.name}`} loading="lazy" draggable={false} />
                 {canEdit && (
                   <figcaption>
-                    <button className="icon-button" title="Definir como principal" aria-label="Definir como principal" onClick={() => void run(() => api(`/api/catalog/images/${image.id}`, { method: "PUT", body: { primary: true } }))}><Star size={14} /></button>
+                    <button className="icon-button" title="Mover para a esquerda" aria-label="Mover para a esquerda" disabled={busy || index === 0} onClick={() => moveImage(p, index, index - 1)}><ChevronLeft size={14} /></button>
+                    <button className="icon-button" title="Mover para a direita" aria-label="Mover para a direita" disabled={busy || index === p.images.length - 1} onClick={() => moveImage(p, index, index + 1)}><ChevronRight size={14} /></button>
                     <button className="icon-button" title="Excluir foto" aria-label="Excluir foto" onClick={() => confirm("Excluir esta foto?") && void run(() => api(`/api/catalog/images/${image.id}`, { method: "DELETE" }))}><Trash2 size={14} /></button>
                   </figcaption>
                 )}
