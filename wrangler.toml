@@ -33,3 +33,6 @@ EMAIL_FROM = "AV Flow CRM <contato@rrdesignwebsolutions.com.br>"
 # Segredos devem ser configurados com `wrangler secret put`:
 # SESSION_SECRET, META_APP_SECRET, META_VERIFY_TOKEN, ENCRYPTION_KEY,
 # INFINITEPAY_API_KEY (ativa a liberação automática após o pagamento)
+
+[migrations]
+remote = { command = "pnpm db:migrate:remote" }
