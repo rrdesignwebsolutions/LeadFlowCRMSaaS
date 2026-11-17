@@ -254,6 +254,7 @@ h3 { font: 700 14px var(--font-display); }
   flex: 1 1 auto;
   display: grid;
   grid-template-columns: minmax(270px, 340px) minmax(0, 1fr);
+  grid-template-rows: minmax(0, 1fr);
   overflow: hidden;
   background: #fff;
   border: 1px solid #e4ebe6;

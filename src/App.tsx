@@ -686,16 +686,18 @@ function Shell({
               />
             </>
           )}
-          <footer className="mt-8 border-t border-line pt-5 text-xs text-muted">
-            <a
-              href="/privacy.html"
-              target="_blank"
-              rel="noreferrer"
-              className="underline"
-            >
-              Política de Privacidade
-            </a>
-          </footer>
+          {view !== "inbox" && (
+            <footer className="mt-8 border-t border-line pt-5 text-xs text-muted">
+              <a
+                href="/privacy.html"
+                target="_blank"
+                rel="noreferrer"
+                className="underline"
+              >
+                Política de Privacidade
+              </a>
+            </footer>
+          )}
         </div>
       </main>
     </div>
