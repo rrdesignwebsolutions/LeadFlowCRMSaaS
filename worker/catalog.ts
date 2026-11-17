@@ -577,7 +577,7 @@ export const catalogTools = [
   },
 ]
 
-export type CatalogToolState = { sentImages: Set<string> }
+export type CatalogToolState = { sentImages: Set<string>; assignmentRevision?: number }
 
 async function findProducts(env: Env, organizationId: string, query: string) {
   const wanted = normalize(query)
@@ -757,6 +757,7 @@ async function sendProductPhotos(
       conversationId,
       file,
       caption(index),
+      state.assignmentRevision,
     )
 
     if (response.ok) {

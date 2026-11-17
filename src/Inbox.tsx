@@ -18,7 +18,7 @@ import {
 
 import { Boxes } from "lucide-react"
 
-import { api, errorMessage } from "./api"
+import { api, errorMessage, type Member, type Team } from "./api"
 
 type CatalogItem = { id: string; name: string; version: string | null; status: string; authorized: boolean; images: Array<{ id: string; isPrimary: boolean }> }
 
@@ -38,6 +38,7 @@ type Conversation = {
   leadStatus: string | null
 
   humanRequestedAt?: string | null
+  assignedTo: string | null
 }
 
 type Message = {
@@ -164,6 +165,35 @@ export default function Inbox({
   const [catalogItems, setCatalogItems] = useState<CatalogItem[]>([])
 
   const [selected, setSelected] = useState<string[]>([])
+  const [members, setMembers] = useState<Member[]>([])
+  const [assigning, setAssigning] = useState(false)
+  const [assignmentNotice, setAssignmentNotice] = useState("")
+
+  useEffect(() => {
+    api<Team>("/api/team")
+      .then((team) => setMembers(team.members.filter((member) => member.status === "active")))
+      .catch((e) => setError(errorMessage(e)))
+  }, [])
+
+  async function assign(id: string, assignedTo: string | null) {
+    setAssigning(true)
+    setError("")
+    setAssignmentNotice("")
+    try {
+      const result = await api<{ warning?: string }>(`/api/conversations/${id}/assignment`, {
+        method: "POST",
+        body: { assignedTo },
+      })
+      await loadList()
+      await loadThread(id)
+      setAssignmentNotice(result.warning ?? (assignedTo ? "Conversa atribuída. A IA está pausada." : "Conversa devolvida à IA."))
+    } catch (e) {
+      setError(errorMessage(e))
+      await loadList()
+    } finally {
+      setAssigning(false)
+    }
+  }
 
   async function toggleCatalog() {
     const next = !catalogOpen
@@ -183,6 +213,7 @@ export default function Inbox({
     setCatalogOpen(false)
     setSending(true)
     setError("")
+    setAssignmentNotice("")
     try {
       await api("/api/catalog/send", {
         method: "POST",
@@ -253,6 +284,7 @@ export default function Inbox({
     setThread(null)
 
     setError("")
+    setAssignmentNotice("")
 
     await loadThread(id)
 
@@ -475,6 +507,26 @@ export default function Inbox({
                 <b>{active.name ?? active.phone}</b>
                 <small>{active.phone}</small>
               </span>
+              <label className="inbox-assignment">
+                <span>Destinar para</span>
+                <select
+                  aria-label="Destinar conversa para"
+                  value={active.assignedTo ?? ""}
+                  disabled={assigning}
+                  onChange={(event) => void assign(active.id, event.target.value || null)}
+                >
+                  <option value="">Assistente de IA</option>
+                  {active.assignedTo && !members.some((member) => member.id === active.assignedTo) && (
+                    <option value={active.assignedTo}>Membro indisponível</option>
+                  )}
+                  {members.map((member) => <option key={member.id} value={member.id}>{member.name}</option>)}
+                </select>
+                {!active.assignedTo && (
+                  <button type="button" disabled={assigning} onClick={() => void assign(active.id, null)}>
+                    Retomar IA
+                  </button>
+                )}
+              </label>
               <button
                 type="button"
                 className="inbox-head-action"
@@ -493,6 +545,7 @@ export default function Inbox({
               </button>
             </header>
 
+            {assignmentNotice && <p className="inbox-assignment-notice" role="status">{assignmentNotice}</p>}
             <div className="inbox-message-area">
               <div className="inbox-day-label">Mensagens</div>
               {thread?.messages.map((message) => (

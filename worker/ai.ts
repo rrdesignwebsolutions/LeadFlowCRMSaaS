@@ -294,10 +294,41 @@ export async function autoReply(
 
   if (!settings?.enabled) return
 
+  const lockId = uid()
+  let acquired = false
+  for (let attempt = 0; attempt < 120; attempt++) {
+    const result = await env.DB.prepare(
+      `UPDATE conversations SET ai_reply_lock=?,ai_reply_lock_until=datetime('now','+5 minutes')
+       WHERE id=? AND organization_id=? AND (ai_reply_lock IS NULL OR ai_reply_lock_until<=CURRENT_TIMESTAMP)`,
+    ).bind(lockId, conversationId, organizationId).run()
+    if (result.meta.changes) {
+      acquired = true
+      break
+    }
+    await new Promise((resolve) => setTimeout(resolve, 500))
+  }
+  if (!acquired) throw new Error("Não foi possível iniciar a resposta da IA: conversa ocupada")
+
+  try {
+    return await generateReply(env, organizationId, conversationId, inboundExternalId, settings)
+  } finally {
+    await env.DB.prepare(
+      "UPDATE conversations SET ai_reply_lock=NULL,ai_reply_lock_until=NULL WHERE id=? AND organization_id=? AND ai_reply_lock=?",
+    ).bind(conversationId, organizationId, lockId).run()
+  }
+}
+
+async function generateReply(
+  env: Env,
+  organizationId: string,
+  conversationId: string,
+  inboundExternalId: string,
+  settings: { assistant_name: string; instructions: string },
+) {
   const context = await env.DB.prepare(
-    `SELECT l.id leadId,l.status,l.ai_handoff_at handoffAt,o.name organization,ct.name contactName,
+    `SELECT l.id leadId,l.status,l.ai_handoff_at handoffAt,o.name organization,ct.name contactName,c.assigned_to assignedTo,c.assignment_revision assignmentRevision,
       (SELECT u.name FROM messages hm JOIN users u ON u.id=hm.sent_by WHERE hm.organization_id=c.organization_id AND hm.conversation_id=c.id AND hm.sent_by IS NOT NULL ORDER BY hm.created_at DESC,hm.rowid DESC LIMIT 1) attendantName,
-      (SELECT 1 FROM messages m WHERE m.organization_id=c.organization_id AND m.conversation_id=c.id AND m.direction='outbound' AND m.is_ai=0 AND m.status<>'failed' AND datetime(COALESCE(m.external_created_at,m.created_at)) > datetime('now', ?)) humanActive
+      (SELECT 1 FROM messages m WHERE m.organization_id=c.organization_id AND m.conversation_id=c.id AND m.direction='outbound' AND m.is_ai=0 AND m.status<>'failed' AND datetime(COALESCE(m.external_created_at,m.created_at)) > datetime('now', ?) AND (c.ai_resumed_at IS NULL OR julianday(COALESCE(m.external_created_at,m.created_at)) > julianday(c.ai_resumed_at))) humanActive
      FROM conversations c
      JOIN leads l ON l.contact_id=c.contact_id AND l.organization_id=c.organization_id
      JOIN contacts ct ON ct.id=c.contact_id AND ct.organization_id=c.organization_id
@@ -313,9 +344,11 @@ export async function autoReply(
       contactName: string | null
       attendantName: string | null
       humanActive: number | null
+      assignedTo: string | null
+      assignmentRevision: number
     }>()
 
-  if (!context || context.humanActive) return
+  if (!context || context.humanActive || context.assignedTo) return
 
   if (
     context.handoffAt &&
@@ -363,7 +396,7 @@ export async function autoReply(
     .first()
 
   const useCatalog = await catalogEnabled(env, organizationId)
-  const toolState: CatalogToolState = { sentImages: new Set() }
+  const toolState: CatalogToolState = { sentImages: new Set(), assignmentRevision: context.assignmentRevision }
 
   const raw = await llm(env, {
     instructions: systemPrompt(
@@ -376,8 +409,14 @@ export async function autoReply(
     ),
     ...(useCatalog && {
       tools: catalogTools,
-      runTool: (name: string, args: Record<string, unknown>) =>
-        runCatalogTool(env, organizationId, conversationId, name, args, toolState),
+      runTool: async (name: string, args: Record<string, unknown>) => {
+        const current = await env.DB.prepare(
+          "SELECT assignment_revision revision,assigned_to assignedTo FROM conversations WHERE id=? AND organization_id=?",
+        ).bind(conversationId, organizationId).first<{ revision: number; assignedTo: string | null }>()
+        if (!current || current.assignedTo || current.revision !== context.assignmentRevision)
+          throw new Error("Atendimento atribuído a outra pessoa")
+        return runCatalogTool(env, organizationId, conversationId, name, args, toolState)
+      },
     }),
     input: [
       {
@@ -417,12 +456,22 @@ export async function autoReply(
 
   // Um humano pode ter assumido enquanto a IA gerava a resposta.
   const takenOver = await env.DB.prepare(
-    `SELECT 1 x FROM messages WHERE organization_id=? AND conversation_id=? AND direction='outbound' AND is_ai=0 AND status<>'failed' AND datetime(COALESCE(external_created_at,created_at)) > datetime('now', ?)`,
+    `SELECT 1 x FROM conversations c WHERE c.organization_id=? AND c.id=? AND
+      (c.assigned_to IS NOT NULL OR c.assignment_revision<>? OR EXISTS
+        (SELECT 1 FROM messages m WHERE m.organization_id=c.organization_id AND m.conversation_id=c.id AND m.direction='outbound' AND m.is_ai=0 AND m.status<>'failed' AND datetime(COALESCE(m.external_created_at,m.created_at)) > datetime('now', ?) AND (c.ai_resumed_at IS NULL OR julianday(COALESCE(m.external_created_at,m.created_at)) > julianday(c.ai_resumed_at))))`,
   )
-    .bind(organizationId, conversationId, `-${HUMAN_PAUSE_MINUTES} minutes`)
+    .bind(organizationId, conversationId, context.assignmentRevision, `-${HUMAN_PAUSE_MINUTES} minutes`)
     .first()
 
   if (takenOver) return
+
+  const latest = await env.DB.prepare(
+    `SELECT direction,external_id externalId FROM messages
+     WHERE organization_id=? AND conversation_id=? AND status<>'failed'
+       AND (direction='inbound' OR is_ai=0 OR type='text')
+     ORDER BY COALESCE(external_created_at,strftime('%Y-%m-%dT%H:%M:%fZ',created_at)) DESC,rowid DESC LIMIT 1`,
+  ).bind(organizationId, conversationId).first<{ direction: string; externalId: string | null }>()
+  if (!latest || latest.direction !== "inbound" || latest.externalId !== inboundExternalId) return
 
   const score =
     typeof l.score === "number"
@@ -440,8 +489,15 @@ export async function autoReply(
     { userId: "", organizationId, role: "ai" },
     conversationId,
     reply,
-    { talkButton: offerSalesperson },
+    { talkButton: offerSalesperson, assignmentRevision: context.assignmentRevision },
   )
+
+  if (!sent.ok) throw new Error(`envio da resposta da IA falhou (${sent.status})`)
+
+  const stillAssignedToAi = await env.DB.prepare(
+    "SELECT 1 FROM conversations WHERE id=? AND organization_id=? AND assigned_to IS NULL AND assignment_revision=?",
+  ).bind(conversationId, organizationId, context.assignmentRevision).first()
+  if (!stillAssignedToAi) return true
 
   await env.DB.prepare(
     `UPDATE leads SET
@@ -473,8 +529,6 @@ export async function autoReply(
       organizationId,
     )
     .run()
-
-  if (!sent.ok) throw new Error(`envio da resposta da IA falhou (${sent.status})`)
 
   if (decision.handoff) await requestHuman(env, organizationId, conversationId, false)
 

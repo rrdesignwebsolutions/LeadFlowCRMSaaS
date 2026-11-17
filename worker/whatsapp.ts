@@ -1310,6 +1310,14 @@ function mediaKind(mime: string) {
   return "document"
 }
 
+async function aiAssignmentValid(env: Env, organizationId: string, conversationId: string, revision: number | undefined) {
+  if (revision === undefined) return true
+  const row = await env.DB.prepare(
+    "SELECT 1 FROM conversations WHERE id=? AND organization_id=? AND assigned_to IS NULL AND assignment_revision=?",
+  ).bind(conversationId, organizationId, revision).first()
+  return !!row
+}
+
 async function sendAttachment(
   env: Env,
   auth: Session,
@@ -1329,7 +1337,10 @@ export async function sendFile(
   conversationId: string,
   file: unknown,
   caption: string,
+  assignmentRevision?: number,
 ) {
+  if (!(await aiAssignmentValid(env, auth.organizationId, conversationId, assignmentRevision)))
+    return json({ error: "A conversa foi atribuída a outra pessoa." }, 409)
   if (!(file instanceof File) || file.size === 0)
     return json({ error: "Selecione um arquivo." }, 400)
 
@@ -1455,6 +1466,9 @@ export async function sendFile(
     if (caption && kind !== "audio") media.caption = caption
     if (kind === "document") media.filename = filename
 
+    if (!(await aiAssignmentValid(env, auth.organizationId, conversationId, assignmentRevision)))
+      return fail("assignment_changed", "A conversa foi atribuída a outra pessoa.", 409)
+
     result = await graphFetch(
       env,
       `${conversation.phoneNumberId}/messages`,
@@ -1509,8 +1523,10 @@ export async function sendText(
   auth: Session,
   conversationId: string,
   text: unknown,
-  options: { talkButton?: boolean } = {},
+  options: { talkButton?: boolean; assignmentRevision?: number } = {},
 ) {
+  if (!(await aiAssignmentValid(env, auth.organizationId, conversationId, options.assignmentRevision)))
+    return json({ error: "A conversa foi atribuída a outra pessoa." }, 409)
   const body = typeof text === "string" ? text.trim() : ""
 
   if (!body || body.length > 4096)
@@ -1595,6 +1611,9 @@ export async function sendText(
 
   try {
     const token = await decryptToken(env, conversation.token)
+
+    if (!(await aiAssignmentValid(env, auth.organizationId, conversationId, options.assignmentRevision)))
+      return fail("assignment_changed", "A conversa foi atribuída a outra pessoa.", 409)
 
     result = await graphFetch(
       env,
@@ -1762,7 +1781,7 @@ export async function whatsappRoutes(
 
   if (path === "/api/conversations" && request.method === "GET") {
     return json(
-      await env.DB.prepare(`SELECT c.id,c.unread_count unread,c.last_message_at lastMessageAt,c.human_requested_at humanRequestedAt,ct.name,ct.phone_e164 phone,
+      await env.DB.prepare(`SELECT c.id,c.unread_count unread,c.last_message_at lastMessageAt,c.human_requested_at humanRequestedAt,c.assigned_to assignedTo,ct.name,ct.phone_e164 phone,
       (SELECT l.status FROM leads l WHERE l.contact_id=ct.id AND l.organization_id=c.organization_id LIMIT 1) leadStatus,
       (SELECT m.body FROM messages m WHERE m.conversation_id=c.id AND m.organization_id=c.organization_id ORDER BY COALESCE(m.external_created_at,strftime('%Y-%m-%dT%H:%M:%fZ',m.created_at)) DESC,m.rowid DESC LIMIT 1) preview
       FROM conversations c JOIN contacts ct ON ct.id=c.contact_id AND ct.organization_id=c.organization_id
@@ -1784,7 +1803,7 @@ export async function whatsappRoutes(
     )
 
   const match = path.match(
-    /^\/api\/conversations\/([\w-]+)\/(messages|read|attachments)$/,
+    /^\/api\/conversations\/([\w-]+)\/(messages|read|attachments|assignment)$/,
   )
 
   if (!match) return null
@@ -1809,6 +1828,66 @@ export async function whatsappRoutes(
     .first()
 
   if (!owned) return json({ error: "Conversa não encontrada." }, 404)
+
+  if (match[2] === "assignment" && request.method === "POST") {
+    const body = await request.json<{ assignedTo?: unknown }>()
+    if (body.assignedTo !== null && (typeof body.assignedTo !== "string" || !body.assignedTo))
+      return json({ error: "Selecione a IA ou um membro da equipe." }, 400)
+    if (body.assignedTo) {
+      const member = await env.DB.prepare(
+        "SELECT user_id FROM organization_members WHERE organization_id=? AND user_id=? AND status='active'",
+      ).bind(org, body.assignedTo).first()
+      if (!member) return json({ error: "Membro ativo não encontrado na equipe." }, 400)
+    }
+
+    const current = await env.DB.prepare(
+      "SELECT assigned_to assignedTo FROM conversations WHERE id=? AND organization_id=?",
+    ).bind(conversationId, org).first<{ assignedTo: string | null }>()
+    if (!current) return json({ error: "Conversa não encontrada." }, 404)
+    if (current.assignedTo === body.assignedTo && body.assignedTo !== null) return json({ ok: true })
+
+    await env.DB.batch([
+      env.DB.prepare(
+        `UPDATE conversations SET assigned_to=?,assignment_revision=assignment_revision+1,
+         ai_resumed_at=CASE WHEN ? IS NULL THEN strftime('%Y-%m-%dT%H:%M:%fZ','now') ELSE ai_resumed_at END,
+         human_requested_at=CASE WHEN ? IS NULL THEN NULL ELSE human_requested_at END,updated_at=CURRENT_TIMESTAMP
+         WHERE id=? AND organization_id=?`,
+      ).bind(body.assignedTo, body.assignedTo, body.assignedTo, conversationId, org),
+      ...(body.assignedTo === null ? [env.DB.prepare(
+        `UPDATE leads SET ai_handoff_at=NULL,updated_at=CURRENT_TIMESTAMP
+         WHERE organization_id=? AND contact_id=(SELECT contact_id FROM conversations WHERE id=? AND organization_id=?)`,
+      ).bind(org, conversationId, org)] : []),
+    ])
+
+    if (body.assignedTo === null) {
+      const aiSettings = await env.DB.prepare(
+        "SELECT enabled FROM ai_settings WHERE organization_id=?",
+      ).bind(org).first<{ enabled: number }>()
+      if (!env.OPENAI_API_KEY || !aiSettings?.enabled)
+        return json({ ok: true, warning: "A conversa foi devolvida à IA, mas o assistente está desativado ou não está configurado." })
+      const pending = await env.DB.prepare(
+        `SELECT direction,type,status,external_id externalId,external_created_at at FROM messages
+         WHERE organization_id=? AND conversation_id=? AND status<>'failed'
+         ORDER BY COALESCE(external_created_at,strftime('%Y-%m-%dT%H:%M:%fZ',created_at)) DESC,rowid DESC LIMIT 1`,
+      ).bind(org, conversationId).first<{ direction: string; type: string; status: string; externalId: string | null; at: string | null }>()
+      if (pending?.direction === "outbound" && pending.status === "queued")
+        return json({ ok: true, warning: "Há uma mensagem em envio. Aguarde e use Retomar IA novamente para verificar se existe resposta pendente." })
+      if (pending?.direction === "inbound") {
+        if (pending.type !== "text" || !pending.externalId)
+          return json({ ok: true, warning: "A última mensagem não é de texto; a IA não pode respondê-la automaticamente." })
+        if (!pending.at || Date.now() - new Date(pending.at).getTime() > WINDOW_MS)
+          return json({ ok: true, warning: "A janela de 24 horas expirou; a IA aguardará uma nova mensagem." })
+        try {
+          const replied = await autoReply(env, org, conversationId, pending.externalId)
+          if (!replied) return json({ ok: true, warning: "A IA não respondeu à mensagem pendente. Confira se está ativa e se a conversa ainda precisa de resposta." })
+        } catch (error) {
+          console.error("ai_resume_failed", error instanceof Error ? error.message : "unknown")
+          return json({ ok: true, warning: "A conversa foi devolvida à IA, mas não foi possível responder à mensagem pendente." })
+        }
+      }
+    }
+    return json({ ok: true })
+  }
 
   if (match[2] === "read" && request.method === "POST") {
     await env.DB.prepare(
