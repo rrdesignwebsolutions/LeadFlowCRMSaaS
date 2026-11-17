@@ -303,6 +303,10 @@ h3 { font: 700 14px var(--font-display); }
 .inbox-bubble.inbound { border-top-left-radius: 4px; background: #fff; }
 .inbox-bubble.outbound { border-color: #d4eee0; border-top-right-radius: 4px; background: #e4f7eb; }
 .inbox-bubble p { color: #26342c; font-size: 13px; line-height: 1.5; white-space: pre-wrap; overflow-wrap: anywhere; }
+.score-badge { display: inline-block; padding: 3px 9px; border-radius: 99px; color: #5a685f; background: #eef2ef; font-size: 11px; font-weight: 700; white-space: nowrap; }
+.score-badge.hot { color: #b3261e; background: #fde4e1; }
+.score-badge.warm { color: #9a5b00; background: #fdeccd; }
+.score-badge.cold { color: #5f6f7a; background: #e6edf2; }
 .inbox-temp { flex: 0 0 auto; margin-left: 6px; padding: 2px 7px; border-radius: 99px; color: #5a685f; background: #eef2ef; font-size: 9px; font-weight: 700; }
 .inbox-temp.hot { color: #b3261e; background: #fde4e1; }
 .inbox-temp.negotiating { color: #9a5b00; background: #fdeccd; }

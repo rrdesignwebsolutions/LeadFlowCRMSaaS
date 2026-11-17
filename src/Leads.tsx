@@ -116,6 +116,12 @@ function LeadDetail({ lead, onClose, onSaved }: { lead: Lead; onClose: () => voi
   );
 }
 
+function ScoreBadge({ score }: { score: number | null }) {
+  if (score === null) return <>—</>;
+  const [label, tone] = score >= 70 ? ["Quente", "hot"] : score >= 40 ? ["Morno", "warm"] : ["Frio", "cold"];
+  return <span className={`score-badge ${tone}`} title="Probabilidade de compra estimada pela IA (0 a 100)">{score} · {label}</span>;
+}
+
 export default function Leads({ leads, loadError, onChanged }: { leads: Lead[]; loadError: string; onChanged: () => void }) {
   const [query, setQuery] = useState("");
   const [filter, setFilter] = useState("all");
@@ -152,7 +158,7 @@ export default function Leads({ leads, loadError, onChanged }: { leads: Lead[]; 
             <tbody>{visible.map((l) => (
               <tr key={l.id} className="clickable" tabIndex={0} onClick={() => setOpenId(l.id)} onKeyDown={(e) => e.key === "Enter" && setOpenId(l.id)}>
                 <td>{l.name ?? "Sem nome"}</td><td>{l.phone}</td><td>{l.productInterest ?? "—"}</td>
-                <td>{l.aiScore ?? "—"}</td>
+                <td><ScoreBadge score={l.aiScore} /></td>
                 <td><span className={`badge ${l.status}`}>{statusLabels[l.status] ?? l.status}</span></td>
                 <td>{l.followUpAt ? new Date(l.followUpAt).toLocaleString("pt-BR", { dateStyle: "short", timeStyle: "short" }) : "—"}</td>
               </tr>
