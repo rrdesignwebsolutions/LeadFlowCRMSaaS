@@ -256,6 +256,11 @@ function WorkflowCanvas({
         }}
       >
         <svg className="workflow-canvas-edges" width={stageWidth} height={stageHeight} aria-hidden="true">
+          <defs>
+            <marker id="workflow-edge-arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+              <path d="M 0 0 L 10 5 L 0 10 z" fill="#8fa39a" />
+            </marker>
+          </defs>
           {edges.map((edge) => {
             const source = nodes.find((node) => node.id === edge.source)
             const target = nodes.find((node) => node.id === edge.target)
@@ -278,6 +283,7 @@ function WorkflowCanvas({
                   fill="none"
                   stroke={edge.sourceHandle === "true" ? "#16a36a" : edge.sourceHandle === "false" ? "#d28a24" : "#8fa39a"}
                   strokeWidth="2"
+                  markerEnd="url(#workflow-edge-arrow)"
                 />
                 <circle cx={x2} cy={y2} r="4" fill="#fff" stroke="#8fa39a" strokeWidth="2" />
                 {edge.sourceHandle && <text x={labelX} y={labelY} textAnchor="middle" className={`workflow-edge-label ${edge.sourceHandle}`}>
