@@ -20,6 +20,7 @@ import {
 import { Boxes } from "lucide-react"
 
 import { api, errorMessage, type Member, type Team } from "./api"
+import { displayMessage } from "./messageDisplay"
 import { QuickReplyForm, type QuickReply } from "./QuickReplies"
 import { clampSidebarWidth, DEFAULT_SIDEBAR_WIDTH, MIN_SIDEBAR_WIDTH, sidebarWidthLimit } from "./inboxResize"
 
@@ -50,6 +51,7 @@ type Conversation = {
   phone: string
 
   preview: string | null
+  previewType: string | null
 
   leadStatus: string | null
 
@@ -585,7 +587,7 @@ export default function Inbox({
                       <time>{time(conversation.lastMessageAt)}</time>
                     </span>
                     <span className="inbox-conversation-bottom">
-                      <span>{conversation.preview || conversation.phone}</span>
+                      <span>{displayMessage(conversation.preview, conversation.previewType) || conversation.phone}</span>
                       {conversation.unread > 0 && (
                         <em>{conversation.unread}</em>
                       )}
@@ -787,7 +789,7 @@ export default function Inbox({
                           message.type,
                         )
                           ? message.body.replace(mediaLabel, "")
-                          : message.body}
+                          : displayMessage(message.body, message.type)}
                       </p>
                     ) : null}
                     {message.hasMedia ? (

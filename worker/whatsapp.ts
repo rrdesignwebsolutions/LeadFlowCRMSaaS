@@ -128,6 +128,8 @@ type WaMessage = {
   timestamp?: string
   type?: string
   history_context?: { status?: string }
+  errors?: Array<{ code?: number }>
+  unsupported?: { type?: string }
 
   text?: { body?: string }
 
@@ -275,6 +277,16 @@ async function handleAccountUpdate(
 function describeMessage(m: WaMessage) {
   const type = m.type ?? "unknown"
 
+  const unsupportedKinds: Record<string, string> = {
+    gif: "GIF", group_invite: "convite de grupo", poll_creation: "enquete",
+    poll_update: "resposta de enquete", edit: "edição de mensagem",
+    reaction: "reação", location: "localização", image: "imagem",
+    interactive: "mensagem interativa", product: "produto", order: "pedido",
+  }
+  const code = m.errors?.[0]?.code
+  const errorCode = type === "unsupported" && typeof code === "number" && Number.isSafeInteger(code) && code > 0
+    ? String(code) : null
+  const kind = errorCode === "131051" && m.unsupported?.type ? unsupportedKinds[m.unsupported.type] : undefined
   const labels: Record<string, string> = {
     image: "[Imagem]",
     video: "[Vídeo]",
@@ -285,7 +297,11 @@ function describeMessage(m: WaMessage) {
     contacts: "[Contato]",
     reaction: "[Reação]",
     errors: "[Mensagem indisponível no histórico]",
-    unsupported: "[Mensagem não suportada]",
+    unsupported: errorCode === "131060"
+      ? "[Mensagem indisponível pela Meta. Confira no WhatsApp Business.]"
+      : errorCode === "131051"
+        ? `[${kind ? `${kind}: tipo` : "Tipo"} de mensagem não suportado pela API da Meta. Confira no WhatsApp Business.]`
+        : "[Mensagem não disponibilizada pela Meta. Confira no WhatsApp Business.]",
   }
 
   const body =
@@ -304,7 +320,7 @@ function describeMessage(m: WaMessage) {
       .filter(Boolean)
       .join(" ")
 
-  return { type, body: body.slice(0, 4096) }
+  return { type, body: body.slice(0, 4096), errorCode }
 }
 
 async function handleInbound(
@@ -363,7 +379,7 @@ async function handleInbound(
     ? new Date(Number(m.timestamp) * 1000).toISOString()
     : new Date().toISOString()
 
-  const { type, body } = describeMessage(m)
+  const { type, body, errorCode } = describeMessage(m)
   const media = m.document ?? m.image ?? m.video ?? m.audio ?? m.sticker
   const mediaFilename = m.document?.filename?.slice(0, 255) ?? null
   const inbound = direction === "inbound"
@@ -398,7 +414,7 @@ async function handleInbound(
 
   batch.push(
     env.DB.prepare(
-      "INSERT OR IGNORE INTO messages(id,organization_id,conversation_id,external_id,direction,type,body,status,external_created_at,media_id,media_filename,media_mime) VALUES(?,?,?,?,?,?,?, ?,?,?,?,?)",
+      "INSERT OR IGNORE INTO messages(id,organization_id,conversation_id,external_id,direction,type,body,status,external_created_at,media_id,media_filename,media_mime,error_code) VALUES(?,?,?,?,?,?,?, ?,?,?,?,?,?)",
     )
 
       .bind(
@@ -414,6 +430,7 @@ async function handleInbound(
         media?.id ?? null,
         mediaFilename,
         media?.mime_type ?? null,
+        errorCode,
       ),
 
     env.DB.prepare(
@@ -1796,7 +1813,8 @@ export async function whatsappRoutes(
     return json(
       await env.DB.prepare(`SELECT c.id,c.unread_count unread,c.last_message_at lastMessageAt,c.human_requested_at humanRequestedAt,c.assigned_to assignedTo,ct.name,ct.phone_e164 phone,
       (SELECT ${effectiveLeadStatus("l")} FROM leads l WHERE l.contact_id=ct.id AND l.organization_id=c.organization_id LIMIT 1) leadStatus,
-      (SELECT m.body FROM messages m WHERE m.conversation_id=c.id AND m.organization_id=c.organization_id ORDER BY COALESCE(m.external_created_at,strftime('%Y-%m-%dT%H:%M:%fZ',m.created_at)) DESC,m.rowid DESC LIMIT 1) preview
+      (SELECT m.body FROM messages m WHERE m.conversation_id=c.id AND m.organization_id=c.organization_id ORDER BY COALESCE(m.external_created_at,strftime('%Y-%m-%dT%H:%M:%fZ',m.created_at)) DESC,m.rowid DESC LIMIT 1) preview,
+      (SELECT m.type FROM messages m WHERE m.conversation_id=c.id AND m.organization_id=c.organization_id ORDER BY COALESCE(m.external_created_at,strftime('%Y-%m-%dT%H:%M:%fZ',m.created_at)) DESC,m.rowid DESC LIMIT 1) previewType
       FROM conversations c JOIN contacts ct ON ct.id=c.contact_id AND ct.organization_id=c.organization_id
       WHERE c.organization_id=? ORDER BY (c.human_requested_at IS NOT NULL) DESC,c.last_message_at DESC LIMIT 200`)
         .bind(org)

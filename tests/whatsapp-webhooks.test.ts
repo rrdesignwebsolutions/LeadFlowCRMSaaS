@@ -36,6 +36,42 @@ function database() {
 }
 
 describe("WhatsApp coexistence webhooks", () => {
+  it.each([
+    [131060, undefined, "[Mensagem indisponível pela Meta. Confira no WhatsApp Business.]"],
+    [131051, "poll_creation", "[enquete: tipo de mensagem não suportado pela API da Meta. Confira no WhatsApp Business.]"],
+    [131051, "unknown_kind", "[Tipo de mensagem não suportado pela API da Meta. Confira no WhatsApp Business.]"],
+  ])("informa o motivo para mensagem não disponibilizada (%s)", async (code, subtype, expected) => {
+    const { env, statements } = database()
+    const after = vi.fn()
+    await handleMetaPayload(env, {
+      object: "whatsapp_business_account",
+      entry: [{ id: "12345", changes: [{ field: "messages", value: {
+        metadata: { phone_number_id: "98765" },
+        messages: [{ id: "wamid.unsupported", from: "15551234567", type: "unsupported",
+          errors: [{ code }], unsupported: { type: subtype }, timestamp: "1700000000" }],
+      } }] }],
+    }, "unsupported-hash", after)
+    const message = statements.find((s) => s.sql.includes("INSERT OR IGNORE INTO messages"))
+    expect(message?.args[6]).toBe(expected)
+    expect(message?.args[12]).toBe(String(code))
+    expect(statements.find((s) => s.sql.includes("unread_count=unread_count+?"))?.args[2]).toBe(1)
+    expect(after).not.toHaveBeenCalled()
+  })
+
+  it("preserva código desconhecido sem atribuir um motivo específico", async () => {
+    const { env, statements } = database()
+    await handleMetaPayload(env, {
+      object: "whatsapp_business_account",
+      entry: [{ id: "12345", changes: [{ field: "messages", value: {
+        metadata: { phone_number_id: "98765" },
+        messages: [{ id: "wamid.unknown", from: "15551234567", type: "unsupported", errors: [{ code: 999 }], timestamp: "1700000000" }],
+      } }] }],
+    }, "unknown-hash")
+    const message = statements.find((s) => s.sql.includes("INSERT OR IGNORE INTO messages"))
+    expect(message?.args[12]).toBe("999")
+    expect(message?.args[6]).toBe("[Mensagem não disponibilizada pela Meta. Confira no WhatsApp Business.]")
+  })
+
   it("stores an app message as outbound without marking it unread or scheduling AI", async () => {
     const { env, statements } = database()
     const after = vi.fn()

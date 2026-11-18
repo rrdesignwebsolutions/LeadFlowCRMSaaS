@@ -1,7 +1,7 @@
 import { DatabaseSync } from "node:sqlite"
 import { readdirSync, readFileSync } from "node:fs"
 import { join } from "node:path"
-import { describe, expect, it } from "vitest"
+import { describe, expect, it, vi } from "vitest"
 import type { Env, Session } from "../worker/index"
 import { handleMetaPayload, whatsappRoutes } from "../worker/whatsapp"
 
@@ -44,6 +44,30 @@ function setup() {
 }
 
 describe("ações da caixa de entrada", () => {
+  it("grava mensagem indisponível e código da Meta no banco", async () => {
+    const { db, env, call } = setup()
+    const after = vi.fn()
+    db.exec("UPDATE contacts SET phone_e164='+15551234567' WHERE id='contact'")
+    await handleMetaPayload(env, {
+      object: "whatsapp_business_account",
+      entry: [{ id: "12345", changes: [{ field: "messages", value: {
+        metadata: { phone_number_id: "98765" },
+        messages: [{ id: "wamid.indisponivel", from: "15551234567", type: "unsupported",
+          errors: [{ code: 131060 }], timestamp: "2000000000" }],
+      } }] }],
+    }, "unsupported-hash", after)
+    expect(db.prepare("SELECT body,error_code,type,direction,status FROM messages WHERE external_id=?").get("wamid.indisponivel")).toMatchObject({
+      body: "[Mensagem indisponível pela Meta. Confira no WhatsApp Business.]", error_code: "131060",
+      type: "unsupported", direction: "inbound", status: "received",
+    })
+    expect(db.prepare("SELECT unread_count FROM conversations WHERE id='conv'").get()).toMatchObject({ unread_count: 1 })
+    expect(after).not.toHaveBeenCalled()
+    db.exec("UPDATE messages SET body='[Mensagem não suportada]' WHERE external_id='wamid.indisponivel'")
+    const list = await call("/api/conversations", "GET")
+    expect(await list?.json()).toMatchObject({ results: [{ preview: "[Mensagem não suportada]", previewType: "unsupported" }] })
+    db.close()
+  })
+
   it("remove somente o aviso de solicitação humana, preservando atribuição e pausa da IA", async () => {
     const { db, call } = setup()
     db.exec(`UPDATE conversations SET human_requested_at=CURRENT_TIMESTAMP,assigned_to='user',assignment_revision=3;
