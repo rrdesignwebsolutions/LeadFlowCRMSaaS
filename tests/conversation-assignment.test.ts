@@ -12,7 +12,12 @@ vi.mock("../worker/ai", () => ({
 
 const auth: Session = { userId: "user", organizationId: "org", role: "agent" }
 
-function setup(options: { member?: boolean; assignedTo?: string | null; pending?: object | null } = {}) {
+function setup(options: {
+  member?: boolean
+  assignedTo?: string | null
+  pending?: object | null
+  enqueueFails?: boolean
+} = {}) {
   const statements: Array<{ sql: string; args: unknown[] }> = []
   const db = {
     prepare(sql: string) {
@@ -30,7 +35,15 @@ function setup(options: { member?: boolean; assignedTo?: string | null; pending?
           }
           return null
         },
-        async run() { statements.push({ sql, args: this.args }); return { meta: { changes: 1 } } },
+        async run() {
+          if (
+            options.enqueueFails &&
+            sql.includes("INSERT OR IGNORE INTO whatsapp_processing_jobs")
+          )
+            throw new Error("falha")
+          statements.push({ sql, args: this.args })
+          return { meta: { changes: 1 } }
+        },
       }
     },
     async batch(items: Array<{ sql: string; args: unknown[] }>) { statements.push(...items); return [] },
@@ -103,10 +116,9 @@ describe("atribuição de conversas", () => {
   })
 
   it("avisa se houver falha ao responder a mensagem pendente", async () => {
-    vi.mocked(autoReply).mockRejectedValueOnce(new Error("falha"))
     const { call } = setup({ assignedTo: "agent", pending: {
       direction: "inbound", type: "text", externalId: "wamid", at: new Date().toISOString(),
-    } })
+    }, enqueueFails: true })
     const response = await call(null)
     expect(await response?.json()).toMatchObject({ warning: expect.stringContaining("não foi possível") })
   })

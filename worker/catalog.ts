@@ -273,7 +273,7 @@ export async function catalogRoutes(
 
         .bind(org)
 
-        .all<{ id: string productId: string isPrimary: number }>()
+        .all<{ id: string; productId: string; isPrimary: number }>()
     ).results
 
     return json({
@@ -310,7 +310,7 @@ export async function catalogRoutes(
 
       .bind(imageMatch[1], org)
 
-      .first<{ key: string mime: string }>()
+      .first<{ key: string; mime: string }>()
 
     const object = image && (await env.CATALOG.get(image.key))
 
@@ -589,7 +589,7 @@ export async function catalogRoutes(
 
       .bind(uploadMatch[1], org)
 
-      .first<{ n: number last: number }>()
+      .first<{ n: number; last: number }>()
 
     if ((count?.n ?? 0) >= MAX_IMAGES_PER_PRODUCT)
       return json({ error: "Limite de 10 fotos por produto." }, 409)
@@ -660,7 +660,7 @@ export async function catalogRoutes(
 
       .bind(imageMatch[1], org)
 
-      .first<{ key: string productId: string isPrimary: number }>()
+      .first<{ key: string; productId: string; isPrimary: number }>()
 
     if (!image) return json({ error: "Imagem não encontrada." }, 404)
 
@@ -2822,7 +2822,7 @@ async function sendProductPhotos(
 
       .bind(product.id, organizationId, limit)
 
-      .all<{ id: string key: string mime: string }>()
+      .all<{ id: string; key: string; mime: string }>()
   ).results
 
   let sent = 0

@@ -295,9 +295,9 @@ type WaMessage = {
     mime_type?: string
   }
 
-  audio?: { id?: string mime_type?: string }
+  audio?: { id?: string; mime_type?: string }
 
-  sticker?: { id?: string mime_type?: string }
+  sticker?: { id?: string; mime_type?: string }
 
   location?: {
     latitude?: number
@@ -311,7 +311,7 @@ type WaMessage = {
 
   contacts?: Array<{ name?: { formatted_name?: string } }>
 
-  button?: { text?: string payload?: string }
+  button?: { text?: string; payload?: string }
 
   interactive?: {
     type?: string
@@ -321,20 +321,20 @@ type WaMessage = {
     action?: {
       button?: string
 
-      buttons?: Array<{ reply?: { id?: string title?: string } }>
+      buttons?: Array<{ reply?: { id?: string; title?: string } }>
 
       sections?: Array<{
         title?: string
 
-        rows?: Array<{ id?: string title?: string description?: string }>
+        rows?: Array<{ id?: string; title?: string; description?: string }>
       }>
     }
 
-    button_reply?: { id?: string title?: string }
+    button_reply?: { id?: string; title?: string }
 
-    list_reply?: { id?: string title?: string description?: string }
+    list_reply?: { id?: string; title?: string; description?: string }
 
-    nfm_reply?: { body?: string name?: string response_json?: string }
+    nfm_reply?: { body?: string; name?: string; response_json?: string }
   }
 }
 
@@ -347,9 +347,9 @@ type WaStatus = {
 }
 
 type WaValue = {
-  metadata?: { phone_number_id?: string display_phone_number?: string }
+  metadata?: { phone_number_id?: string; display_phone_number?: string }
 
-  contacts?: Array<{ wa_id?: string profile?: { name?: string } }>
+  contacts?: Array<{ wa_id?: string; profile?: { name?: string } }>
 
   messages?: WaMessage[]
 
@@ -358,12 +358,12 @@ type WaValue = {
   statuses?: WaStatus[]
 
   history?: Array<{
-    metadata?: { phase?: number chunk_order?: number progress?: number }
+    metadata?: { phase?: number; chunk_order?: number; progress?: number }
 
     threads?: Array<{
       id?: string
 
-      context?: { wa_id?: string user_id?: string }
+      context?: { wa_id?: string; user_id?: string }
 
       messages?: WaMessage[]
     }>
@@ -1859,7 +1859,7 @@ async function handleStatus(env: Env, integration: Integration, s: WaStatus) {
 
     .bind(integration.organization_id, s.id)
 
-    .first<{ id: string status: string }>()
+    .first<{ id: string; status: string }>()
 
   if (!message) return
 
@@ -1965,7 +1965,7 @@ export async function handleMetaPayload(
 
       time?: number
 
-      changes?: Array<{ field?: string value?: WaValue }>
+      changes?: Array<{ field?: string; value?: WaValue }>
     }>
   },
 
@@ -2521,7 +2521,7 @@ async function connect(
 
     .bind(phoneNumberId)
 
-    .first<{ id: string organization_id: string }>()
+    .first<{ id: string; organization_id: string }>()
 
   if (sameNumber && sameNumber.organization_id !== auth.organizationId)
     return json(
@@ -2759,7 +2759,7 @@ async function connectWithEmbeddedSignup(
   const result = (await response.json().catch(() => ({}))) as {
     access_token?: string
 
-    error?: { message?: string error_user_msg?: string }
+    error?: { message?: string; error_user_msg?: string }
   }
 
   if (!response.ok || !result.access_token) {
@@ -2925,7 +2925,7 @@ async function selectSignupNumber(
 
   auth: Session,
 
-  body: { pendingId?: string phoneNumberId?: string },
+  body: { pendingId?: string; phoneNumberId?: string },
 ) {
   if (
     !body.pendingId ||
@@ -2941,7 +2941,7 @@ async function selectSignupNumber(
 
     .bind(body.pendingId, auth.organizationId, auth.userId)
 
-    .first<{ waba_id: string access_token_enc: string }>()
+    .first<{ waba_id: string; access_token_enc: string }>()
 
   if (!pending)
     return json(
@@ -3445,7 +3445,7 @@ async function aiAssignmentValid(
 
     .bind(conversationId, organizationId)
 
-    .first<{ aiState: string humanActive: number }>()
+    .first<{ aiState: string; humanActive: number }>()
 
   return !!row && row.aiState === "IA_ATIVA" && !row.humanActive
 }
@@ -3465,7 +3465,7 @@ async function existingAiReply(
 
     .bind(organizationId, key)
 
-    .first<{ id: string status: string }>()
+    .first<{ id: string; status: string }>()
 
   if (!existing) return null
 
@@ -4459,7 +4459,7 @@ export async function whatsappRoutes(
 
       .bind(messageDelete[1], org)
 
-      .first<{ conversationId: string status: string }>()
+      .first<{ conversationId: string; status: string }>()
 
     if (!message) return json({ error: "Mensagem não encontrada." }, 404)
 
@@ -4526,7 +4526,7 @@ export async function whatsappRoutes(
 
       .bind(conversationDelete[1], org)
 
-      .first<{ id: string queued: number aiBusy: number }>()
+      .first<{ id: string; queued: number; aiBusy: number }>()
 
     if (!conversation) return json({ error: "Conversa não encontrada." }, 404)
 
@@ -4760,7 +4760,7 @@ export async function whatsappRoutes(
 
             .bind(org, inboundExternalId)
 
-            .first<{ id: string status: string active: number }>()
+            .first<{ id: string; status: string; active: number }>()
 
           if (!job)
             throw new Error(
