@@ -340,45 +340,58 @@ function Shell({
   }
 
   const refreshWa = useCallback(async () => {
-    try {
-      const r = await api<{
+    const [integrationResult, conversationsResult] = await Promise.allSettled([
+      api<{
         integration: {
-          status: string;
+          status: string
           displayPhoneNumber: string | null
         } | null
-      }>("/api/integrations/whatsapp")
+      }>("/api/integrations/whatsapp"),
+      api<{
+        results: Array<{ unread: number; humanRequestedAt?: string | null }>
+      }>("/api/conversations"),
+    ])
 
-      const ok = r.integration?.status === "connected"
-
+    if (integrationResult.status === "fulfilled") {
+      const integration = integrationResult.value.integration
+      const connected = integration?.status === "connected"
       setWa({
-        connected: ok,
-        label: !r.integration
+        connected,
+        label: !integration
           ? "Não conectado"
-          : ok
+          : connected
             ? `Conectado${
-                r.integration.displayPhoneNumber
-                  ? ` · ${r.integration.displayPhoneNumber}`
+                integration.displayPhoneNumber
+                  ? ` · ${integration.displayPhoneNumber}`
                   : ""
               }`
             : "Com erro",
       })
+    } else {
+      console.warn(
+        "whatsapp_status_refresh_failed",
+        integrationResult.reason instanceof ApiError
+          ? integrationResult.reason.status
+          : "request_failed",
+      )
+    }
 
-      if (ok) {
-        const list = (
-          await api<{
-            results: Array<{ unread: number; humanRequestedAt?: string | null }>
-          }>("/api/conversations")
-        ).results
-
-        setUnread(
-          list.reduce(
-            (n, c) => n + (c.unread > 0 || c.humanRequestedAt ? 1 : 0),
-            0,
-          ),
-        )
-      } else setUnread(0)
-    } catch {
-      /* o indicador é apenas informativo */
+    if (conversationsResult.status === "fulfilled") {
+      setUnread(
+        conversationsResult.value.results.reduce(
+          (count, conversation) =>
+            count +
+            (conversation.unread > 0 || conversation.humanRequestedAt ? 1 : 0),
+          0,
+        ),
+      )
+    } else {
+      console.warn(
+        "inbox_notifications_refresh_failed",
+        conversationsResult.reason instanceof ApiError
+          ? conversationsResult.reason.status
+          : "request_failed",
+      )
     }
   }, [])
 
