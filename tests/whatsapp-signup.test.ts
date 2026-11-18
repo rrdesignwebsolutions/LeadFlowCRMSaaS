@@ -5,7 +5,12 @@ import { decryptToken, whatsappRoutes } from "../worker/whatsapp"
 const auth: Session = { userId: "user", organizationId: "org", role: "admin" }
 const url = new URL("https://example.test/api/integrations/whatsapp/embedded-signup")
 
-function setup(numbers: unknown, subscriptionSuccess = true) {
+function setup(
+  numbers: unknown,
+  subscriptionSuccess = true,
+  apiVersion = "v26.0",
+  wabaOwnerOrganization?: string,
+) {
   const statements: Array<{ sql: string; args: unknown[] }> = []
   const db = {
     prepare(sql: string) {
@@ -21,6 +26,11 @@ function setup(numbers: unknown, subscriptionSuccess = true) {
             if (pending && this.args[0] === pending.args[0] && this.args[1] === pending.args[1] && this.args[2] === pending.args[2])
               return { waba_id: pending.args[3], access_token_enc: pending.args[4] }
           }
+          if (
+            sql.includes("external_account_id=?") &&
+            wabaOwnerOrganization
+          )
+            return { organization_id: wabaOwnerOrganization }
           return null
         },
         async run() {
@@ -39,8 +49,10 @@ function setup(numbers: unknown, subscriptionSuccess = true) {
     META_CONFIG_ID: "12345",
     ENCRYPTION_KEY: btoa("01234567890123456789012345678901"),
     GRAPH_API_BASE: "https://graph.example.test",
+    META_GRAPH_API_VERSION: apiVersion,
   } as unknown as Env
-  const fetchMock = vi.fn(async (input: string | URL | Request) => {
+  const fetchMock = vi.fn(
+    async (input: string | URL | Request, _init?: RequestInit) => {
     const path = String(input)
     if (path.includes("/oauth/access_token"))
       return Response.json({ access_token: "access_token_123456789012345" })
@@ -49,7 +61,8 @@ function setup(numbers: unknown, subscriptionSuccess = true) {
     if (path.includes("/subscribed_apps"))
       return Response.json(subscriptionSuccess ? { success: true } : { error: { message: "subscription failed" } }, { status: subscriptionSuccess ? 200 : 400 })
     return Response.json({ display_phone_number: "+15551234567", verified_name: "Store" })
-  })
+    },
+  )
   vi.stubGlobal("fetch", fetchMock)
   return { env, statements, fetchMock }
 }
@@ -66,6 +79,62 @@ async function submit(env: Env, body: object) {
 afterEach(() => vi.unstubAllGlobals())
 
 describe("WhatsApp Embedded Signup", () => {
+  it.each(["v26.0", "v27.0"])(
+    "uses one explicit Graph API version for signup and WABA subscription (%s)",
+    async (apiVersion) => {
+      const { env, fetchMock } = setup(
+        { data: [{ id: "98765" }] },
+        true,
+        apiVersion,
+      )
+      const response = await submit(env, {
+        code: "authorization-code",
+        wabaId: "12345",
+        connectionMode: "coexistence",
+      })
+      expect(response?.status).toBe(200)
+      const urls = fetchMock.mock.calls.map(([input]) => String(input))
+      expect(urls.length).toBeGreaterThan(0)
+      expect(urls.every((requestUrl) => requestUrl.includes(`/${apiVersion}/`))).toBe(true)
+      const subscription = fetchMock.mock.calls.find(([input]) =>
+        String(input).includes("/12345/subscribed_apps"),
+      )
+      expect(subscription?.[1]?.method).toBe("POST")
+    },
+  )
+
+  it("rejects an unapproved Graph API version instead of silently falling back", async () => {
+    const { env } = setup({ data: [{ id: "98765" }] }, true, "v28.0")
+    await expect(
+      submit(env, {
+        code: "authorization-code",
+        wabaId: "12345",
+        connectionMode: "coexistence",
+      }),
+    ).rejects.toThrow("META_GRAPH_API_VERSION")
+  })
+
+  it("does not connect a WABA already assigned to another tenant", async () => {
+    const { env, statements, fetchMock } = setup(
+      { data: [{ id: "98765" }] },
+      true,
+      "v26.0",
+      "another-org",
+    )
+    const response = await submit(env, {
+      code: "authorization-code",
+      wabaId: "12345",
+      connectionMode: "coexistence",
+    })
+    expect(response?.status).toBe(409)
+    expect(statements.some((statement) =>
+      statement.sql.includes("INSERT INTO integrations"),
+    )).toBe(false)
+    expect(fetchMock.mock.calls.some(([input]) =>
+      String(input).includes("/subscribed_apps"),
+    )).toBe(false)
+  })
+
   it("uses the existing configuration and resolves the sole coexistence number", async () => {
     const { env, statements, fetchMock } = setup({ data: [{ id: "98765" }] })
     const response = await submit(env, { code: "authorization-code", wabaId: "12345", connectionMode: "coexistence" })

@@ -21,7 +21,12 @@ import {
   emailVerificationEnabled,
   sendVerificationEmail,
 } from "./verification"
-import { cleanupPendingWhatsappSignups, handleMetaPayload, whatsappRoutes } from "./whatsapp"
+import {
+  cleanupPendingWhatsappSignups,
+  handleMetaPayload,
+  processPendingWhatsAppJobs,
+  whatsappRoutes,
+} from "./whatsapp"
 
 export interface Env {
   DB: D1Database
@@ -44,6 +49,8 @@ export interface Env {
   META_APP_SECRET?: string
 
   META_VERIFY_TOKEN?: string
+
+  META_GRAPH_API_VERSION?: string
 
   ENCRYPTION_KEY?: string
 
@@ -553,19 +560,24 @@ async function webhook(
       : new Response("Forbidden", { status: 403 })
   }
 
-  if (!env.META_APP_SECRET)
+  if (!env.META_APP_SECRET) {
+    console.error("meta_webhook_rejected", { reason: "secret_not_configured" })
     return json({ error: "Webhook não configurado." }, 503)
+  }
 
   const raw = await request.text()
 
-  if (!(await verifyMetaSignature(request, env.META_APP_SECRET, raw)))
+  if (!(await verifyMetaSignature(request, env.META_APP_SECRET, raw))) {
+    console.warn("meta_webhook_rejected", { reason: "invalid_signature" })
     return json({ error: "Assinatura inválida." }, 401)
+  }
 
   let payload: Parameters<typeof handleMetaPayload>[1]
 
   try {
     payload = JSON.parse(raw)
   } catch {
+    console.warn("meta_webhook_rejected", { reason: "invalid_json" })
     return json({ error: "Corpo inválido." }, 400)
   }
 
@@ -1225,9 +1237,12 @@ export default {
     return env.ASSETS.fetch(request)
   },
 
-  async scheduled(_event: ScheduledController, env: Env, ctx: ExecutionContext) {
-    ctx.waitUntil(cleanupInactiveAccounts(env))
-    ctx.waitUntil(sendBillingReminders(env))
-    ctx.waitUntil(cleanupPendingWhatsappSignups(env))
+  async scheduled(event: ScheduledController, env: Env, ctx: ExecutionContext) {
+    if (event.cron === "0 6 * * *") {
+      ctx.waitUntil(cleanupInactiveAccounts(env))
+      ctx.waitUntil(sendBillingReminders(env))
+      ctx.waitUntil(cleanupPendingWhatsappSignups(env))
+    }
+    ctx.waitUntil(processPendingWhatsAppJobs(env))
   },
 } satisfies ExportedHandler<Env>

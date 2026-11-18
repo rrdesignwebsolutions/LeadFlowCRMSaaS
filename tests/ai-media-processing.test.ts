@@ -47,7 +47,7 @@ function setup(type: "audio" | "image", mediaProcessingEnabled = 1) {
             return {
               results: [{
                 direction: "inbound", body: type === "audio" ? "[Áudio]" : "[Imagem]",
-                type, externalId: "wamid.media",
+                type, contentAvailable: 1, externalId: "wamid.media",
               }],
             }
           return { results: [] }

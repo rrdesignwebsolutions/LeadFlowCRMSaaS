@@ -44,6 +44,7 @@ function setup(
     messageType?: string
     messageErrorCode?: string
     messageBody?: string
+    contentAvailable?: number
   } = {},
 ) {
   const statements: string[] = []
@@ -72,6 +73,11 @@ function setup(
               body: index === 0 ? options.messageBody ?? "Olá" : "Olá",
               type: index === 0 ? options.messageType ?? "text" : "text",
               errorCode: index === 0 ? options.messageErrorCode ?? null : null,
+              contentAvailable:
+                index === 0
+                  ? options.contentAvailable ??
+                    (options.messageType === "unsupported" ? 0 : 1)
+                  : 1,
               externalId: index === 0 ? "latest" : `previous-${index}`,
             })),
           }
@@ -112,13 +118,21 @@ describe("oferta de vendedor pela IA", () => {
   it("não oferece o botão na primeira resposta, mesmo se a IA o solicitar", async () => {
     const { env } = setup(decision({ offerSalesperson: true }), 1)
     await autoReply(env, "org", "conversation", "latest")
-    expect(vi.mocked(sendText).mock.calls[0][4]).toEqual({ talkButton: false, assignmentRevision: 0 })
+    expect(vi.mocked(sendText).mock.calls[0][4]).toEqual({
+      talkButton: false,
+      assignmentRevision: 0,
+      aiReplyKey: "ai:latest:text:0",
+    })
   })
 
   it("oferece o botão somente quando a IA identifica necessidade e lead quente", async () => {
     const { env, statements, fetchMock } = setup(decision({ offerSalesperson: true }))
     await autoReply(env, "org", "conversation", "latest")
-    expect(vi.mocked(sendText).mock.calls[0][4]).toEqual({ talkButton: true, assignmentRevision: 0 })
+    expect(vi.mocked(sendText).mock.calls[0][4]).toEqual({
+      talkButton: true,
+      assignmentRevision: 0,
+      aiReplyKey: "ai:latest:text:0",
+    })
     expect(statements.some((sql) => sql.includes("UPDATE conversations SET human_requested_at"))).toBe(false)
     const request = JSON.parse(String(fetchMock.mock.calls[0][1]?.body))
     expect(request.text.format.schema.required).toContain("offerSalesperson")
@@ -135,7 +149,11 @@ describe("oferta de vendedor pela IA", () => {
   ])("não oferece o botão: %s", async (_label, result) => {
     const { env } = setup(result)
     await autoReply(env, "org", "conversation", "latest")
-    expect(vi.mocked(sendText).mock.calls[0][4]).toEqual({ talkButton: false, assignmentRevision: 0 })
+    expect(vi.mocked(sendText).mock.calls[0][4]).toEqual({
+      talkButton: false,
+      assignmentRevision: 0,
+      aiReplyKey: "ai:latest:text:0",
+    })
   })
 
   it("envia respostas longas em partes e limita a mensagem com botão", async () => {
@@ -144,8 +162,16 @@ describe("oferta de vendedor pela IA", () => {
     const calls = vi.mocked(sendText).mock.calls
     expect(calls).toHaveLength(2)
     expect(calls.every((call) => String(call[3]).length <= 1024)).toBe(true)
-    expect(calls[0]?.[4]).toEqual({ talkButton: false, assignmentRevision: 0 })
-    expect(calls[1]?.[4]).toEqual({ talkButton: true, assignmentRevision: 0 })
+    expect(calls[0]?.[4]).toEqual({
+      talkButton: false,
+      assignmentRevision: 0,
+      aiReplyKey: "ai:latest:text:0",
+    })
+    expect(calls[1]?.[4]).toEqual({
+      talkButton: true,
+      assignmentRevision: 0,
+      aiReplyKey: "ai:latest:text:1",
+    })
   })
 
   it("responde a formulários do WhatsApp recebidos como mensagens interativas", async () => {
@@ -160,7 +186,7 @@ describe("oferta de vendedor pela IA", () => {
     expect(vi.mocked(sendText).mock.calls[0]?.[3]).toBe("Como posso ajudar?")
   })
 
-  it("inicia a conversa quando a Meta omite o conteúdo e a IA não gera uma resposta", async () => {
+  it("não aciona a IA quando a Meta não disponibiliza o conteúdo (131060)", async () => {
     const { env, fetchMock } = setup(decision({ reply: "" }), 1, {
       messageType: "unsupported",
       messageErrorCode: "131060",
@@ -169,12 +195,8 @@ describe("oferta de vendedor pela IA", () => {
 
     await autoReply(env, "org", "conversation", "latest")
 
-    const call = vi.mocked(sendText).mock.calls[0]
-    expect(call?.[3]).toBe(
-      "Olá! Recebi seu contato, mas o conteúdo da mensagem não chegou para mim. Pode me dizer o que gostaria de saber?",
-    )
-    const request = JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body))
-    expect(request.instructions).toContain("MENSAGEM RECEBIDA SEM CONTEÚDO")
+    expect(fetchMock).not.toHaveBeenCalled()
+    expect(sendText).not.toHaveBeenCalled()
   })
 
   it("não separa um emoji entre duas mensagens", async () => {
@@ -199,7 +221,11 @@ describe("oferta de vendedor pela IA", () => {
   it("mantém o encaminhamento imediato quando a IA identifica necessidade de atendimento humano", async () => {
     const { env, statements } = setup(decision({ handoff: true, offerSalesperson: true }))
     await autoReply(env, "org", "conversation", "latest")
-    expect(vi.mocked(sendText).mock.calls[0][4]).toEqual({ talkButton: false, assignmentRevision: 0 })
+    expect(vi.mocked(sendText).mock.calls[0][4]).toEqual({
+      talkButton: false,
+      assignmentRevision: 0,
+      aiReplyKey: "ai:latest:text:0",
+    })
     expect(statements.some((sql) => sql.includes("UPDATE conversations SET human_requested_at"))).toBe(true)
   })
 

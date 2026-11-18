@@ -18,7 +18,7 @@ binding = "CATALOG"
 bucket_name = "av-flow-catalog"
 
 [triggers]
-crons = ["0 6 * * *"]
+crons = ["0 6 * * *", "* * * * *"]
 
 [vars]
 APP_ORIGIN = "https://avflowcrm.com.br"

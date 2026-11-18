@@ -2,7 +2,7 @@ import type { Env, Session } from "./index"
 import { autoReply, classifyLead, requestHuman, TALK_TO_HUMAN_ID } from "./ai"
 import { effectiveLeadStatus } from "./lead-status"
 
-const GRAPH_VERSION = "v26.0"
+const DEFAULT_GRAPH_VERSION = "v26.0"
 
 const WINDOW_MS = 24 * 60 * 60 * 1000
 const INBOUND_MEDIA_LIMIT = 16 * 1024 * 1024
@@ -24,6 +24,14 @@ const json = (data: unknown, status = 200) =>
 const uid = () => crypto.randomUUID()
 
 const enc = new TextEncoder()
+
+function graphVersion(env: Env) {
+  const version = env.META_GRAPH_API_VERSION?.trim() || DEFAULT_GRAPH_VERSION
+  if (version === "v26.0" || version === "v27.0") return version
+  throw new Error(
+    "META_GRAPH_API_VERSION deve ser v26.0 ou v27.0",
+  )
+}
 
 const b64 = (bytes: Uint8Array) => btoa(String.fromCharCode(...bytes))
 
@@ -109,7 +117,7 @@ async function graphFetch(
   body?: unknown,
 ): Promise<GraphResult> {
   const response = await fetch(
-    `${env.GRAPH_API_BASE ?? "https://graph.facebook.com"}/${GRAPH_VERSION}/${path}`,
+    `${env.GRAPH_API_BASE ?? "https://graph.facebook.com"}/${graphVersion(env)}/${path}`,
     {
       method: body ? "POST" : "GET",
 
@@ -163,8 +171,30 @@ type WaMessage = {
   timestamp?: string
   type?: string
   history_context?: { status?: string }
-  errors?: Array<{ code?: number }>
+  errors?: MetaApiError[]
   unsupported?: { type?: string }
+  referral?: {
+    source_url?: string
+    source_id?: string
+    source_type?: string
+    headline?: string
+    body?: string
+    media_type?: string
+    image_url?: string
+    video_url?: string
+    thumbnail_url?: string
+  }
+  context?: {
+    from?: string
+    id?: string
+    forwarded?: boolean
+    frequently_forwarded?: boolean
+  }
+  edit?: {
+    original_message_id?: string
+    message?: WaMessage
+  }
+  revoke?: { original_message_id?: string }
 
   text?: { body?: string }
 
@@ -180,11 +210,27 @@ type WaMessage = {
   }
   audio?: { id?: string mime_type?: string }
   sticker?: { id?: string mime_type?: string }
+  location?: {
+    latitude?: number
+    longitude?: number
+    name?: string
+    address?: string
+  }
+  contacts?: Array<{ name?: { formatted_name?: string } }>
 
   button?: { text?: string payload?: string }
 
   interactive?: {
     type?: string
+    body?: { text?: string }
+    action?: {
+      button?: string
+      buttons?: Array<{ reply?: { id?: string title?: string } }>
+      sections?: Array<{
+        title?: string
+        rows?: Array<{ id?: string title?: string description?: string }>
+      }>
+    }
     button_reply?: { id?: string title?: string }
     list_reply?: { id?: string title?: string description?: string }
     nfm_reply?: { body?: string name?: string response_json?: string }
@@ -215,7 +261,21 @@ type WaValue = {
       context?: { wa_id?: string user_id?: string }
       messages?: WaMessage[]
     }>
-    errors?: Array<{ code?: number }>
+    errors?: MetaApiError[]
+  }>
+
+  state_sync?: Array<{
+    type?: string
+    action?: string
+    contact?: {
+      user_id?: string
+      parent_user_id?: string
+      username?: string
+      phone_number?: string
+      full_name?: string
+      first_name?: string
+    }
+    metadata?: { timestamp?: string }
   }>
 
   errors?: Array<{ code?: number }>
@@ -360,45 +420,86 @@ function describeMessage(m: WaMessage) {
   }
 
   const formReply = m.interactive?.nfm_reply
-  let formReplyBody: string | null = null
-  if (formReply) {
-    const fields: string[] = []
-    if (formReply.response_json) {
-      try {
-        const response = JSON.parse(formReply.response_json) as unknown
-        if (
-          response &&
-          typeof response === "object" &&
-          !Array.isArray(response)
-        ) {
-          for (const [key, value] of Object.entries(response)) {
-            if (
-              key.toLowerCase() === "flow_token" ||
-              value == null ||
-              value === ""
-            )
-              continue
-            const formatted =
-              typeof value === "string" ? value : JSON.stringify(value)
-            if (formatted) fields.push(`${key}: ${formatted}`)
-          }
+  const formFields: string[] = []
+  if (formReply?.response_json) {
+    try {
+      const response = JSON.parse(formReply.response_json) as unknown
+      if (
+        response &&
+        typeof response === "object" &&
+        !Array.isArray(response)
+      ) {
+        for (const [key, value] of Object.entries(response).slice(0, 64)) {
+          if (
+            key.toLowerCase() === "flow_token" ||
+            value == null ||
+            value === ""
+          )
+            continue
+          const formatted =
+            typeof value === "string" ? value.slice(0, 500) : JSON.stringify(value)
+          if (formatted) formFields.push(`${key.slice(0, 100)}: ${formatted}`)
         }
-      } catch (error) {
-        console.warn(
-          "whatsapp_form_reply_invalid_json",
-          m.id,
-          error instanceof Error ? error.message : "unknown",
-        )
       }
+    } catch {
+      console.warn("whatsapp_form_reply_invalid_json", {
+        messageId: m.id ?? null,
+      })
     }
-
-    formReplyBody = [
-      `O cliente concluiu um formulário no WhatsApp. Dê continuidade ao atendimento e responda ao interesse demonstrado usando as respostas abaixo.${formReply.name ? ` Formulário: ${formReply.name}.` : ""}`,
-      ...fields,
-    ].join("\n")
-    if (fields.length === 0 && formReply.body?.trim())
-      formReplyBody += `\n${formReply.body.trim()}`
   }
+  const formHasAnswers = formFields.length > 0
+  const formBody =
+    formReply?.body?.trim() &&
+    !["sent", "submitted"].includes(formReply.body.trim().toLowerCase())
+      ? formReply.body.trim().slice(0, 500)
+      : null
+  const formReplyBody = formReply
+    ? [
+        `O cliente concluiu um formulário no WhatsApp. Dê continuidade ao atendimento e responda ao interesse demonstrado usando as respostas abaixo.${formReply.name ? ` Formulário: ${formReply.name.slice(0, 120)}.` : ""}`,
+        ...formFields,
+        ...(formFields.length === 0 && formBody ? [formBody] : []),
+      ].join("\n")
+    : null
+  const interactiveOptions = [
+    ...(m.interactive?.action?.buttons ?? []).map(
+      (button) => button.reply?.title,
+    ),
+    ...(m.interactive?.action?.sections ?? []).flatMap((section) =>
+      (section.rows ?? []).map((row) => row.title),
+    ),
+  ].filter((value): value is string => !!value?.trim())
+  const interactiveBody = [
+    m.interactive?.body?.text?.trim(),
+    m.interactive?.action?.button?.trim(),
+    interactiveOptions.length
+      ? `Opções: ${interactiveOptions.map((option) => option.slice(0, 100)).join(", ")}`
+      : null,
+  ]
+    .filter(Boolean)
+    .join("\n")
+  const contentAvailable =
+    (type === "text" && !!m.text?.body?.trim()) ||
+    (type === "button" &&
+      !!(m.button?.text?.trim() || m.button?.payload?.trim())) ||
+    (type === "interactive" &&
+      (formHasAnswers ||
+        !!formBody ||
+        !!m.interactive?.button_reply?.title?.trim() ||
+        !!m.interactive?.button_reply?.id?.trim() ||
+        !!m.interactive?.list_reply?.title?.trim() ||
+        !!m.interactive?.list_reply?.description?.trim() ||
+        !!m.interactive?.list_reply?.id?.trim())) ||
+    (type === "image" && !!(m.image?.id || m.image?.caption?.trim())) ||
+    (type === "audio" && !!m.audio?.id) ||
+    (type === "video" && !!(m.video?.id || m.video?.caption?.trim())) ||
+    (type === "document" &&
+      !!(m.document?.id || m.document?.caption?.trim())) ||
+    (type === "sticker" && !!m.sticker?.id) ||
+    (type === "reaction" && !!m.reaction?.emoji?.trim()) ||
+    (type === "location" &&
+      typeof m.location?.latitude === "number" &&
+      typeof m.location?.longitude === "number") ||
+    (type === "contacts" && !!m.contacts?.length)
 
   const body =
     (type === "reaction" && m.reaction?.emoji
@@ -413,15 +514,58 @@ function describeMessage(m: WaMessage) {
     m.interactive?.list_reply?.title ??
     m.interactive?.list_reply?.description ??
     m.interactive?.list_reply?.id ??
+    (type === "interactive" && interactiveBody ? interactiveBody : null) ??
     [
-      labels[type] ?? `[${type}]`,
+      labels[type] ??
+        (type === "interactive"
+          ? "[Mensagem interativa sem conteúdo textual]"
+          : `[${type}]`),
       m.document?.filename,
       m.image?.caption ?? m.video?.caption ?? m.document?.caption,
     ]
       .filter(Boolean)
       .join(" ")
 
-  return { type, body: body.slice(0, 4096), errorCode }
+  const serializeFields = (source: unknown, fields: string[]) => {
+    if (!source || typeof source !== "object" || Array.isArray(source))
+      return null
+    const record = source as Record<string, unknown>
+    const selected: Record<string, string | boolean> = {}
+    for (const field of fields) {
+      const value = record[field]
+      if (typeof value === "string" && value.trim())
+        selected[field] = value.trim().slice(0, 1000)
+      else if (typeof value === "boolean") selected[field] = value
+    }
+    return Object.keys(selected).length ? JSON.stringify(selected) : null
+  }
+
+  const referralJson = serializeFields(m.referral, [
+    "source_url",
+    "source_id",
+    "source_type",
+    "headline",
+    "body",
+    "media_type",
+    "image_url",
+    "video_url",
+    "thumbnail_url",
+  ])
+  const contextJson = serializeFields(m.context, [
+    "from",
+    "id",
+    "forwarded",
+    "frequently_forwarded",
+  ])
+
+  return {
+    type,
+    body: body.slice(0, 4096),
+    errorCode,
+    contentAvailable,
+    referralJson,
+    contextJson,
+  }
 }
 
 export function isWithinCustomerServiceWindow(
@@ -451,7 +595,10 @@ async function latestInboundMessageAt(
       FROM messages
       WHERE organization_id=? AND conversation_id=? AND direction='inbound'
       UNION ALL
-      SELECT strftime('%Y-%m-%dT%H:%M:%fZ',external_created_at) at
+      SELECT COALESCE(
+        strftime('%Y-%m-%dT%H:%M:%fZ',external_created_at),
+        strftime('%Y-%m-%dT%H:%M:%fZ',created_at)
+      ) at
       FROM deleted_whatsapp_messages
       WHERE organization_id=? AND conversation_id=? AND direction='inbound'
     ) WHERE at IS NOT NULL ORDER BY julianday(at) DESC LIMIT 1`,
@@ -468,6 +615,10 @@ async function handleInbound(
   m: WaMessage,
   direction: "inbound" | "outbound" = "inbound",
   countUnread = direction === "inbound",
+  origin: "customer" | "business_app" | "history" = direction === "inbound"
+    ? "customer"
+    : "business_app",
+  scheduleAi = false,
 ) {
   const waId = m.from?.replace(/\D/g, "")
 
@@ -486,20 +637,36 @@ async function handleInbound(
       type: m.type ?? "unknown",
       externalId: m.id,
       inserted: false,
+      contentAvailable: false,
+      jobId: null,
     }
+
+  const { type, body, errorCode, contentAvailable, referralJson, contextJson } =
+    describeMessage(m)
+  const jobId =
+    scheduleAi && contentAvailable ? `${integration.id}:${m.id}` : null
 
   const duplicate = await env.DB.prepare(
     "SELECT conversation_id FROM messages WHERE organization_id=? AND external_id=?",
   )
     .bind(org, m.id)
     .first<{ conversation_id: string }>()
-  if (duplicate)
+  if (duplicate) {
+    if (jobId)
+      await env.DB.prepare(
+        "INSERT OR IGNORE INTO whatsapp_processing_jobs(id,organization_id,conversation_id,inbound_external_id) VALUES(?,?,?,?)",
+      )
+        .bind(jobId, org, duplicate.conversation_id, m.id)
+        .run()
     return {
       conversationId: duplicate.conversation_id,
-      type: m.type ?? "unknown",
+      type,
       externalId: m.id,
       inserted: false,
+      contentAvailable,
+      jobId,
     }
+  }
 
   const profileName =
     value.contacts
@@ -508,96 +675,211 @@ async function handleInbound(
       .slice(0, 120) || null
 
   const variants = phoneVariants(waId)
-
-  const existing = await env.DB.prepare(
-    `SELECT id,name FROM contacts WHERE organization_id=? AND phone_e164 IN (${variants.map(() => "?").join(",")}) LIMIT 1`,
-  )
-
-    .bind(org, ...variants)
-    .first<{ id: string name: string | null }>()
-
-  const contactId = existing?.id ?? uid()
-
-  const conversation = await env.DB.prepare(
-    "SELECT id FROM conversations WHERE organization_id=? AND contact_id=? AND integration_id=?",
-  )
-
-    .bind(org, contactId, integration.id)
-    .first<{ id: string }>()
-
-  const conversationId = conversation?.id ?? uid()
-
-  const at = m.timestamp
-    ? new Date(Number(m.timestamp) * 1000).toISOString()
-    : new Date().toISOString()
-
-  const { type, body, errorCode } = describeMessage(m)
+  const atSeconds = Number(m.timestamp)
+  const at =
+    Number.isFinite(atSeconds) && atSeconds > 0
+      ? new Date(atSeconds * 1000).toISOString()
+      : new Date().toISOString()
   const media = m.document ?? m.image ?? m.video ?? m.audio ?? m.sticker
   const mediaFilename = m.document?.filename?.slice(0, 255) ?? null
   const inbound = direction === "inbound"
-
-  const batch: D1PreparedStatement[] = []
-
-  if (!existing)
+  const contactPhone = `+${waId}`
+  const conversationCandidateId = uid()
+  const insertMessageSql = `INSERT OR IGNORE INTO messages(
+      id,organization_id,conversation_id,external_id,direction,type,body,status,
+      external_created_at,media_id,media_filename,media_mime,error_code,origin,
+      content_available,referral_json,context_json
+    )
+    SELECT ?,?,c.id,?,?,?,?,?,?,?,?,?,?,?,?,?,?
+    FROM conversations c
+    JOIN contacts ct ON ct.id=c.contact_id AND ct.organization_id=c.organization_id
+    WHERE c.organization_id=? AND c.integration_id=?
+      AND ct.phone_e164 IN (${variants.map(() => "?").join(",")})
+    LIMIT 1`
+  const batch: D1PreparedStatement[] = [
+    env.DB.prepare(
+      `INSERT OR IGNORE INTO contacts(id,organization_id,name,phone_e164)
+       SELECT ?,?,?,?
+       WHERE NOT EXISTS (
+         SELECT 1 FROM contacts WHERE organization_id=?
+           AND phone_e164 IN (${variants.map(() => "?").join(",")})
+       )`,
+    ).bind(uid(), org, profileName, contactPhone, org, ...variants),
+    env.DB.prepare(
+      `UPDATE contacts SET name=COALESCE(name,?),updated_at=CURRENT_TIMESTAMP
+       WHERE id=(
+         SELECT id FROM contacts WHERE organization_id=?
+           AND phone_e164 IN (${variants.map(() => "?").join(",")}) LIMIT 1
+       )`,
+    ).bind(profileName, org, ...variants),
+    env.DB.prepare(
+      `INSERT OR IGNORE INTO leads(id,organization_id,contact_id,status)
+       SELECT ?,?,ct.id,'new' FROM contacts ct
+       WHERE ct.organization_id=? AND ct.phone_e164 IN (${variants.map(() => "?").join(",")})
+       LIMIT 1`,
+    ).bind(uid(), org, org, ...variants),
+    env.DB.prepare(
+      `INSERT OR IGNORE INTO conversations(id,organization_id,contact_id,integration_id,status,unread_count)
+       SELECT ?,?,ct.id,?,'open',0 FROM contacts ct
+       WHERE ct.organization_id=? AND ct.phone_e164 IN (${variants.map(() => "?").join(",")})
+       LIMIT 1`,
+    ).bind(
+      conversationCandidateId,
+      org,
+      integration.id,
+      org,
+      ...variants,
+    ),
+    env.DB.prepare(insertMessageSql).bind(
+      uid(),
+      org,
+      m.id,
+      direction,
+      type,
+      body,
+      inbound ? "received" : "sent",
+      at,
+      media?.id ?? null,
+      mediaFilename,
+      media?.mime_type ?? null,
+      errorCode,
+      origin,
+      inbound && contentAvailable ? 1 : 0,
+      referralJson,
+      contextJson,
+      org,
+      integration.id,
+      ...variants,
+    ),
+    env.DB.prepare(
+      `UPDATE conversations SET
+        last_message_at=CASE WHEN last_message_at IS NULL OR last_message_at<? THEN ? ELSE last_message_at END,
+        unread_count=unread_count+?,status='open',updated_at=CURRENT_TIMESTAMP
+       WHERE id=(
+         SELECT c.id FROM conversations c
+         JOIN contacts ct ON ct.id=c.contact_id AND ct.organization_id=c.organization_id
+         WHERE c.organization_id=? AND c.integration_id=?
+           AND ct.phone_e164 IN (${variants.map(() => "?").join(",")})
+         LIMIT 1
+       ) AND organization_id=? AND changes()>0`,
+    ).bind(
+      at,
+      at,
+      countUnread && inbound ? 1 : 0,
+      org,
+      integration.id,
+      ...variants,
+      org,
+    ),
+  ]
+  if (jobId)
     batch.push(
       env.DB.prepare(
-        "INSERT INTO contacts(id,organization_id,name,phone_e164) VALUES(?,?,?,?)",
-      ).bind(contactId, org, profileName, `+${waId}`),
+        `INSERT OR IGNORE INTO whatsapp_processing_jobs(id,organization_id,conversation_id,inbound_external_id)
+         SELECT ?,?,c.id,? FROM conversations c
+         JOIN contacts ct ON ct.id=c.contact_id AND ct.organization_id=c.organization_id
+         WHERE c.organization_id=? AND c.integration_id=?
+           AND ct.phone_e164 IN (${variants.map(() => "?").join(",")})
+         LIMIT 1`,
+      ).bind(jobId, org, m.id, org, integration.id, ...variants),
     )
-  else if (!existing.name && profileName)
-    batch.push(
-      env.DB.prepare(
-        "UPDATE contacts SET name=?,updated_at=CURRENT_TIMESTAMP WHERE id=? AND organization_id=?",
-      ).bind(profileName, contactId, org),
-    )
-
-  batch.push(
-    env.DB.prepare(
-      "INSERT OR IGNORE INTO leads(id,organization_id,contact_id,status) VALUES(?,?,?,'new')",
-    ).bind(uid(), org, contactId),
-  )
-
-  if (!conversation)
-    batch.push(
-      env.DB.prepare(
-        "INSERT INTO conversations(id,organization_id,contact_id,integration_id,status,unread_count) VALUES(?,?,?,?,'open',0)",
-      ).bind(conversationId, org, contactId, integration.id),
-    )
-
-  batch.push(
-    env.DB.prepare(
-      "INSERT OR IGNORE INTO messages(id,organization_id,conversation_id,external_id,direction,type,body,status,external_created_at,media_id,media_filename,media_mime,error_code) VALUES(?,?,?,?,?,?,?, ?,?,?,?,?,?)",
-    )
-
-      .bind(
-        uid(),
-        org,
-        conversationId,
-        m.id,
-        direction,
-        type,
-        body,
-        inbound ? "received" : "sent",
-        at,
-        media?.id ?? null,
-        mediaFilename,
-        media?.mime_type ?? null,
-        errorCode,
-      ),
-
-    env.DB.prepare(
-      "UPDATE conversations SET last_message_at=CASE WHEN last_message_at IS NULL OR last_message_at<? THEN ? ELSE last_message_at END,unread_count=unread_count+?,status='open',updated_at=CURRENT_TIMESTAMP WHERE id=? AND organization_id=? AND changes()>0",
-    ).bind(at, at, countUnread && inbound ? 1 : 0, conversationId, org),
-  )
 
   const results = await env.DB.batch(batch)
+  const persisted = await env.DB.prepare(
+    "SELECT conversation_id conversationId FROM messages WHERE organization_id=? AND external_id=?",
+  )
+    .bind(org, m.id)
+    .first<{ conversationId: string }>()
+  if (!persisted)
+    throw new Error("A mensagem recebida não foi persistida no D1")
+
+  console.info("whatsapp_message_persisted", {
+    organizationId: org,
+    integrationId: integration.id,
+    direction,
+    messageType: type,
+    inserted: !!results[4]?.meta.changes,
+    contactCreated: !!results[0]?.meta.changes,
+    conversationCreated: !!results[3]?.meta.changes,
+    contentAvailable: inbound && contentAvailable,
+    metaErrorCode: errorCode,
+    referralPresent: !!referralJson,
+  })
 
   return {
-    conversationId,
+    conversationId: persisted.conversationId,
     type,
     externalId: m.id,
-    inserted: !!results[results.length - 2]?.meta.changes,
+    inserted: !!results[4]?.meta.changes,
+    contentAvailable,
+    jobId,
   }
+}
+
+async function handleMessageMutation(
+  env: Env,
+  integration: Integration,
+  message: WaMessage,
+  direction: "inbound" | "outbound",
+) {
+  const originalId =
+    message.type === "edit"
+      ? message.edit?.original_message_id
+      : message.type === "revoke"
+        ? message.revoke?.original_message_id
+        : null
+  if (!originalId || !message.id)
+    throw new Error("evento de edição ou exclusão sem identificadores")
+
+  let result: D1Result
+  if (message.type === "edit") {
+    const edited = message.edit?.message
+    if (!edited) throw new Error("evento de edição sem conteúdo")
+    const { type, body, contentAvailable } = describeMessage(edited)
+    const media =
+      edited.document ??
+      edited.image ??
+      edited.video ??
+      edited.audio ??
+      edited.sticker
+    result = await env.DB.prepare(
+      `UPDATE messages SET type=?,body=?,media_id=?,media_filename=?,media_mime=?,
+       content_available=?,error_code=NULL,error_message=NULL,updated_at=CURRENT_TIMESTAMP
+       WHERE organization_id=? AND external_id=? AND direction=?`,
+    )
+      .bind(
+        type,
+        body,
+        media?.id ?? null,
+        edited.document?.filename?.slice(0, 255) ?? null,
+        media?.mime_type ?? null,
+        direction === "inbound" && contentAvailable ? 1 : 0,
+        integration.organization_id,
+        originalId,
+        direction,
+      )
+      .run()
+  } else {
+    result = await env.DB.prepare(
+      `UPDATE messages SET type='text',body='[Mensagem apagada no WhatsApp Business.]',
+       media_id=NULL,media_filename=NULL,media_mime=NULL,content_available=0,
+       updated_at=CURRENT_TIMESTAMP
+       WHERE organization_id=? AND external_id=? AND direction=?`,
+    )
+      .bind(integration.organization_id, originalId, direction)
+      .run()
+  }
+
+  if (!result.meta.changes)
+    throw new Error("mensagem original de edição ou exclusão não encontrada")
+
+  console.info("whatsapp_message_mutated", {
+    organizationId: integration.organization_id,
+    integrationId: integration.id,
+    direction,
+    mutation: message.type,
+    originalMessageId: originalId,
+  })
 }
 
 async function handleMessageEcho(
@@ -606,11 +888,12 @@ async function handleMessageEcho(
   value: WaValue,
   echo: WaMessage,
 ) {
+  if (echo.type === "edit" || echo.type === "revoke") {
+    await handleMessageMutation(env, integration, echo, "outbound")
+    return
+  }
+
   if (!echo.to) throw new Error("eco sem destinatário")
-  if (echo.type === "edit" || echo.type === "revoke")
-    throw new Error(
-      "edição ou exclusão de mensagem do WhatsApp Business App ainda não suportada",
-    )
 
   await handleInbound(
     env,
@@ -618,6 +901,8 @@ async function handleMessageEcho(
     value,
     { ...echo, from: echo.to },
     "outbound",
+    false,
+    "business_app",
   )
 }
 
@@ -674,6 +959,7 @@ async function handleHistory(
           { ...message, from: contactNumber },
           direction,
           false,
+          "history",
         )
       }
     }
@@ -688,6 +974,181 @@ async function handleHistory(
         .bind(progress, progress, integration.id, integration.organization_id)
         .run()
     }
+  }
+}
+
+async function handleAppStateSync(
+  env: Env,
+  integration: Integration,
+  value: WaValue,
+) {
+  const changes = value.state_sync ?? []
+  let added = 0
+  let removed = 0
+
+  for (const change of changes) {
+    if (change.type !== "contact")
+      throw new Error("tipo desconhecido no smb_app_state_sync")
+    const contact = change.contact
+    const userId = contact?.user_id?.trim().slice(0, 200)
+    if (!userId) throw new Error("contato sincronizado sem user_id")
+    if (change.action !== "add" && change.action !== "remove")
+      throw new Error("ação desconhecida no smb_app_state_sync")
+
+    const rawPhone = contact.phone_number?.replace(/\D/g, "") ?? ""
+    if (rawPhone && !/^\d{5,20}$/.test(rawPhone))
+      throw new Error("telefone inválido no smb_app_state_sync")
+    const phone = rawPhone ? `+${rawPhone}` : null
+    const isRemoved = change.action === "remove"
+
+    await env.DB.prepare(
+      `INSERT INTO whatsapp_business_app_contacts(
+        integration_id,organization_id,user_id,parent_user_id,username,
+        phone_e164,full_name,first_name,is_removed
+      ) VALUES(?,?,?,?,?,?,?,?,?)
+      ON CONFLICT(integration_id,user_id) DO UPDATE SET
+        parent_user_id=COALESCE(excluded.parent_user_id,parent_user_id),
+        username=COALESCE(excluded.username,username),
+        phone_e164=COALESCE(excluded.phone_e164,phone_e164),
+        full_name=COALESCE(excluded.full_name,full_name),
+        first_name=COALESCE(excluded.first_name,first_name),
+        is_removed=excluded.is_removed,updated_at=CURRENT_TIMESTAMP
+      WHERE whatsapp_business_app_contacts.organization_id=excluded.organization_id`,
+    )
+      .bind(
+        integration.id,
+        integration.organization_id,
+        userId,
+        contact.parent_user_id?.slice(0, 200) ?? null,
+        contact.username?.slice(0, 128) ?? null,
+        phone,
+        contact.full_name?.slice(0, 200) ?? null,
+        contact.first_name?.slice(0, 100) ?? null,
+        isRemoved ? 1 : 0,
+      )
+      .run()
+
+    if (isRemoved) removed++
+    else added++
+  }
+
+  console.info("whatsapp_business_app_contacts_synced", {
+    organizationId: integration.organization_id,
+    integrationId: integration.id,
+    addedOrUpdated: added,
+    removed,
+    total: changes.length,
+    contactsWithoutPhone: changes.filter(
+      (change) => !change.contact?.phone_number,
+    ).length,
+  })
+}
+
+const AI_JOB_MAX_ATTEMPTS = 5
+const AI_JOB_RETRY_SECONDS = [60, 300, 900, 3600]
+
+export async function processWhatsAppJob(env: Env, jobId: string) {
+  const claimed = await env.DB.prepare(
+    `UPDATE whatsapp_processing_jobs
+     SET status='processing',attempts=attempts+1,
+       locked_until=datetime('now','+10 minutes'),updated_at=CURRENT_TIMESTAMP
+     WHERE id=? AND (
+       (status='pending' AND next_attempt_at<=CURRENT_TIMESTAMP) OR
+       (status='processing' AND locked_until<=CURRENT_TIMESTAMP)
+     )`,
+  )
+    .bind(jobId)
+    .run()
+  if (!claimed.meta.changes) return
+
+  const job = await env.DB.prepare(
+    `SELECT organization_id organizationId,conversation_id conversationId,
+       inbound_external_id inboundExternalId,attempts
+     FROM whatsapp_processing_jobs WHERE id=? AND status='processing'`,
+  )
+    .bind(jobId)
+    .first<{
+      organizationId: string
+      conversationId: string
+      inboundExternalId: string
+      attempts: number
+    }>()
+  if (!job) return
+
+  try {
+    const replied = await autoReply(
+      env,
+      job.organizationId,
+      job.conversationId,
+      job.inboundExternalId,
+    )
+    if (!replied)
+      await classifyLead(
+        env,
+        job.organizationId,
+        job.conversationId,
+        job.inboundExternalId,
+      )
+
+    await env.DB.prepare(
+      `UPDATE whatsapp_processing_jobs SET status='completed',locked_until=NULL,
+       error_summary=NULL,updated_at=CURRENT_TIMESTAMP
+       WHERE id=? AND status='processing'`,
+    )
+      .bind(jobId)
+      .run()
+  } catch (error) {
+    const emitted = await env.DB.prepare(
+      `SELECT 1 FROM messages
+       WHERE organization_id=? AND direction='outbound' AND is_ai=1
+         AND ai_reply_key IS NOT NULL AND substr(ai_reply_key,1,?)=? LIMIT 1`,
+    )
+      .bind(
+        job.organizationId,
+        `ai:${job.inboundExternalId}:`.length,
+        `ai:${job.inboundExternalId}:`,
+      )
+      .first()
+    const failed = job.attempts >= AI_JOB_MAX_ATTEMPTS
+    const status = emitted ? "needs_review" : failed ? "failed" : "pending"
+    const delay =
+      AI_JOB_RETRY_SECONDS[
+        Math.min(job.attempts - 1, AI_JOB_RETRY_SECONDS.length - 1)
+      ] ?? 3600
+    const summary =
+      error instanceof Error ? error.message.slice(0, 200) : "Erro desconhecido"
+
+    await env.DB.prepare(
+      `UPDATE whatsapp_processing_jobs SET status=?,locked_until=NULL,
+       next_attempt_at=CASE WHEN ?='pending' THEN datetime('now',?) ELSE next_attempt_at END,
+       error_summary=?,updated_at=CURRENT_TIMESTAMP
+       WHERE id=? AND status='processing'`,
+    )
+      .bind(status, status, `+${delay} seconds`, summary, jobId)
+      .run()
+    console.error("whatsapp_ai_job_failed", {
+      organizationId: job.organizationId,
+      conversationId: job.conversationId,
+      attempts: job.attempts,
+      status,
+      error: summary,
+    })
+  }
+}
+
+export async function processPendingWhatsAppJobs(
+  env: Env,
+  limit = 20,
+) {
+  for (let count = 0; count < limit; count++) {
+    const job = await env.DB.prepare(
+      `SELECT id FROM whatsapp_processing_jobs
+       WHERE (status='pending' AND next_attempt_at<=CURRENT_TIMESTAMP)
+         OR (status='processing' AND locked_until<=CURRENT_TIMESTAMP)
+       ORDER BY created_at LIMIT 1`,
+    ).first<{ id: string }>()
+    if (!job) return
+    await processWhatsAppJob(env, job.id)
   }
 }
 
@@ -744,228 +1205,366 @@ async function handleStatus(env: Env, integration: Integration, s: WaStatus) {
     .run()
 }
 
+type WebhookWorkItem = {
+  key: string
+  run: (eventId: string) => Promise<void>
+  ignored?: boolean
+  errorSummary?: string
+}
+
 export async function handleMetaPayload(
   env: Env,
-
   payload: {
     object?: string
     entry?: Array<{
       id?: string
       time?: number
-      changes?: Array<{ field?: string value?: WaValue }>
+      changes?: Array<{ field?: string; value?: WaValue }>
     }>
   },
-
   payloadHash: string,
   after: (task: Promise<unknown>) => void = () => {},
 ) {
   if (payload.object !== "whatsapp_business_account") return
 
+  const entries = payload.entry ?? []
+  const fields = [
+    ...new Set(
+      entries.flatMap((entry) =>
+        (entry.changes ?? []).map((change) => change.field ?? "unknown"),
+      ),
+    ),
+  ]
+  console.info("meta_webhook_received", {
+    payloadHash,
+    entryCount: entries.length,
+    fields,
+  })
+
   let processingFailed = false
-  for (const entry of payload.entry ?? [])
+  for (const entry of entries)
     for (const [changeIndex, change] of (entry.changes ?? []).entries()) {
       const value = change.value
-
       if (!value) continue
 
       const phone = value.metadata?.phone_number_id
-
       const byPhone = phone
         ? await env.DB.prepare(
             "SELECT id,organization_id,display_phone_number FROM integrations WHERE provider='meta_whatsapp' AND phone_number_id=? AND external_account_id=? AND status='connected'",
           )
-
             .bind(phone, entry.id ?? "")
             .first<Integration>()
         : null
+      const accountLevelFields = [
+        "account_update",
+        "smb_app_state_sync",
+        "history",
+        "smb_message_echoes",
+      ]
       const accountIntegrations =
-        !phone && change.field === "account_update" && entry.id
+        !phone &&
+        entry.id &&
+        accountLevelFields.includes(change.field ?? "")
           ? await env.DB.prepare(
               "SELECT id,organization_id FROM integrations WHERE provider='meta_whatsapp' AND external_account_id=? AND status IN ('connected','error')",
             )
               .bind(entry.id)
               .all<Integration>()
           : null
+      const accountOrganizations = new Set(
+        (accountIntegrations?.results ?? []).map(
+        (accountIntegration) => accountIntegration.organization_id,
+        ),
+      )
+      const ambiguousAccount = accountOrganizations.size > 1
       const integrations: Array<Integration | null> = byPhone
         ? [byPhone]
+        : ambiguousAccount
+        ? [null]
         : accountIntegrations?.results?.length
           ? accountIntegrations.results
           : [null]
 
       for (const integration of integrations) {
-      const items = [
-        ...(value.messages ?? []).map((item) => ({
-          key: `${item.id}:message`,
-          run: async () => {
-            const result = await handleInbound(env, integration!, value, item)
-
-              const humanRequest =
-                item.interactive?.button_reply?.id === TALK_TO_HUMAN_ID ||
-                item.button?.payload === TALK_TO_HUMAN_ID
-
-              if (result.inserted && humanRequest)
-              after(
-                requestHuman(
-                  env,
-                  integration!.organization_id,
-                  result.conversationId,
-                  true,
-                ).catch((error) =>
-                  console.error(
-                    "request_human_failed",
-                    error instanceof Error ? error.message : "unknown",
-                  ),
-                ),
-              )
-
-              if (
-                result.inserted &&
-                (["text", "audio", "image", "button", "interactive"].includes(
-                  result.type,
-                ) ||
-                  (item.type === "unsupported" &&
-                    item.errors?.some((error) => error.code === 131060))) &&
-                !humanRequest
-              )
-              after(
-                autoReply(
-                  env,
-                  integration!.organization_id,
-                  result.conversationId,
-                  result.externalId,
-                )
-                  .then((classified) =>
-                    classified
-                      ? undefined
-                      : classifyLead(
-                          env,
-                          integration!.organization_id,
-                          result.conversationId,
-                          result.externalId,
-                        ),
-                  )
-                  .catch((error) =>
-                    console.error(
-                      "ai_reply_failed",
-                      error instanceof Error ? error.message : "unknown",
-                    ),
-                  ),
-              )
-          },
-        })),
-
-        ...(change.field === "smb_message_echoes"
-          ? (value.message_echoes ?? []).map((item) => ({
-              key: `${item.id}:echo`,
-              run: () => handleMessageEcho(env, integration!, value, item),
-            }))
-          : []),
-
-        ...(value.statuses ?? []).map((item) => ({
-          key: `${item.id}:${item.status}`,
-          run: () => handleStatus(env, integration!, item),
-        })),
-        ...(change.field === "history"
-            ? [
-                {
-              key: `${change.field}:${entry.id ?? "unknown"}:${changeIndex}:${payloadHash}`,
-              run: () => handleHistory(env, integration!, value),
-                },
-              ]
-          : []),
-        ...(["smb_app_state_sync"].includes(change.field ?? "")
-            ? [
-                {
-              key: `${change.field}:${entry.id ?? "unknown"}:${changeIndex}:${payloadHash}`,
+        const items: WebhookWorkItem[] = []
+        if (change.field === "messages") {
+          for (const [messageIndex, item] of (value.messages ?? []).entries()) {
+            const externalId =
+              item.id ?? `missing-id:${changeIndex}:${messageIndex}:${payloadHash}`
+            items.push({
+              key: `${externalId}:message`,
               run: async () => {
-                    throw new Error(
-                      `O processamento de ${change.field} ainda não está disponível`,
-                    )
-                  },
-              },
-              ]
-          : []),
-        ...(change.field === "account_update" && entry.id
-          ? [
-              {
-                key: `account_update:${entry.id}:${value.event ?? "unknown"}:${entry.time ?? "unknown"}:${changeIndex}:${payloadHash}`,
-                run: () => handleAccountUpdate(env, integration!, value),
-              },
-            ]
-          : []),
-      ]
+                if (item.type === "edit" || item.type === "revoke") {
+                  await handleMessageMutation(
+                    env,
+                    integration!,
+                    item,
+                    "inbound",
+                  )
+                  return
+                }
 
-      for (const item of items) {
-        const eventId = uid()
+                const humanRequest =
+                  item.interactive?.button_reply?.id === TALK_TO_HUMAN_ID ||
+                  item.button?.payload === TALK_TO_HUMAN_ID
+                const aiEligible = [
+                  "text",
+                  "audio",
+                  "image",
+                  "button",
+                  "interactive",
+                ].includes(item.type ?? "")
+                const result = await handleInbound(
+                  env,
+                  integration!,
+                  value,
+                  item,
+                  "inbound",
+                  true,
+                  "customer",
+                  aiEligible && !humanRequest,
+                )
 
-        const inserted =
-          await env.DB.prepare(`INSERT INTO webhook_events(id,provider,external_event_id,phone_number_id,organization_id,payload_hash,status)
-        VALUES(?,'meta_whatsapp',?,?,?,?,?)
-        ON CONFLICT(provider,external_event_id) DO UPDATE SET status='received',error_summary=NULL,received_at=CURRENT_TIMESTAMP
-        WHERE excluded.organization_id IS NOT NULL AND
-          (webhook_events.status='failed' OR
-          (webhook_events.status='received' AND webhook_events.received_at<datetime('now','-5 minutes')))`)
+                if (result.inserted && humanRequest)
+                  after(
+                    requestHuman(
+                      env,
+                      integration!.organization_id,
+                      result.conversationId,
+                      true,
+                    ).catch((error) =>
+                      console.error("request_human_failed", {
+                        organizationId: integration!.organization_id,
+                        error:
+                          error instanceof Error ? error.message : "unknown",
+                      }),
+                    ),
+                  )
+
+                if (result.jobId)
+                  after(processWhatsAppJob(env, result.jobId))
+              },
+            })
+          }
+          for (const [statusIndex, item] of (value.statuses ?? []).entries()) {
+            const externalId =
+              item.id ?? `missing-id:${changeIndex}:${statusIndex}:${payloadHash}`
+            items.push({
+              key: `${externalId}:${item.status ?? "unknown-status"}`,
+              run: () => handleStatus(env, integration!, item),
+            })
+          }
+        }
+
+        if (change.field === "smb_message_echoes")
+          for (const [echoIndex, item] of (value.message_echoes ?? []).entries()) {
+            const externalId =
+              item.id ?? `missing-id:${changeIndex}:${echoIndex}:${payloadHash}`
+            items.push({
+              key: `${externalId}:echo`,
+              run: () => handleMessageEcho(env, integration!, value, item),
+            })
+          }
+
+        if (change.field === "history")
+          items.push({
+            key: `history:${entry.id ?? "unknown"}:${changeIndex}:${payloadHash}`,
+            run: () => handleHistory(env, integration!, value),
+          })
+
+        if (change.field === "smb_app_state_sync")
+          items.push({
+            key: `smb_app_state_sync:${entry.id ?? "unknown"}:${changeIndex}:${payloadHash}`,
+            run: () => handleAppStateSync(env, integration!, value),
+          })
+
+        if (change.field === "account_update" && entry.id)
+          items.push({
+            key: `account_update:${entry.id}:${value.event ?? "unknown"}:${entry.time ?? "unknown"}:${changeIndex}:${payloadHash}`,
+            run: () => handleAccountUpdate(env, integration!, value),
+          })
+
+        for (const [errorIndex, error] of (value.errors ?? []).entries()) {
+          const errorCode = error.code ?? "unknown"
+          const summary = `Erro informado pela Meta (${errorCode}): ${metaErrorMessage(error, "sem detalhes")}`.slice(
+            0,
+            200,
+          )
+          items.push({
+            key: `meta-error:${change.field ?? "unknown"}:${errorCode}:${changeIndex}:${errorIndex}:${payloadHash}`,
+            errorSummary: summary,
+            run: async (eventId) => {
+              console.error("whatsapp_webhook_meta_error", {
+                organizationId: integration!.organization_id,
+                integrationId: integration!.id,
+                field: change.field ?? "unknown",
+                code: error.code ?? null,
+                subcode: error.error_subcode ?? null,
+                fbtraceId: error.fbtrace_id ?? null,
+              })
+              await env.DB.prepare(
+                "UPDATE webhook_events SET error_summary=? WHERE id=? AND organization_id=?",
+              )
+                .bind(summary, eventId, integration!.organization_id)
+                .run()
+            },
+          })
+        }
+
+        if (items.length === 0)
+          items.push({
+            key: `ignored:${change.field ?? "unknown"}:${changeIndex}:${payloadHash}`,
+            ignored: true,
+            errorSummary: `Campo de webhook recebido sem processamento configurado: ${change.field ?? "unknown"}`.slice(
+              0,
+              200,
+            ),
+            run: async () => {},
+          })
+
+        for (const item of items) {
+          const eventId = uid()
+          const externalEventId = `${integration?.id ?? "unmatched"}:${item.key}`
+          const inserted = await env.DB.prepare(
+            `INSERT INTO webhook_events(id,provider,external_event_id,phone_number_id,event_type,organization_id,payload_hash,status,error_summary)
+             VALUES(?,'meta_whatsapp',?,?,?,?,?,?,?)
+             ON CONFLICT(provider,external_event_id) DO UPDATE
+               SET status='received',error_summary=NULL,received_at=CURRENT_TIMESTAMP
+             WHERE excluded.organization_id IS NOT NULL AND ?=0 AND
+               (webhook_events.status='failed' OR
+               (webhook_events.status='received' AND webhook_events.received_at<datetime('now','-5 minutes')))` ,
+          )
             .bind(
               eventId,
-              `${integration?.id ?? "unmatched"}:${item.key}`,
+              externalEventId,
               phone ?? null,
+              change.field ?? "unknown",
               integration?.organization_id ?? null,
               payloadHash,
-              integration ? "received" : "ignored",
+              item.ignored || !integration ? "ignored" : "received",
+              item.errorSummary ?? null,
+              item.ignored ? 1 : 0,
             )
             .run()
+          if (!inserted.meta.changes) continue
+          if (!integration) {
+            console.warn("whatsapp_webhook_unmatched", {
+              phoneNumberId: phone ?? null,
+              wabaId: entry.id ?? null,
+              field: change.field ?? "unknown",
+              ambiguousTenant: ambiguousAccount,
+            })
+            continue
+          }
+          if (item.ignored) {
+            console.info("whatsapp_webhook_event_ignored", {
+              organizationId: integration.organization_id,
+              integrationId: integration.id,
+              field: change.field ?? "unknown",
+              reason: item.errorSummary,
+            })
+            continue
+          }
 
-        if (!inserted.meta.changes || !integration) continue
-
-        const event = await env.DB.prepare(
-          "SELECT id FROM webhook_events WHERE provider='meta_whatsapp' AND external_event_id=?",
+          const event = await env.DB.prepare(
+            "SELECT id FROM webhook_events WHERE provider='meta_whatsapp' AND external_event_id=? AND organization_id=?",
           )
-            .bind(`${integration.id}:${item.key}`)
+            .bind(externalEventId, integration.organization_id)
             .first<{ id: string }>()
           if (!event)
             throw new Error("Evento de webhook não encontrado após registro")
 
-        try {
-          await item.run()
-
-          await env.DB.prepare(
-            "UPDATE webhook_events SET status='processed',processed_at=CURRENT_TIMESTAMP WHERE id=?",
-          )
-            .bind(event.id)
-            .run()
-        } catch (error) {
-          console.error(
-            "webhook_item_failed",
-            error instanceof Error ? error.message : "unknown",
-          )
-
-          if (change.field === "history")
-            await env.DB.prepare(`UPDATE integrations
-              SET history_sync_status='failed',history_sync_error='A Meta enviou histórico que não pôde ser processado.',updated_at=CURRENT_TIMESTAMP
-              WHERE id=? AND organization_id=?`)
-              .bind(integration!.id, integration!.organization_id)
+          try {
+            await item.run(event.id)
+            await env.DB.prepare(
+              "UPDATE webhook_events SET status='processed',processed_at=CURRENT_TIMESTAMP WHERE id=? AND organization_id=?",
+            )
+              .bind(event.id, integration.organization_id)
               .run()
-
-          await env.DB.prepare(
-            "UPDATE webhook_events SET status='failed',error_summary=? WHERE id=?",
-          )
-
-            .bind(
+          } catch (error) {
+            const summary =
               error instanceof Error
                 ? error.message.slice(0, 200)
-                : "erro desconhecido",
-              event.id,
+                : "Erro desconhecido"
+            console.error("whatsapp_webhook_item_failed", {
+              organizationId: integration.organization_id,
+              integrationId: integration.id,
+              eventId: event.id,
+              field: change.field ?? "unknown",
+              error: summary,
+            })
+            if (change.field === "history")
+              await env.DB.prepare(`UPDATE integrations
+                SET history_sync_status='failed',history_sync_error='A Meta enviou histórico que não pôde ser processado.',updated_at=CURRENT_TIMESTAMP
+                WHERE id=? AND organization_id=?`)
+                .bind(integration.id, integration.organization_id)
+                .run()
+            await env.DB.prepare(
+              "UPDATE webhook_events SET status='failed',error_summary=? WHERE id=? AND organization_id=?",
             )
-            .run()
-          processingFailed = true
+              .bind(summary, event.id, integration.organization_id)
+              .run()
+            processingFailed = true
+          }
         }
       }
-      }
     }
+
   if (processingFailed)
     throw new Error(
       "Falha ao processar eventos do WhatsApp; reenvio necessário",
     )
+}
+
+async function subscribeWaba(
+  env: Env,
+  organizationId: string,
+  integrationId: string,
+  wabaId: string,
+  token: string,
+) {
+  let result: GraphResult | null = null
+  try {
+    result = await graphFetch(env, `${wabaId}/subscribed_apps`, token, {})
+  } catch {
+    console.error("whatsapp_subscription_request_failed", {
+      organizationId,
+      integrationId,
+      apiVersion: graphVersion(env),
+    })
+  }
+
+  const subscribed = result?.ok === true && result.data.success === true
+  if (!subscribed) {
+    const message = result
+      ? graphMessage(result)
+      : "Não foi possível confirmar a solicitação com a Meta."
+    const summary = `Assinatura do webhook da Meta falhou: ${message}`.slice(
+      0,
+      200,
+    )
+    await env.DB.prepare(
+      "UPDATE integrations SET status='error',error_code='webhook_subscription',error_summary=?,updated_at=CURRENT_TIMESTAMP WHERE id=? AND organization_id=?",
+    )
+      .bind(summary, integrationId, organizationId)
+      .run()
+    if (result && !result.ok)
+      logMetaApiError("whatsapp_subscription_api_error", result)
+    return { subscribed: false, error: summary }
+  }
+
+  await env.DB.prepare(
+    `UPDATE integrations SET
+      status=CASE WHEN error_code='webhook_subscription' THEN 'connected' ELSE status END,
+      error_code=CASE WHEN error_code='webhook_subscription' THEN NULL ELSE error_code END,
+      error_summary=CASE WHEN error_code='webhook_subscription' THEN NULL ELSE error_summary END,
+      updated_at=CURRENT_TIMESTAMP
+     WHERE id=? AND organization_id=?`,
+  )
+    .bind(integrationId, organizationId)
+    .run()
+
+  return { subscribed: true as const }
 }
 
 async function connect(
@@ -1037,6 +1636,17 @@ async function connect(
       409,
     )
 
+  const sameWaba = await env.DB.prepare(
+    "SELECT organization_id FROM integrations WHERE provider='meta_whatsapp' AND external_account_id=? AND status IN ('connected','error') LIMIT 1",
+  )
+    .bind(wabaId)
+    .first<{ organization_id: string }>()
+  if (sameWaba && sameWaba.organization_id !== auth.organizationId)
+    return json(
+      { error: "Esta conta WhatsApp já está conectada a outra empresa." },
+      409,
+    )
+
   if (!sameNumber) {
     const active = await env.DB.prepare(
       "SELECT 1 x FROM integrations WHERE organization_id=? AND provider='meta_whatsapp' AND status IN ('connected','error')",
@@ -1102,34 +1712,20 @@ async function connect(
     )
     .run()
 
-  let subscription: GraphResult | null = null
-  try {
-    subscription = await graphFetch(env, `${wabaId}/subscribed_apps`, token, {})
-  } catch (error) {
-    console.error(
-      "whatsapp_subscription_failed",
-      error instanceof Error ? error.message : "unknown",
-    )
-  }
-  const subscribed = !!subscription?.ok && subscription.data.success === true
-  const subscribeError =
-    subscription && !subscription.ok
-    ? graphMessage(subscription)
-    : "A Meta não confirmou a assinatura do webhook. Verifique a conexão e tente novamente."
-
-  if (!subscribed)
-    await env.DB.prepare(
-      "UPDATE integrations SET status='error',error_code='webhook_subscription',error_summary=?,updated_at=CURRENT_TIMESTAMP WHERE id=? AND organization_id=?",
-    )
-      .bind(subscribeError, integrationId, auth.organizationId)
-      .run()
+  const subscription = await subscribeWaba(
+    env,
+    auth.organizationId,
+    integrationId,
+    wabaId,
+    token,
+  )
 
   return json({
     ok: true,
     displayPhoneNumber: display,
     verifiedName,
-    subscribed,
-    subscribeError: subscribed ? undefined : subscribeError,
+    subscribed: subscription.subscribed,
+    subscribeError: subscription.subscribed ? undefined : subscription.error,
   })
 }
 
@@ -1196,7 +1792,7 @@ async function connectWithEmbeddedSignup(
     )
 
   const exchangeUrl = new URL(
-    `${env.GRAPH_API_BASE ?? "https://graph.facebook.com"}/${GRAPH_VERSION}/oauth/access_token`,
+    `${env.GRAPH_API_BASE ?? "https://graph.facebook.com"}/${graphVersion(env)}/oauth/access_token`,
   )
 
   exchangeUrl.searchParams.set("client_id", env.META_APP_ID)
@@ -1743,6 +2339,34 @@ async function aiAssignmentValid(
   return !!row
 }
 
+async function existingAiReply(
+  env: Env,
+  organizationId: string,
+  key: string | undefined,
+) {
+  if (!key) return null
+  const existing = await env.DB.prepare(
+    "SELECT id,status FROM messages WHERE organization_id=? AND ai_reply_key=? AND direction='outbound' AND is_ai=1",
+  )
+    .bind(organizationId, key)
+    .first<{ id: string; status: string }>()
+  if (!existing) return null
+  if (["accepted", "sent", "delivered", "read"].includes(existing.status))
+    return json({
+      ok: true,
+      messageId: existing.id,
+      alreadyAttempted: true,
+    })
+  return json(
+    {
+      error:
+        "Esta resposta já teve uma tentativa de envio e não será repetida automaticamente.",
+      messageId: existing.id,
+    },
+    409,
+  )
+}
+
 async function sendAttachment(
   env: Env,
   auth: Session,
@@ -1765,7 +2389,10 @@ export async function sendFile(
   file: unknown,
   caption: string,
   assignmentRevision?: number,
+  aiReplyKey?: string,
 ) {
+  if (aiReplyKey && auth.role !== "ai")
+    return json({ error: "Chave de idempotência reservada à IA." }, 403)
   if (
     !(await aiAssignmentValid(
       env,
@@ -1790,6 +2417,13 @@ export async function sendFile(
       },
       413,
     )
+
+  const priorReply = await existingAiReply(
+    env,
+    auth.organizationId,
+    aiReplyKey,
+  )
+  if (priorReply) return priorReply
 
   const conversation = await env.DB.prepare(
     `SELECT ct.phone_e164 phone,i.phone_number_id phoneNumberId,i.access_token_enc token,i.status integrationStatus,i.id integrationId
@@ -1843,8 +2477,11 @@ export async function sendFile(
     document: filename,
   }[kind]!
 
-  await env.DB.prepare(
-    "INSERT INTO messages(id,organization_id,conversation_id,direction,type,body,status,sent_by,media_filename,media_mime,is_ai) VALUES(?,?,?,'outbound',?,?,'queued',?,?,?,?)",
+  const inserted = await env.DB.prepare(
+    `INSERT OR IGNORE INTO messages(
+      id,organization_id,conversation_id,direction,type,body,status,sent_by,
+      media_filename,media_mime,is_ai,origin,ai_reply_key
+    ) VALUES(?,?,?,'outbound',?,?,'queued',?,?,?,?,'business_api',?)`,
   )
     .bind(
       messageId,
@@ -1856,8 +2493,17 @@ export async function sendFile(
       kind === "document" ? filename : null,
       mime,
       auth.role === "ai" ? 1 : 0,
+      aiReplyKey ?? null,
     )
     .run()
+  if (!inserted.meta.changes) {
+    const prior = await existingAiReply(
+      env,
+      auth.organizationId,
+      aiReplyKey,
+    )
+    return prior ?? json({ error: "A mensagem já foi registrada." }, 409)
+  }
 
   const fail = async (code: string, message: string, status = 502) => {
     await env.DB.prepare(
@@ -1873,7 +2519,7 @@ export async function sendFile(
 
   try {
     const token = await decryptToken(env, conversation.token)
-    const base = `${env.GRAPH_API_BASE ?? "https://graph.facebook.com"}/${GRAPH_VERSION}`
+    const base = `${env.GRAPH_API_BASE ?? "https://graph.facebook.com"}/${graphVersion(env)}`
 
     const upload = new FormData()
     upload.set("messaging_product", "whatsapp")
@@ -2006,8 +2652,14 @@ export async function sendText(
   auth: Session,
   conversationId: string,
   text: unknown,
-  options: { talkButton?: boolean assignmentRevision?: number } = {},
+  options: {
+    talkButton?: boolean
+    assignmentRevision?: number
+    aiReplyKey?: string
+  } = {},
 ) {
+  if (options.aiReplyKey && auth.role !== "ai")
+    return json({ error: "Chave de idempotência reservada à IA." }, 403)
   if (
     !(await aiAssignmentValid(
       env,
@@ -2024,6 +2676,13 @@ export async function sendText(
       { error: "A mensagem deve ter entre 1 e 4096 caracteres." },
       400,
     )
+
+  const priorReply = await existingAiReply(
+    env,
+    auth.organizationId,
+    options.aiReplyKey,
+  )
+  if (priorReply) return priorReply
 
   const conversation =
     await env.DB.prepare(`SELECT c.id,ct.phone_e164 phone,i.phone_number_id phoneNumberId,i.access_token_enc token,i.status integrationStatus,i.id integrationId
@@ -2069,8 +2728,11 @@ export async function sendText(
 
   const messageId = uid()
 
-  await env.DB.prepare(
-    "INSERT INTO messages(id,organization_id,conversation_id,direction,type,body,status,sent_by,is_ai) VALUES(?,?,?,'outbound','text',?,'queued',?,?)",
+  const inserted = await env.DB.prepare(
+    `INSERT OR IGNORE INTO messages(
+      id,organization_id,conversation_id,direction,type,body,status,sent_by,
+      is_ai,origin,ai_reply_key
+    ) VALUES(?,?,?,'outbound','text',?,'queued',?,?,'business_api',?)`,
   )
 
     .bind(
@@ -2080,8 +2742,17 @@ export async function sendText(
       body,
       auth.userId || null,
       auth.role === "ai" ? 1 : 0,
+      options.aiReplyKey ?? null,
     )
     .run()
+  if (!inserted.meta.changes) {
+    const prior = await existingAiReply(
+      env,
+      auth.organizationId,
+      options.aiReplyKey,
+    )
+    return prior ?? json({ error: "A mensagem já foi registrada." }, 409)
+  }
 
   const fail = async (code: string, message: string, status = 502) => {
     await env.DB.prepare(
@@ -2216,7 +2887,8 @@ export async function whatsappRoutes(
     path === "/api/integrations/whatsapp" ||
     path === "/api/integrations/whatsapp/embedded-signup" ||
     path === "/api/integrations/whatsapp/embedded-signup/select-number" ||
-    path === "/api/integrations/whatsapp/history-sync"
+    path === "/api/integrations/whatsapp/history-sync" ||
+    path === "/api/integrations/whatsapp/resubscribe"
   ) {
     if (path === "/api/integrations/whatsapp" && request.method === "GET") {
       await env.DB.prepare(
@@ -2225,22 +2897,75 @@ export async function whatsappRoutes(
         .bind(org)
         .run()
       const integration =
-        await env.DB.prepare(`SELECT status,phone_number_id phoneNumberId,display_phone_number displayPhoneNumber,connection_mode connectionMode,error_summary errorSummary,connected_at connectedAt,
+        await env.DB.prepare(`SELECT id,status,phone_number_id phoneNumberId,display_phone_number displayPhoneNumber,connection_mode connectionMode,error_code errorCode,error_summary errorSummary,connected_at connectedAt,
         history_sync_status historySyncStatus,history_sync_progress historySyncProgress,history_sync_error historySyncError,
         history_sync_requested_at historySyncRequestedAt,
         CASE WHEN connected_at>=datetime('now','-24 hours') THEN 1 ELSE 0 END historySyncAvailable
         FROM integrations WHERE organization_id=? AND provider='meta_whatsapp' AND status!='disconnected' ORDER BY created_at DESC LIMIT 1`)
           .bind(org)
           .first()
+      const diagnostics =
+        auth.role === "admin"
+          ? await env.DB.prepare(
+              `WITH events AS (
+                 SELECT status,error_summary,received_at,event_type
+                 FROM webhook_events WHERE organization_id=? AND provider='meta_whatsapp'
+               ),
+               jobs AS (
+                 SELECT status,error_summary,updated_at
+                 FROM whatsapp_processing_jobs WHERE organization_id=?
+               ),
+               messages AS (
+                 SELECT direction,status,error_code,referral_json,external_created_at,created_at
+                 FROM messages WHERE organization_id=?
+               )
+               SELECT
+                 (SELECT MAX(received_at) FROM events) lastWebhookAt,
+                 (SELECT COUNT(*) FROM events WHERE status='failed' AND julianday(received_at)>=julianday('now','-1 day')) failedWebhooks24h,
+                 (SELECT COUNT(*) FROM events WHERE status='ignored' AND julianday(received_at)>=julianday('now','-1 day')) ignoredWebhooks24h,
+                 (SELECT COUNT(*) FROM events WHERE error_summary IS NOT NULL AND julianday(received_at)>=julianday('now','-1 day')) metaErrors24h,
+                 (SELECT COUNT(*) FROM jobs WHERE status='pending') pendingAiJobs,
+                 (SELECT COUNT(*) FROM jobs WHERE status='processing') processingAiJobs,
+                 (SELECT COUNT(*) FROM jobs WHERE status='failed') failedAiJobs,
+                 (SELECT COUNT(*) FROM jobs WHERE status='needs_review') needsReviewAiJobs,
+                 (SELECT error_summary FROM jobs WHERE error_summary IS NOT NULL ORDER BY updated_at DESC LIMIT 1) lastAiError,
+                 (SELECT COUNT(*) FROM messages WHERE direction='inbound' AND error_code='131060'
+                   AND julianday(COALESCE(external_created_at,created_at))>=julianday('now','-1 day')) unavailableMessages24h,
+                 (SELECT COUNT(*) FROM messages WHERE referral_json IS NOT NULL
+                   AND julianday(COALESCE(external_created_at,created_at))>=julianday('now','-1 day')) adReferralMessages24h,
+                 (SELECT COUNT(*) FROM messages WHERE direction='outbound' AND status='failed'
+                   AND julianday(COALESCE(external_created_at,created_at))>=julianday('now','-1 day')) failedSends24h`,
+            )
+              .bind(org, org, org)
+              .first()
+          : null
+      const recentEvents =
+        auth.role === "admin"
+          ? (
+              await env.DB.prepare(
+                `SELECT event_type eventType,status,error_summary errorSummary,received_at receivedAt
+                 FROM webhook_events WHERE organization_id=? AND provider='meta_whatsapp'
+                 ORDER BY received_at DESC LIMIT 8`,
+              )
+                .bind(org)
+                .all()
+            ).results
+          : undefined
 
       return json({
         integration: integration ?? null,
+        diagnostics:
+          diagnostics && {
+            ...diagnostics,
+            recentEvents,
+          },
 
         webhookUrl: `${new URL(env.APP_ORIGIN).origin}/api/webhooks/meta`,
 
         embeddedSignup: {
           appId: env.META_APP_ID ?? null,
           configId: env.META_CONFIG_ID ?? null,
+          graphApiVersion: graphVersion(env),
           coexistenceConfigId:
             env.META_COEXISTENCE_CONFIG_ID ?? env.META_CONFIG_ID ?? null,
         },
@@ -2258,6 +2983,49 @@ export async function whatsappRoutes(
         { error: "Apenas administradores podem alterar a integração." },
         403,
       )
+
+    if (
+      path === "/api/integrations/whatsapp/resubscribe" &&
+      request.method === "POST"
+    ) {
+      const integration = await env.DB.prepare(
+        `SELECT id,external_account_id wabaId,access_token_enc accessTokenEnc,status,error_code errorCode
+         FROM integrations
+         WHERE organization_id=? AND provider='meta_whatsapp'
+           AND status IN ('connected','error')
+         ORDER BY created_at DESC LIMIT 1`,
+      )
+        .bind(org)
+        .first<{
+          id: string
+          wabaId: string | null
+          accessTokenEnc: string | null
+          status: string
+          errorCode: string | null
+        }>()
+      if (!integration?.wabaId || !integration.accessTokenEnc)
+        return json({ error: "Integração WhatsApp não encontrada." }, 404)
+      if (
+        integration.status === "error" &&
+        integration.errorCode !== "webhook_subscription"
+      )
+        return json(
+          {
+            error:
+              "Corrija o erro atual da integração antes de verificar a assinatura do webhook.",
+          },
+          409,
+        )
+
+      const result = await subscribeWaba(
+        env,
+        org,
+        integration.id,
+        integration.wabaId,
+        await decryptToken(env, integration.accessTokenEnc),
+      )
+      return json(result, result.subscribed ? 200 : 502)
+    }
 
     if (
       path === "/api/integrations/whatsapp/history-sync" &&
@@ -2348,8 +3116,8 @@ export async function whatsappRoutes(
       )
     await env.DB.batch([
       env.DB.prepare(
-        `INSERT OR IGNORE INTO deleted_whatsapp_messages(organization_id,external_id,conversation_id,direction,external_created_at)
-         SELECT organization_id,external_id,conversation_id,direction,external_created_at FROM messages WHERE id=? AND organization_id=? AND external_id IS NOT NULL`,
+        `INSERT OR IGNORE INTO deleted_whatsapp_messages(organization_id,external_id,conversation_id,direction,external_created_at,content_available,created_at)
+         SELECT organization_id,external_id,conversation_id,direction,external_created_at,content_available,created_at FROM messages WHERE id=? AND organization_id=? AND external_id IS NOT NULL`,
       ).bind(messageDelete[1], org),
       env.DB.prepare(
         "DELETE FROM messages WHERE id=? AND organization_id=?",
@@ -2398,8 +3166,8 @@ export async function whatsappRoutes(
       )
     await env.DB.batch([
       env.DB.prepare(
-        `INSERT OR IGNORE INTO deleted_whatsapp_messages(organization_id,external_id,conversation_id,direction,external_created_at)
-         SELECT organization_id,external_id,conversation_id,direction,external_created_at FROM messages
+        `INSERT OR IGNORE INTO deleted_whatsapp_messages(organization_id,external_id,conversation_id,direction,external_created_at,content_available,created_at)
+         SELECT organization_id,external_id,conversation_id,direction,external_created_at,content_available,created_at FROM messages
          WHERE organization_id=? AND conversation_id=? AND external_id IS NOT NULL`,
       ).bind(org, conversationDelete[1]),
       env.DB.prepare(
@@ -2597,7 +3365,7 @@ export async function whatsappRoutes(
 
   if (match[2] === "messages" && request.method === "GET") {
     const rows =
-      await env.DB.prepare(`SELECT id,direction,type,body,status,error_code errorCode,error_message errorMessage,media_id IS NOT NULL hasMedia,media_filename mediaFilename,media_mime mediaMime,COALESCE(external_created_at,strftime('%Y-%m-%dT%H:%M:%fZ',created_at)) at
+      await env.DB.prepare(`SELECT id,direction,type,body,status,error_code errorCode,error_message errorMessage,origin,referral_json referralJson,media_id IS NOT NULL hasMedia,media_filename mediaFilename,media_mime mediaMime,COALESCE(external_created_at,strftime('%Y-%m-%dT%H:%M:%fZ',created_at)) at
       FROM messages WHERE organization_id=? AND conversation_id=? ORDER BY COALESCE(external_created_at,strftime('%Y-%m-%dT%H:%M:%fZ',created_at)) DESC,rowid DESC LIMIT 200`)
         .bind(org, conversationId)
         .all()

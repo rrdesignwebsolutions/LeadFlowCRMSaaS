@@ -28,8 +28,8 @@ function setup(paymentViability: "blocked" | "viable" | "unknown" = "unknown", l
     INSERT INTO conversations(id,organization_id,contact_id,integration_id) VALUES('conv','org','contact','integration');
     INSERT INTO leads(id,organization_id,contact_id) VALUES('lead','org','contact');
     INSERT INTO ai_settings(organization_id,enabled) VALUES('org',1);
-    INSERT INTO messages(id,organization_id,conversation_id,external_id,direction,type,body,status,external_created_at)
-      VALUES('in','org','conv','wamid','inbound','text','Olá','received',strftime('%Y-%m-%dT%H:%M:%fZ','now'));
+    INSERT INTO messages(id,organization_id,conversation_id,external_id,direction,type,body,status,external_created_at,content_available)
+      VALUES('in','org','conv','wamid','inbound','text','Olá','received',strftime('%Y-%m-%dT%H:%M:%fZ','now'),1);
   `)
   const adapter = {
     prepare(sql: string) {

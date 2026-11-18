@@ -91,6 +91,8 @@ type Message = {
 
   errorCode: string | null
   errorMessage: string | null
+  origin: string
+  referralJson: string | null
 
   hasMedia: number
 
@@ -949,6 +951,16 @@ export default function Inbox({
                       <MoreVertical size={14} />
                         </button>
                       )}
+                    {message.origin === "business_app" && (
+                        <small className="inbox-message-origin">
+                      Enviada pelo WhatsApp Business
+                        </small>
+                    )}
+                    {message.referralJson && (
+                        <small className="inbox-message-origin">
+                      Contato iniciado por anúncio da Meta
+                        </small>
+                    )}
                     {message.hasMedia &&
                     (message.type === "image" ||
                       message.type === "sticker") ? (

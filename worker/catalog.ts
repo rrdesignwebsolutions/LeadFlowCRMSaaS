@@ -784,6 +784,8 @@ export type CatalogToolState = {
   imageFailures: Map<string, string>
 
   assignmentRevision?: number
+
+  inboundExternalId?: string
 }
 
 async function findProducts(env: Env, organizationId: string, query: string) {
@@ -1078,6 +1080,10 @@ async function sendProductPhotos(
       caption(index),
 
       state.assignmentRevision,
+
+      state.inboundExternalId
+        ? `ai:${state.inboundExternalId}:catalog:${image.id}`
+        : undefined,
     )
 
     if (response.ok) {

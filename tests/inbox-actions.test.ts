@@ -16,8 +16,8 @@ function setup() {
     INSERT INTO integrations(id,organization_id,provider,status,phone_number_id,external_account_id) VALUES('integration','org','meta_whatsapp','connected','98765','12345');
     INSERT INTO conversations(id,organization_id,contact_id,integration_id) VALUES('conv','org','contact','integration');
     INSERT INTO leads(id,organization_id,contact_id) VALUES('lead','org','contact');
-    INSERT INTO messages(id,organization_id,conversation_id,external_id,direction,type,body,status,external_created_at)
-      VALUES('message','org','conv','wamid','inbound','text','Olá','received',strftime('%Y-%m-%dT%H:%M:%fZ','now'));
+    INSERT INTO messages(id,organization_id,conversation_id,external_id,direction,type,body,status,external_created_at,content_available)
+      VALUES('message','org','conv','wamid','inbound','text','Olá','received',strftime('%Y-%m-%dT%H:%M:%fZ','now'),1);
   `)
   const adapter = {
     prepare(sql: string) {
@@ -48,23 +48,185 @@ describe("ações da caixa de entrada", () => {
     const { db, env, call } = setup()
     const after = vi.fn()
     db.exec("UPDATE contacts SET phone_e164='+15551234567' WHERE id='contact'")
+    db.exec("DELETE FROM messages")
     await handleMetaPayload(env, {
       object: "whatsapp_business_account",
       entry: [{ id: "12345", changes: [{ field: "messages", value: {
         metadata: { phone_number_id: "98765" },
         messages: [{ id: "wamid.indisponivel", from: "15551234567", type: "unsupported",
-          errors: [{ code: 131060 }], timestamp: "2000000000" }],
+          errors: [{ code: 131060 }], timestamp: String(Math.floor(Date.now() / 1000)) }],
       } }] }],
     }, "unsupported-hash", after)
     expect(db.prepare("SELECT body,error_code,type,direction,status FROM messages WHERE external_id=?").get("wamid.indisponivel")).toMatchObject({
-      body: "[Mensagem indisponível pela Meta. Confira no WhatsApp Business.]", error_code: "131060",
+      body: "[A Meta não compartilhou o conteúdo desta mensagem com o AV Flow. Abra o WhatsApp Business para lê-la; a Meta não enviará esse conteúdo novamente.]", error_code: "131060",
       type: "unsupported", direction: "inbound", status: "received",
     })
     expect(db.prepare("SELECT unread_count FROM conversations WHERE id='conv'").get()).toMatchObject({ unread_count: 1 })
+    expect(await (await call("/api/conversations/conv/messages", "GET"))?.json()).toMatchObject({
+      windowOpen: true,
+    })
     expect(after).not.toHaveBeenCalled()
     db.exec("UPDATE messages SET body='[Mensagem não suportada]' WHERE external_id='wamid.indisponivel'")
     const list = await call("/api/conversations", "GET")
     expect(await list?.json()).toMatchObject({ results: [{ preview: "[Mensagem não suportada]", previewType: "unsupported" }] })
+    db.close()
+  })
+
+  it("aplica edições e exclusões do cliente na mensagem original", async () => {
+    const { db, env } = setup()
+
+    await handleMetaPayload(
+      env,
+      {
+        object: "whatsapp_business_account",
+        entry: [
+          {
+            id: "12345",
+            changes: [
+              {
+                field: "messages",
+                value: {
+                  metadata: { phone_number_id: "98765" },
+                  messages: [
+                    {
+                      id: "wamid.edit-event",
+                      from: "15551234567",
+                      type: "edit",
+                      edit: {
+                        original_message_id: "wamid",
+                        message: {
+                          type: "text",
+                          text: { body: "Texto editado" },
+                        },
+                      },
+                    },
+                  ],
+                },
+              },
+            ],
+          },
+        ],
+      },
+      "customer-edit-hash",
+    )
+    expect(
+      db
+        .prepare("SELECT body,direction,content_available FROM messages WHERE external_id='wamid'")
+        .get(),
+    ).toMatchObject({
+      body: "Texto editado",
+      direction: "inbound",
+      content_available: 1,
+    })
+    expect(db.prepare("SELECT count(*) n FROM messages").get()).toMatchObject({
+      n: 1,
+    })
+
+    await handleMetaPayload(
+      env,
+      {
+        object: "whatsapp_business_account",
+        entry: [
+          {
+            id: "12345",
+            changes: [
+              {
+                field: "messages",
+                value: {
+                  metadata: { phone_number_id: "98765" },
+                  messages: [
+                    {
+                      id: "wamid.revoke-event",
+                      from: "15551234567",
+                      type: "revoke",
+                      revoke: { original_message_id: "wamid" },
+                    },
+                  ],
+                },
+              },
+            ],
+          },
+        ],
+      },
+      "customer-revoke-hash",
+    )
+    expect(
+      db
+        .prepare("SELECT body,content_available FROM messages WHERE external_id='wamid'")
+        .get(),
+    ).toMatchObject({
+      body: "[Mensagem apagada no WhatsApp Business.]",
+      content_available: 0,
+    })
+    db.close()
+  })
+
+  it("persists WhatsApp Business App contact sync, including phone-less BSUIDs", async () => {
+    const { db, env } = setup()
+
+    await handleMetaPayload(
+      env,
+      {
+        object: "whatsapp_business_account",
+        entry: [
+          {
+            id: "12345",
+            changes: [
+              {
+                field: "smb_app_state_sync",
+                value: {
+                  state_sync: [
+                    {
+                      type: "contact",
+                      action: "add",
+                      contact: {
+                        user_id: "US.123456789",
+                        phone_number: "15551234567",
+                        full_name: "Contato",
+                      },
+                    },
+                    {
+                      type: "contact",
+                      action: "add",
+                      contact: { user_id: "US.987654321", username: "cliente" },
+                    },
+                    {
+                      type: "contact",
+                      action: "remove",
+                      contact: { user_id: "US.123456789" },
+                    },
+                  ],
+                },
+              },
+            ],
+          },
+        ],
+      },
+      "app-contact-sync-hash",
+    )
+
+    expect(
+      db
+        .prepare(
+          "SELECT user_id,phone_e164,is_removed FROM whatsapp_business_app_contacts ORDER BY user_id",
+        )
+        .all(),
+    ).toEqual([
+      {
+        user_id: "US.123456789",
+        phone_e164: "+15551234567",
+        is_removed: 1,
+      },
+      { user_id: "US.987654321", phone_e164: null, is_removed: 0 },
+    ])
+    expect(
+      db
+        .prepare("SELECT event_type,status FROM webhook_events")
+        .get(),
+    ).toMatchObject({
+      event_type: "smb_app_state_sync",
+      status: "processed",
+    })
     db.close()
   })
 

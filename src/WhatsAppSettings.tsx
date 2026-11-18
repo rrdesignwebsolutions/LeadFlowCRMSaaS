@@ -8,6 +8,7 @@ type Status = {
     phoneNumberId: string
     displayPhoneNumber: string | null
     connectionMode: "cloud_api" | "coexistence"
+    errorCode: string | null
     errorSummary: string | null
     connectedAt: string | null
     historySyncStatus: "not_started" | "requesting" | "requested" | "completed" | "declined" | "failed"
@@ -18,10 +19,31 @@ type Status = {
   } | null
 
   webhookUrl: string
+  diagnostics?: {
+    lastWebhookAt: string | null
+    failedWebhooks24h: number
+    ignoredWebhooks24h: number
+    metaErrors24h: number
+    pendingAiJobs: number
+    processingAiJobs: number
+    failedAiJobs: number
+    needsReviewAiJobs: number
+    lastAiError: string | null
+    unavailableMessages24h: number
+    adReferralMessages24h: number
+    failedSends24h: number
+    recentEvents: Array<{
+      eventType: string | null
+      status: string
+      errorSummary: string | null
+      receivedAt: string
+    }>
+  } | null
 
   embeddedSignup: {
     appId: string | null
     configId: string | null
+    graphApiVersion: "v26.0" | "v27.0"
     coexistenceConfigId: string | null
   }
 
@@ -193,7 +215,11 @@ export default function WhatsAppSettings({
     let active = true
 
     const initialize = () => {
-      window.FB?.init({ appId, xfbml: false, version: "v26.0" })
+      window.FB?.init({
+        appId,
+        xfbml: false,
+        version: data?.embeddedSignup.graphApiVersion ?? "v26.0",
+      })
 
       if (active) setSdkReady(!!window.FB)
     }
@@ -237,7 +263,7 @@ export default function WhatsAppSettings({
     return () => {
       active = false
     }
-  }, [data?.embeddedSignup.appId])
+  }, [data?.embeddedSignup.appId, data?.embeddedSignup.graphApiVersion])
 
   const finishEmbeddedSignup = useCallback(async () => {
     const signup = signupState.current
@@ -473,6 +499,30 @@ export default function WhatsAppSettings({
     }
   }
 
+  async function resubscribeWebhook() {
+    setBusy(true)
+    setError("")
+    setNote("")
+    try {
+      const result = await api<{ subscribed: boolean; error?: string }>(
+        "/api/integrations/whatsapp/resubscribe",
+        { method: "POST" },
+      )
+      if (!result.subscribed) {
+        setError(result.error ?? "A Meta não confirmou a assinatura.")
+        return
+      }
+      setNote("A Meta confirmou a assinatura do webhook desta WABA.")
+      await load()
+      onChanged()
+    } catch (e) {
+      setError(errorMessage(e))
+      await load()
+    } finally {
+      setBusy(false)
+    }
+  }
+
   const i = data?.integration
 
   const ready = data?.serverReady
@@ -531,6 +581,63 @@ export default function WhatsAppSettings({
               {i.errorSummary}
             </span>
           )}
+        </div>
+      )}
+      {i && isAdmin && (
+        <div className="whatsapp-connect-panel">
+          <div className="whatsapp-connect-action">
+            <b>Diagnóstico da integração</b>
+            <p>
+              Versão Graph API usada pelo servidor e pelo Embedded Signup:{" "}
+              {data?.embeddedSignup.graphApiVersion ?? "v26.0"}.
+            </p>
+            <button
+              className="button secondary"
+              type="button"
+              onClick={() => void resubscribeWebhook()}
+              disabled={busy || (i.status === "error" && i.errorCode !== "webhook_subscription")}
+            >
+              {busy ? "Verificando…" : "Verificar assinatura da WABA"}
+            </button>
+            {data?.diagnostics && (
+              <>
+                <p>
+                  Último webhook registrado:{" "}
+                  {data.diagnostics.lastWebhookAt
+                    ? new Date(data.diagnostics.lastWebhookAt).toLocaleString("pt-BR")
+                    : "nenhum registro"}.
+                  {!data.diagnostics.lastWebhookAt &&
+                    " Isso não comprova que a Meta tentou enviar um evento."}
+                </p>
+                <p>
+                  Últimas 24h — falhas de webhook: {data.diagnostics.failedWebhooks24h};
+                  eventos ignorados: {data.diagnostics.ignoredWebhooks24h};
+                  erros informados pela Meta: {data.diagnostics.metaErrors24h};
+                  mensagens 131060: {data.diagnostics.unavailableMessages24h};
+                  referências de anúncios: {data.diagnostics.adReferralMessages24h};
+                  envios recusados: {data.diagnostics.failedSends24h}.
+                </p>
+                <p>
+                  Theo — pendentes: {data.diagnostics.pendingAiJobs};
+                  em processamento: {data.diagnostics.processingAiJobs};
+                  falhas: {data.diagnostics.failedAiJobs};
+                  revisão manual: {data.diagnostics.needsReviewAiJobs}.
+                  {data.diagnostics.lastAiError &&
+                    ` Último erro: ${data.diagnostics.lastAiError}`}
+                </p>
+                {data.diagnostics.recentEvents.length > 0 && (
+                  <ul>
+                    {data.diagnostics.recentEvents.map((event, index) => (
+                      <li key={`${event.receivedAt}-${index}`}>
+                        {event.eventType ?? "evento desconhecido"} — {event.status}
+                        {event.errorSummary ? `: ${event.errorSummary}` : ""}
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </>
+            )}
+          </div>
         </div>
       )}
       {i?.connectionMode === "coexistence" && i.status === "connected" && (

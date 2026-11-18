@@ -33,6 +33,12 @@ function database() {
 
           if (sql.includes("FROM webhook_events")) return { id: "event" }
 
+          if (sql.startsWith("SELECT conversation_id FROM messages"))
+            return null
+
+          if (sql.startsWith("SELECT conversation_id conversationId FROM messages"))
+            return { conversationId: "conversation" }
+
           if (sql.includes("SELECT id,status FROM messages"))
             return { id: "stored-message", status: "accepted" }
 
@@ -126,17 +132,18 @@ describe("WhatsApp coexistence webhooks", () => {
         s.sql.includes("INSERT OR IGNORE INTO messages"),
       )
 
-    expect(message?.args[6]).toBe(expected)
+    expect(message?.args[5]).toBe(expected)
 
-    expect(message?.args[12]).toBe(String(code))
+    expect(message?.args[11]).toBe(String(code))
+
+    expect(message?.args[13]).toBe(0)
 
       expect(
         statements.find((s) => s.sql.includes("unread_count=unread_count+?"))
           ?.args[2],
       ).toBe(1)
 
-    if (code === 131060) expect(after).toHaveBeenCalledTimes(1)
-    else expect(after).not.toHaveBeenCalled()
+    expect(after).not.toHaveBeenCalled()
     },
   )
 
@@ -179,15 +186,16 @@ describe("WhatsApp coexistence webhooks", () => {
       s.sql.includes("INSERT OR IGNORE INTO messages"),
     )
 
-    expect(message?.args[12]).toBe("999")
+    expect(message?.args[11]).toBe("999")
 
-    expect(message?.args[6]).toBe(
+    expect(message?.args[5]).toBe(
       "[A Meta não enviou o conteúdo desta mensagem ao AV Flow. Consulte-a no WhatsApp Business; a Meta pode não reenviá-la.]",
     )
   })
 
   it("explica quando a Meta não compartilha o conteúdo da mensagem (131060)", async () => {
     const { env, statements } = database()
+    const after = vi.fn()
 
     await handleMetaPayload(
       env,
@@ -220,17 +228,20 @@ describe("WhatsApp coexistence webhooks", () => {
         ],
       },
       "unsupported-hidden-hash",
+      after,
     )
 
     const message = statements.find((s) =>
       s.sql.includes("INSERT OR IGNORE INTO messages"),
     )
 
-    expect(message?.args[6]).toContain("Abra o WhatsApp Business")
+    expect(message?.args[5]).toContain("Abra o WhatsApp Business")
 
-    expect(message?.args[6]).toContain("não enviará esse conteúdo novamente")
+    expect(message?.args[5]).toContain("não enviará esse conteúdo novamente")
 
-    expect(message?.args[12]).toBe("131060")
+    expect(message?.args[11]).toBe("131060")
+
+    expect(after).not.toHaveBeenCalled()
   })
 
   it("registra a resposta do formulário e agenda o processamento da IA", async () => {
@@ -295,17 +306,83 @@ describe("WhatsApp coexistence webhooks", () => {
       s.sql.includes("INSERT OR IGNORE INTO messages"),
     )
 
-    expect(message?.args[4]).toBe("inbound")
-
-    expect(message?.args[5]).toBe("interactive")
-
-    expect(message?.args[6]).toContain("nome: Lavínia")
-
-    expect(message?.args[6]).toContain("Dê continuidade ao atendimento")
-
-    expect(message?.args[6]).not.toContain("do-not-store")
+    expect(message?.args[3]).toBe("inbound")
+    expect(message?.args[4]).toBe("interactive")
+    expect(message?.args[5]).toContain("nome: Lavínia")
+    expect(message?.args[5]).toContain("Dê continuidade ao atendimento")
+    expect(message?.args[5]).not.toContain("do-not-store")
+    expect(message?.args[13]).toBe(1)
+    expect(
+      statements.some((statement) =>
+        statement.sql.includes("INSERT OR IGNORE INTO whatsapp_processing_jobs"),
+      ),
+    ).toBe(true)
 
     expect(after).toHaveBeenCalledTimes(1)
+  })
+
+  it("persists Click-to-WhatsApp text together with its referral and context", async () => {
+    const { env, statements } = database()
+    const after = vi.fn()
+
+    await handleMetaPayload(
+      env,
+      {
+        object: "whatsapp_business_account",
+        entry: [
+          {
+            id: "12345",
+            changes: [
+              {
+                field: "messages",
+                value: {
+                  metadata: { phone_number_id: "98765" },
+                  messages: [
+                    {
+                      id: "wamid.click-to-whatsapp",
+                      from: "15551234567",
+                      type: "text",
+                      text: { body: "Olá, quero mais informações." },
+                      referral: {
+                        source_url: "https://example.test/ad",
+                        source_id: "ad-123",
+                        source_type: "ad",
+                        headline: "Oferta",
+                        body: "Mensagem do anúncio",
+                      },
+                      context: {
+                        from: "15557654321",
+                        id: "wamid.parent",
+                        forwarded: true,
+                      },
+                      timestamp: String(Math.floor(Date.now() / 1000)),
+                    },
+                  ],
+                },
+              },
+            ],
+          },
+        ],
+      },
+      "ctwa-message-hash",
+      after,
+    )
+
+    const message = statements.find((statement) =>
+      statement.sql.includes("INSERT OR IGNORE INTO messages"),
+    )
+    expect(message?.args[5]).toBe("Olá, quero mais informações.")
+    expect(message?.args[13]).toBe(1)
+    expect(JSON.parse(String(message?.args[14]))).toMatchObject({
+      source_id: "ad-123",
+      source_type: "ad",
+      headline: "Oferta",
+    })
+    expect(JSON.parse(String(message?.args[15]))).toMatchObject({
+      forwarded: true,
+      id: "wamid.parent",
+    })
+    expect(after).toHaveBeenCalledOnce()
   })
 
   it("persists the Meta delivery error details", async () => {
@@ -428,6 +505,26 @@ describe("WhatsApp coexistence webhooks", () => {
                   ],
                 },
               },
+              {
+                field: "messages",
+                value: {
+                  metadata: { phone_number_id: "98765" },
+                  messages: [
+                    {
+                      id: "wamid.customer-edit-event",
+                      from: "15551234567",
+                      type: "edit",
+                      edit: {
+                        original_message_id: "wamid.customer-original",
+                        message: {
+                          type: "text",
+                          text: { body: "Texto corrigido pelo cliente" },
+                        },
+                      },
+                    },
+                  ],
+                },
+              },
             ],
           },
         ],
@@ -450,6 +547,163 @@ describe("WhatsApp coexistence webhooks", () => {
     ).toBe(0)
 
     expect(after).not.toHaveBeenCalled()
+  })
+
+  it("applies edits and revocations from WhatsApp Business echoes to the original outbound message", async () => {
+    const { env, statements } = database()
+
+    await handleMetaPayload(
+      env,
+      {
+        object: "whatsapp_business_account",
+        entry: [
+          {
+            id: "12345",
+            changes: [
+              {
+                field: "smb_message_echoes",
+                value: {
+                  metadata: { phone_number_id: "98765" },
+                  message_echoes: [
+                    {
+                      id: "wamid.edit-event",
+                      to: "15551234567",
+                      type: "edit",
+                      edit: {
+                        original_message_id: "wamid.original-edit",
+                        message: {
+                          type: "image",
+                          image: {
+                            id: "media-edited",
+                            caption: "Legenda corrigida",
+                            mime_type: "image/jpeg",
+                          },
+                        },
+                      },
+                    },
+                    {
+                      id: "wamid.revoke-event",
+                      to: "15551234567",
+                      type: "revoke",
+                      revoke: { original_message_id: "wamid.original-revoke" },
+                    },
+                  ],
+                },
+              },
+              {
+                field: "messages",
+                value: {
+                  metadata: { phone_number_id: "98765" },
+                  messages: [
+                    {
+                      id: "wamid.customer-edit-event",
+                      from: "15551234567",
+                      type: "edit",
+                      edit: {
+                        original_message_id: "wamid.customer-original",
+                        message: {
+                          type: "text",
+                          text: { body: "Texto corrigido pelo cliente" },
+                        },
+                      },
+                    },
+                  ],
+                },
+              },
+            ],
+          },
+        ],
+      },
+      "edit-revoke-hash",
+    )
+
+    const edit = statements.find((statement) =>
+      statement.sql.includes("UPDATE messages SET type=?,body=?"),
+    )
+    expect(edit?.args[0]).toBe("image")
+    expect(edit?.args[1]).toContain("Legenda corrigida")
+    expect(edit?.args[7]).toBe("wamid.original-edit")
+
+    const revoke = statements.find((statement) =>
+      statement.sql.includes("Mensagem apagada no WhatsApp Business."),
+    )
+    expect(revoke?.args).toContain("wamid.original-revoke")
+
+    const customerEdit = statements.find(
+      (statement) =>
+        statement.sql.includes("UPDATE messages SET type=?,body=?") &&
+        statement.args[7] === "wamid.customer-original",
+    )
+    expect(customerEdit?.args[0]).toBe("text")
+    expect(customerEdit?.args[1]).toBe("Texto corrigido pelo cliente")
+    expect(customerEdit?.args[8]).toBe("inbound")
+    expect(
+      statements.some((statement) =>
+        statement.sql.includes("INSERT OR IGNORE INTO messages"),
+      ),
+    ).toBe(false)
+  })
+
+  it("synchronizes WhatsApp Business App contacts by BSUID without inventing phone numbers", async () => {
+    const { env, statements } = database()
+
+    await handleMetaPayload(
+      env,
+      {
+        object: "whatsapp_business_account",
+        entry: [
+          {
+            id: "12345",
+            changes: [
+              {
+                field: "smb_app_state_sync",
+                value: {
+                  state_sync: [
+                    {
+                      type: "contact",
+                      action: "add",
+                      contact: {
+                        user_id: "US.123456789",
+                        phone_number: "15551234567",
+                        full_name: "Contato sincronizado",
+                      },
+                    },
+                    {
+                      type: "contact",
+                      action: "remove",
+                      contact: { user_id: "US.987654321" },
+                    },
+                  ],
+                },
+              },
+            ],
+          },
+        ],
+      },
+      "app-state-sync-hash",
+    )
+
+    const contacts = statements.filter((statement) =>
+      statement.sql.includes("INSERT INTO whatsapp_business_app_contacts"),
+    )
+    expect(contacts).toHaveLength(2)
+    expect(contacts[0]?.args.slice(2, 8)).toEqual([
+      "US.123456789",
+      null,
+      null,
+      "+15551234567",
+      "Contato sincronizado",
+      null,
+    ])
+    expect(contacts[0]?.args[8]).toBe(0)
+    expect(contacts[1]?.args[2]).toBe("US.987654321")
+    expect(contacts[1]?.args[5]).toBeNull()
+    expect(contacts[1]?.args[8]).toBe(1)
+    expect(
+      statements.some((statement) =>
+        statement.sql.includes("status='ignored'"),
+      ),
+    ).toBe(false)
   })
 
   it("imports historical messages without marking them unread and records sync progress", async () => {
@@ -515,12 +769,12 @@ describe("WhatsApp coexistence webhooks", () => {
       s.sql.includes("INSERT OR IGNORE INTO messages"),
     )
 
-    expect(messages.map((message) => message.args[4])).toEqual([
+    expect(messages.map((message) => message.args[3])).toEqual([
       "inbound",
       "outbound",
     ])
 
-    expect(messages.map((message) => message.args[6])).toEqual([
+    expect(messages.map((message) => message.args[5])).toEqual([
       "Mensagem antiga",
       "Resposta antiga",
     ])
@@ -578,7 +832,7 @@ describe("WhatsApp coexistence webhooks", () => {
     ).toBe(true)
   })
 
-  it("applies account updates to all integrations sharing a WABA", async () => {
+  it("applies account updates to integrations in the same tenant", async () => {
     const { env, statements } = database()
 
     const originalPrepare = env.DB.prepare.bind(env.DB)
@@ -592,7 +846,7 @@ describe("WhatsApp coexistence webhooks", () => {
           results: [
             { id: "integration", organization_id: "org" },
 
-            { id: "integration-2", organization_id: "org-2" },
+            { id: "integration-2", organization_id: "org" },
           ],
         }) as never
       }
@@ -630,7 +884,7 @@ describe("WhatsApp coexistence webhooks", () => {
 
     expect(updates.map((s) => s.args.slice(-2))).toEqual([
       ["integration", "org"],
-      ["integration-2", "org-2"],
+      ["integration-2", "org"],
     ])
   })
 })
