@@ -284,17 +284,6 @@ function WorkspaceApp() {
 
   if (me === undefined) return <div className="auth-page">Carregando...</div>
 
-  if (me === null)
-    return (
-      <AuthScreen
-        onDone={() => {
-          setMe(undefined)
-          setBootstrapError("")
-          void load()
-        }}
-      />
-    )
-
   if (me === null && bootstrapError)
     return (
       <div className="auth-page">
@@ -310,6 +299,17 @@ function WorkspaceApp() {
         </button>
       </section>
       </div>
+    )
+
+  if (me === null)
+    return (
+      <AuthScreen
+        onDone={() => {
+          setMe(undefined)
+          setBootstrapError("")
+          void load()
+        }}
+      />
     )
 
   if (me.subscription.status === "expired")
