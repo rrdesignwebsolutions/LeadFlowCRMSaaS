@@ -3217,7 +3217,7 @@ export async function whatsappRoutes(
       (SELECT m.body FROM messages m WHERE m.conversation_id=c.id AND m.organization_id=c.organization_id ORDER BY COALESCE(m.external_created_at,strftime('%Y-%m-%dT%H:%M:%fZ',m.created_at)) DESC,m.rowid DESC LIMIT 1) preview,
       (SELECT m.type FROM messages m WHERE m.conversation_id=c.id AND m.organization_id=c.organization_id ORDER BY COALESCE(m.external_created_at,strftime('%Y-%m-%dT%H:%M:%fZ',m.created_at)) DESC,m.rowid DESC LIMIT 1) previewType
       FROM conversations c JOIN contacts ct ON ct.id=c.contact_id AND ct.organization_id=c.organization_id
-      WHERE c.organization_id=? ORDER BY (c.human_requested_at IS NOT NULL) DESC,c.last_message_at DESC LIMIT 200`)
+      WHERE c.organization_id=? ORDER BY c.last_message_at DESC,(c.human_requested_at IS NOT NULL) DESC LIMIT 200`)
         .bind(org)
         .all(),
     )

@@ -116,6 +116,25 @@ describe("ações da caixa de entrada", () => {
     db.close()
   })
 
+  it("ordena as conversas pela mensagem mais recente, mesmo se outra aguarda vendedor", async () => {
+    const { db, call } = setup()
+    db.exec(`
+      INSERT INTO contacts(id,organization_id,phone_e164) VALUES('new-contact','org','15559876543');
+      INSERT INTO conversations(id,organization_id,contact_id,integration_id,last_message_at)
+        VALUES('new-conv','org','new-contact','integration','2026-11-18T15:00:00.000Z');
+      UPDATE conversations
+        SET last_message_at='2026-11-18T14:00:00.000Z',human_requested_at='2026-11-18T14:00:00.000Z'
+        WHERE id='conv';
+    `)
+
+    const response = await call("/api/conversations", "GET")
+
+    expect(await response?.json()).toMatchObject({
+      results: [{ id: "new-conv" }, { id: "conv", humanRequestedAt: "2026-11-18T14:00:00.000Z" }],
+    })
+    db.close()
+  })
+
   it("aplica edições e exclusões do cliente na mensagem original", async () => {
     const { db, env } = setup()
 
