@@ -843,53 +843,54 @@ export default function Workflows({ canEdit, organizationId }: { canEdit: boolea
           </main>
         ) : (
           <main className="workflow-editor">
-            <div className="flex flex-wrap items-center justify-between gap-3 border-b border-line pb-4">
-              <div className="flex min-w-56 flex-1 items-center gap-3">
-                <div className="min-w-0 flex-1">
-                  <label className="muted text-xs" htmlFor="workflow-name">Nome do fluxo</label>
-                  <input id="workflow-name" className="w-full font-semibold" value={detail.name} disabled={!canEdit} onChange={(event) => setDetail({ ...detail, name: event.target.value })} maxLength={100} />
-                </div>
-                <span className={`tag ${detail.status === "active" ? "" : "warning"}`}>{statusLabel(detail.status)}</span>
+            <div className="workflow-editor-toolbar">
+              <button className="button secondary workflow-back" onClick={() => { setActiveId(""); setDetail(null); setSelectedNodeId(""); setInspectorOpen(false) }}>
+                <ArrowLeft size={15} /> Voltar
+              </button>
+              <div className="workflow-toolbar-history">
+                <button className="icon-button" title="Desfazer" aria-label="Desfazer" onClick={undo} disabled={!history.length}><RotateCcw size={15} /></button>
+                <button className="icon-button" title="Refazer" aria-label="Refazer" onClick={redo} disabled={!future.length}><RotateCcw size={15} className="scale-x-[-1]" /></button>
               </div>
-              <div className="flex flex-wrap gap-2">
-                <button className="button secondary" title="Desfazer" onClick={undo} disabled={!history.length}><RotateCcw size={15} /></button>
-                <button className="button secondary" title="Refazer" onClick={redo} disabled={!future.length}><RotateCcw size={15} className="scale-x-[-1]" /></button>
-                <button className="button secondary" title="Centralizar fluxo" onClick={() => { setZoom(1); setCanvasResetVersion((value) => value + 1) }}><Crosshair size={15} /></button>
-                <button className="button secondary" title="Reduzir" onClick={() => setZoom((value) => Math.max(.5, value - .1))}>−</button>
-                <button className="button secondary" title="Ampliar" onClick={() => setZoom((value) => Math.min(1.5, value + .1))}>+</button>
-                <button className="button secondary" onClick={() => void showLogs()}><Activity size={15} /> Logs</button>
-                <button className="button secondary" onClick={() => void showHeatmap()}><Eye size={15} /> Heatmap</button>
-                <button className="button secondary" onClick={exportWorkflow}><Download size={15} /> Exportar</button>
-                <button className="button secondary" onClick={() => void showApi()}><Code2 size={15} /> API</button>
+              <div className="workflow-toolbar-title">
+                <input id="workflow-name" aria-label="Nome do fluxo" value={detail.name} disabled={!canEdit} onChange={(event) => setDetail({ ...detail, name: event.target.value })} maxLength={100} />
+                <span className={`workflow-editor-status ${detail.status}`}>{detail.status === "active" ? "Ativo" : statusLabel(detail.status)}</span>
+              </div>
+              <div className="workflow-toolbar-actions">
+                <button className="button secondary" onClick={() => { setInspectorOpen((value) => !value); if (!selectedNodeId) setSelectedNodeId(detail.definition.nodes[0]?.id ?? "") }}>
+                  <Settings2 size={15} /> Configuração
+                </button>
+                <button className="button workflow-test-button" onClick={() => { setTestOpen(true); setTestDefinitionsOpen(false) }}>
+                  <Play size={15} /> Testar Workflow
+                </button>
                 {canEdit && <>
-                  <button className="button secondary" disabled={busy} onClick={() => void runAction("duplicate")}><Copy size={15} /> Duplicar</button>
-                  <button className="button secondary" disabled={busy} onClick={() => void save()}><Save size={15} /> Salvar</button>
+                  <button className="icon-button" title="Salvar rascunho" aria-label="Salvar rascunho" disabled={busy} onClick={() => void save()}><Save size={16} /></button>
                   {detail.status === "active" ? (
                     <button className="button secondary" disabled={busy} onClick={() => void runAction("block")}><Ban size={15} /> Bloquear</button>
                   ) : (
-                    <button className="button" disabled={busy} onClick={() => void runAction("publish")}><Play size={15} /> Publicar</button>
+                    <button className="button workflow-publish-button" disabled={busy} onClick={() => void runAction("publish")}><Play size={15} /> Publicar</button>
                   )}
-                  <button className="icon-button" aria-label="Excluir fluxo" disabled={busy} onClick={() => void runAction("delete")}><Trash2 size={16} /></button>
+                  <div className="workflow-more-menu">
+                    <button className="icon-button" aria-label="Mais opções" aria-expanded={moreActionsOpen} onClick={() => setMoreActionsOpen((value) => !value)}><Ellipsis size={18} /></button>
+                    {moreActionsOpen && (
+                      <div className="workflow-more-popover">
+                        <button onClick={() => { void runAction("duplicate"); setMoreActionsOpen(false) }}><Copy size={14} /> Duplicar</button>
+                        <button onClick={() => { void showLogs(); setMoreActionsOpen(false) }}><Activity size={14} /> Logs</button>
+                        <button onClick={() => { void showHeatmap(); setMoreActionsOpen(false) }}><Eye size={14} /> Heatmap</button>
+                        <button onClick={() => { exportWorkflow(); setMoreActionsOpen(false) }}><Download size={14} /> Exportar</button>
+                        <button onClick={() => { void showApi(); setMoreActionsOpen(false) }}><Code2 size={14} /> API</button>
+                        <button className="danger" disabled={busy} onClick={() => { setMoreActionsOpen(false); void runAction("delete") }}><Trash2 size={14} /> Excluir fluxo</button>
+                      </div>
+                    )}
+                  </div>
                 </>}
               </div>
             </div>
 
-            <label className="mt-4 block">Descrição
+            <label className="workflow-description">Descrição
               <input className="mt-1 w-full" value={detail.description} maxLength={500} disabled={!canEdit} onChange={(event) => setDetail({ ...detail, description: event.target.value })} placeholder="Descreva o objetivo deste fluxo" />
             </label>
 
-            <div className="mt-4 flex flex-wrap items-center justify-between gap-3">
-              <div className="flex flex-wrap gap-2">
-                {canEdit && <>
-                  <button className="button secondary" onClick={() => addNode("condition")}><Plus size={15} /> Condição</button>
-                  <button className="button secondary" onClick={() => addNode("action")}><Plus size={15} /> Ação</button>
-                </>}
-                <button className="button secondary" onClick={() => void test()} disabled={busy}><Play size={15} /> Testar fluxo</button>
-              </div>
-              <small className="muted">WhatsApp · gatilho: nova mensagem recebida</small>
-            </div>
-
-            <div className="workflow-editor-workspace">
+            <div className={`workflow-editor-workspace ${inspectorOpen ? "inspector-open" : ""}`}>
               <WorkflowCanvas
                 nodes={detail.definition.nodes}
                 edges={detail.definition.edges}
@@ -899,7 +900,7 @@ export default function Workflows({ canEdit, organizationId }: { canEdit: boolea
                 resetVersion={canvasResetVersion}
                 nodeUsage={nodeUsage}
                 connectionSource={connectionSource}
-                onSelect={setSelectedNodeId}
+                onSelect={(nodeId) => { setSelectedNodeId(nodeId); setInspectorOpen(true) }}
                 onMove={moveNodePosition}
                 onStartConnection={startConnection}
                 onConnect={connectNode}
