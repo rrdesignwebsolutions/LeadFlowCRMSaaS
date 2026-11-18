@@ -182,6 +182,9 @@ type WorkflowCanvasProps = {
   onMove: (nodeId: string, position: { x: number; y: number }) => void
   onStartConnection: (nodeId: string, handle?: "true" | "false") => void
   onConnect: (targetId: string) => void
+  onAddNode: (type: NodeType) => void
+  onZoom: (amount: number) => void
+  onReset: () => void
 }
 
 function WorkflowCanvas({
@@ -197,11 +200,15 @@ function WorkflowCanvas({
   onMove,
   onStartConnection,
   onConnect,
+  onAddNode,
+  onZoom,
+  onReset,
 }: WorkflowCanvasProps) {
   const [positions, setPositions] = useState<Record<string, { x: number; y: number }>>(() =>
     Object.fromEntries(nodes.map((node, index) => [node.id, node.position ?? { x: 100 + index * 340, y: 120 }])),
   )
   const [pan, setPan] = useState({ x: 40, y: 30 })
+  const viewportRef = useRef<HTMLDivElement>(null)
   const interaction = useRef<
     | { type: "pan"; start: { x: number; y: number }; origin: { x: number; y: number } }
     | { type: "node"; id: string; start: { x: number; y: number }; origin: { x: number; y: number }; current: { x: number; y: number } }
@@ -253,11 +260,23 @@ function WorkflowCanvas({
     }
   }, [onMove, zoom])
 
-  const nodeWidth = 250
-  const nodeHeight = (node: Node) => node.type === "condition" ? 166 : 132
+  const nodeWidth = 248
+  const nodeHeight = (node: Node) => node.type === "condition" ? 116 : 104
   const positionOf = (nodeId: string) => positions[nodeId] ?? { x: 100, y: 120 }
-  const stageWidth = Math.max(1900, ...nodes.map((node) => positionOf(node.id).x + nodeWidth + 180))
-  const stageHeight = Math.max(1100, ...nodes.map((node) => positionOf(node.id).y + nodeHeight(node) + 180))
+  const stageWidth = Math.max(1500, ...nodes.map((node) => positionOf(node.id).x + nodeWidth + 180))
+  const stageHeight = Math.max(1000, ...nodes.map((node) => positionOf(node.id).y + nodeHeight(node) + 180))
+
+  function centerMiniMap(event: ReactPointerEvent<HTMLButtonElement>) {
+    const bounds = event.currentTarget.getBoundingClientRect()
+    const viewport = viewportRef.current?.getBoundingClientRect()
+    if (!viewport) return
+    const x = ((event.clientX - bounds.left) / bounds.width) * stageWidth
+    const y = ((event.clientY - bounds.top) / bounds.height) * stageHeight
+    setPan({
+      x: viewport.width / 2 - x * zoom,
+      y: viewport.height / 2 - y * zoom,
+    })
+  }
 
   function beginPan(event: ReactPointerEvent<HTMLDivElement>) {
     const target = event.target as HTMLElement
@@ -281,11 +300,10 @@ function WorkflowCanvas({
       origin,
       current: origin,
     }
-    onSelect(node.id)
   }
 
   return (
-    <div className="workflow-canvas-viewport" onPointerDown={beginPan}>
+    <div ref={viewportRef} className="workflow-canvas-viewport" onPointerDown={beginPan}>
       <div
         className="workflow-canvas-stage"
         style={{
@@ -306,19 +324,20 @@ function WorkflowCanvas({
             if (!source || !target) return null
             const sourcePosition = positionOf(source.id)
             const targetPosition = positionOf(target.id)
-            const sourceY = source.type === "condition"
-              ? sourcePosition.y + (edge.sourceHandle === "false" ? nodeHeight(source) - 42 : 42)
-              : sourcePosition.y + nodeHeight(source) / 2
-            const x1 = sourcePosition.x + nodeWidth
-            const x2 = targetPosition.x
-            const y2 = targetPosition.y + nodeHeight(target) / 2
-            const curve = Math.max(56, (x2 - x1) / 2)
+            const x1 = sourcePosition.x + (source.type === "condition"
+              ? edge.sourceHandle === "false" ? nodeWidth * .68 : nodeWidth * .32
+              : nodeWidth / 2)
+            const y1 = sourcePosition.y + nodeHeight(source)
+            const x2 = targetPosition.x + nodeWidth / 2
+            const y2 = targetPosition.y
+            const direction = Math.sign(y2 - y1) || 1
+            const curve = Math.max(42, Math.abs(y2 - y1) / 2)
             const labelX = (x1 + x2) / 2
-            const labelY = (sourceY + y2) / 2 - 7
+            const labelY = (y1 + y2) / 2
             return (
               <g key={edge.id}>
                 <path
-                  d={`M ${x1} ${sourceY} C ${x1 + curve} ${sourceY}, ${x2 - curve} ${y2}, ${x2} ${y2}`}
+                  d={`M ${x1} ${y1} C ${x1} ${y1 + curve * direction}, ${x2} ${y2 - curve * direction}, ${x2} ${y2}`}
                   fill="none"
                   stroke={edge.sourceHandle === "true" ? "#16a36a" : edge.sourceHandle === "false" ? "#d28a24" : "#8fa39a"}
                   strokeWidth="2"
@@ -326,7 +345,7 @@ function WorkflowCanvas({
                 />
                 <circle cx={x2} cy={y2} r="4" fill="#fff" stroke="#8fa39a" strokeWidth="2" />
                 {edge.sourceHandle && <text x={labelX} y={labelY} textAnchor="middle" className={`workflow-edge-label ${edge.sourceHandle}`}>
-                  {edge.sourceHandle === "true" ? "Sim" : "Não"}
+                  {edge.sourceHandle === "true" ? "1" : "2"}
                 </text>}
               </g>
             )
@@ -338,13 +357,18 @@ function WorkflowCanvas({
             ? []
             : node.type === "condition" ? ["true", "false"] as const : [undefined]
           return (
-            <article
-              key={node.id}
-              className={`workflow-node ${node.type} ${selectedNodeId === node.id ? "selected" : ""}`}
-              style={{ left: position.x, top: position.y, width: nodeWidth, minHeight: nodeHeight(node) }}
-              onPointerDown={(event) => beginNodeDrag(event, node)}
-              onClick={() => onSelect(node.id)}
-            >
+            <div key={node.id}>
+              {node.type === "trigger" && (
+                <div className="workflow-entry-node" style={{ left: position.x + 19, top: position.y - 85 }}>
+                  <Download size={15} /><span>Portão de Entrada</span>
+                </div>
+              )}
+              <article
+                className={`workflow-node ${node.type} ${node.kind} ${selectedNodeId === node.id ? "selected" : ""}`}
+                style={{ left: position.x, top: position.y, width: nodeWidth, height: nodeHeight(node) }}
+                onPointerDown={(event) => beginNodeDrag(event, node)}
+                onClick={() => onSelect(node.id)}
+              >
               <button
                 type="button"
                 className={`workflow-node-port input ${connectionSource ? "connect-target" : ""}`}
@@ -361,15 +385,19 @@ function WorkflowCanvas({
                 </span>
                 <span className="workflow-node-meta">
                   <small>{node.type === "trigger" ? "QUANDO" : node.type === "condition" ? "VERIFICAR" : "ENTÃO"} · ETAPA {index + 1}</small>
-                  <b>{nodeLabel(node)}</b>
+                <b>{node.kind === "is_priority" ? "Segmentos da conversa?" : nodeLabel(node)}</b>
                 </span>
                 {nodeUsage.has(node.id) && <span className="workflow-node-count">{nodeUsage.get(node.id)}</span>}
               </div>
               <div className="workflow-node-summary">
-                {node.kind === "message_contains"
-                  ? String(node.config.text || "Defina o texto para comparar")
-                  : node.kind === "send_message"
-                    ? String(node.config.text || "Configure a mensagem").slice(0, 68)
+                {node.kind === "message_received"
+                ? "Origens: Todas"
+                : node.kind === "is_priority"
+                  ? "Segmento: VIP (conversa prioritária)"
+                  : node.kind === "message_contains"
+                ? String(node.config.text || "Defina o texto para comparar")
+                : node.kind === "send_message"
+                  ? String(node.config.text || "Configure a mensagem").slice(0, 68)
                     : node.kind === "lead_status"
                       ? `Status: ${leadStatuses.find(([value]) => value === node.config.status)?.[1] ?? "Quente"}`
                       : node.kind === "private_note"
@@ -385,7 +413,7 @@ function WorkflowCanvas({
                   key={handle ?? "default"}
                   type="button"
                   className={`workflow-node-port output ${handle ?? ""} ${connectionSource?.nodeId === node.id && connectionSource.handle === handle ? "connecting" : ""}`}
-                  style={handle ? { top: handle === "true" ? 42 : nodeHeight(node) - 42 } : undefined}
+                          style={handle ? { left: handle === "true" ? "32%" : "68%" } : undefined}
                   title={handle === "true" ? "Conectar saída Sim" : handle === "false" ? "Conectar saída Não" : "Conectar próxima etapa"}
                   onPointerDown={(event) => event.stopPropagation()}
                   onClick={(event) => {
@@ -393,18 +421,46 @@ function WorkflowCanvas({
                     if (canEdit) onStartConnection(node.id, handle)
                   }}
                 >
-                  {handle === "true" ? "Sim" : handle === "false" ? "Não" : ""}
+                          {handle === "true" ? "1" : handle === "false" ? "2" : ""}
                 </button>
               ))}
-            </article>
+              </article>
+            </div>
           )
         })}
       </div>
-      <div className="workflow-canvas-hint">
-        <span>Arraste os blocos para organizar</span>
-        <span>Arraste o fundo para navegar</span>
-        <span>Clique em uma saída e depois em uma entrada para conectar</span>
+      {canEdit && (
+        <div className="workflow-canvas-add">
+          <button type="button" className="workflow-canvas-add-main" aria-label="Adicionar etapa" title="Adicionar etapa"><Plus size={19} /></button>
+          <div className="workflow-canvas-add-menu">
+            <button type="button" onClick={() => onAddNode("condition")}><GitBranch size={15} /> Condição</button>
+            <button type="button" onClick={() => onAddNode("action")}><Sparkles size={15} /> Ação</button>
+          </div>
+        </div>
+      )}
+      <button type="button" className="workflow-minimap" aria-label="Mapa do fluxo. Clique para navegar." onPointerDown={(event) => event.stopPropagation()} onPointerUp={centerMiniMap}>
+        <svg viewBox={`0 0 ${stageWidth} ${stageHeight}`} preserveAspectRatio="xMidYMid meet" aria-hidden="true">
+          {edges.map((edge) => {
+            const source = nodes.find((node) => node.id === edge.source)
+            const target = nodes.find((node) => node.id === edge.target)
+            if (!source || !target) return null
+            const a = positionOf(source.id)
+            const b = positionOf(target.id)
+            return <line key={edge.id} x1={a.x + nodeWidth / 2} y1={a.y + nodeHeight(source)} x2={b.x + nodeWidth / 2} y2={b.y} />
+          })}
+          {nodes.map((node) => {
+            const position = positionOf(node.id)
+            return <rect key={node.id} x={position.x} y={position.y} width={nodeWidth} height={nodeHeight(node)} rx="8" className={node.type} />
+          })}
+        </svg>
+      </button>
+      <div className="workflow-canvas-navigation">
+        <button type="button" aria-label="Diminuir zoom" onClick={() => onZoom(-.1)}>−</button>
+        <span>{Math.round(zoom * 100)}%</span>
+        <button type="button" aria-label="Aumentar zoom" onClick={() => onZoom(.1)}>+</button>
+        <button type="button" aria-label="Centralizar fluxo" title="Centralizar fluxo" onClick={onReset}><Crosshair size={15} /></button>
       </div>
+      <div className="workflow-canvas-hint">Arraste blocos para organizar · arraste o fundo para navegar · conecte uma saída a uma entrada</div>
     </div>
   )
 }
@@ -432,8 +488,8 @@ export default function Workflows({ canEdit, organizationId }: { canEdit: boolea
   const [showActiveOnly, setShowActiveOnly] = useState(false)
   const [search, setSearch] = useState("")
   const [createOpen, setCreateOpen] = useState(false)
-  const [newName, setNewName] = useState("")
-  const [newDescription, setNewDescription] = useState("")
+  const [newName, setNewName] = useState("VIP Routing")
+  const [newDescription, setNewDescription] = useState("Roteia conversas VIP para a equipe e direciona as demais à IA.")
   const [zoom, setZoom] = useState(1)
   const [canvasResetVersion, setCanvasResetVersion] = useState(0)
   const [connectionSource, setConnectionSource] = useState<{ nodeId: string; handle?: "true" | "false" } | null>(null)
@@ -643,8 +699,8 @@ export default function Workflows({ canEdit, organizationId }: { canEdit: boolea
         },
       })
       setCreateOpen(false)
-      setNewName("")
-      setNewDescription("")
+      setNewName("VIP Routing")
+      setNewDescription("Roteia conversas VIP para a equipe e direciona as demais à IA.")
       await loadList()
       setActiveId(result.id)
       setNotice("Rascunho criado.")
@@ -904,11 +960,15 @@ export default function Workflows({ canEdit, organizationId }: { canEdit: boolea
                 onMove={moveNodePosition}
                 onStartConnection={startConnection}
                 onConnect={connectNode}
+                onAddNode={addNode}
+                onZoom={(amount) => setZoom((value) => Math.min(1.5, Math.max(.5, value + amount)))}
+                onReset={() => { setZoom(1); setCanvasResetVersion((value) => value + 1) }}
               />
               <aside className="workflow-inspector">
                 <div className="workflow-inspector-heading">
                   <span><Sparkles size={16} /></span>
                   <div><b>Configuração da etapa</b><small>{selectedNode ? nodeLabel(selectedNode) : "Selecione um bloco no canvas"}</small></div>
+                  <button type="button" className="icon-button" aria-label="Fechar configuração" onClick={() => setInspectorOpen(false)}><X size={15} /></button>
                 </div>
                 <div className="workflow-inspector-content">
               <div className="workflow-inspector-node">
@@ -1008,23 +1068,6 @@ export default function Workflows({ canEdit, organizationId }: { canEdit: boolea
               </aside>
             </div>
 
-            <div className="mt-4 grid gap-3 lg:grid-cols-[1fr_auto]">
-              <label>Mensagem de exemplo para testar
-                <input className="mt-1 w-full" value={message} maxLength={1000} onChange={(event) => setMessage(event.target.value)} placeholder="Ex.: Quero saber sobre financiamento" />
-              </label>
-              <div className="flex items-end gap-2">
-                <button className="button secondary" onClick={() => void test()} disabled={busy}><Play size={15} /> Executar simulação</button>
-              </div>
-            </div>
-            {simulation && (
-              <div className="mt-4 rounded-lg border border-line p-3" role="status">
-                <b>{simulation.matched ? "Gatilho acionado" : "Gatilho não acionado"}</b>
-                <small className="muted ml-2">Simulação sem efeitos reais</small>
-                <ol className="mt-2 list-inside list-decimal">
-                  {simulation.steps.map((step) => <li key={step.id}>{step.result}</li>)}
-                </ol>
-              </div>
-            )}
             {logs && (
               <div className="mt-4 rounded-lg border border-line p-3">
                 <h3 className="font-semibold">Execuções recentes</h3>
@@ -1037,6 +1080,77 @@ export default function Workflows({ canEdit, organizationId }: { canEdit: boolea
           </main>
         )}
       </div>
+      {testOpen && (
+        <div className="workflow-test-backdrop" role="presentation" onClick={() => setTestOpen(false)}>
+          <section className="workflow-test-panel" role="dialog" aria-modal="true" aria-labelledby="workflow-test-title" onClick={(event) => event.stopPropagation()}>
+            <header className="workflow-test-header">
+              <div className="workflow-test-tabs" role="tablist" aria-label="Testador do fluxo">
+                <button type="button" role="tab" aria-selected={!testDefinitionsOpen} className={!testDefinitionsOpen ? "selected" : ""} onClick={() => setTestDefinitionsOpen(false)}>Testador de fluxo</button>
+                <button type="button" role="tab" aria-selected={testDefinitionsOpen} className={testDefinitionsOpen ? "selected" : ""} onClick={() => setTestDefinitionsOpen(true)}><Settings2 size={14} /> Definições</button>
+              </div>
+              <button type="button" className="icon-button" aria-label="Fechar testador" onClick={() => setTestOpen(false)}><X size={17} /></button>
+            </header>
+            <div className="workflow-test-widget">
+              <div className="workflow-test-widget-head">
+                <div className="workflow-test-brand"><span><Bot size={18} /></span><div><b>{detail.name}</b><small>Prévia do workflow · sem efeitos reais</small></div></div>
+                <span className="workflow-test-online"><i /> Teste</span>
+              </div>
+              {testDefinitionsOpen ? (
+                <div className="workflow-test-definitions" role="tabpanel">
+                  <h2 id="workflow-test-title">Definições do teste</h2>
+                  <p>Escolha os dados de exemplo usados para avaliar as condições do fluxo.</p>
+                  <label>Status do lead
+                    <select value={testLeadStatus} onChange={(event) => setTestLeadStatus(event.target.value)}>
+                      {leadStatuses.map(([value, label]) => <option key={value} value={value}>{label}</option>)}
+                    </select>
+                  </label>
+                  <label className="workflow-test-check"><input type="checkbox" checked={testPriority} onChange={(event) => setTestPriority(event.target.checked)} /> Conversa prioritária (VIP)</label>
+                  <label className="workflow-test-check"><input type="checkbox" checked={testHumanRequested} onChange={(event) => setTestHumanRequested(event.target.checked)} /> Cliente pediu atendimento humano</label>
+                  <label className="workflow-test-check"><input type="checkbox" checked={testHasFollowUp} onChange={(event) => setTestHasFollowUp(event.target.checked)} /> Possui follow-up agendado</label>
+                  <div className="workflow-test-disclaimer">As mensagens e ações são simuladas. Nenhum contato será notificado e nenhum dado comercial será alterado.</div>
+                  {simulation && (
+                    <div className="workflow-test-trace">
+                      <b>{simulation.matched ? "Gatilho acionado" : "Gatilho não acionado"}</b>
+                      <ol>{simulation.steps.map((step) => <li key={step.id}>{step.result}</li>)}</ol>
+                    </div>
+                  )}
+                </div>
+              ) : (
+                <>
+                  <div className="workflow-test-chat" role="log" aria-live="polite">
+                    <div className="workflow-test-welcome"><span><Bot size={20} /></span><b>Teste: {detail.name}</b><small>Envie uma mensagem para acompanhar o caminho percorrido no fluxo.</small></div>
+                    {testConversation.length === 0 && <div className="workflow-test-line assistant">Olá! Esta é uma simulação segura do seu fluxo. Escreva uma mensagem para começar.</div>}
+                    {testConversation.map((line) => <div key={line.id} className={`workflow-test-line ${line.role}`}>{line.text}</div>)}
+                    {simulation && <div className={`workflow-test-result ${simulation.matched ? "matched" : ""}`} role="status">{simulation.matched ? "Fluxo executado" : "Gatilho não acionado"} · {simulation.steps.length} etapas avaliadas</div>}
+                  </div>
+                  <form className="workflow-test-composer" onSubmit={(event) => { event.preventDefault(); void test() }}>
+                    <textarea
+                      value={message}
+                      onChange={(event) => setMessage(event.target.value)}
+                      onKeyDown={(event) => {
+                        if (event.key === "Enter" && !event.shiftKey) {
+                          event.preventDefault()
+                          void test()
+                        }
+                      }}
+                      maxLength={1000}
+                      placeholder="Escreva sua mensagem..."
+                      aria-label="Mensagem para testar o fluxo"
+                    />
+                    <div className="workflow-test-composer-footer">
+                      <small>{testPriority ? "Contato VIP" : `Lead ${leadStatuses.find(([value]) => value === testLeadStatus)?.[1]}`}</small>
+                      <button type="submit" disabled={busy || !message.trim()} aria-label="Enviar mensagem de teste" title="Enviar teste">
+                        {busy ? <span className="workflow-test-spinner" /> : <Send size={17} />}
+                      </button>
+                    </div>
+                  </form>
+                  <div className="workflow-test-powered">Simulação local do AV Flow · nenhum envio real</div>
+                </>
+              )}
+            </div>
+          </section>
+        </div>
+      )}
       {createOpen && (
         <div className="modal-backdrop" role="presentation" onClick={() => setCreateOpen(false)}>
           <section className="modal workflow-create-modal" role="dialog" aria-modal="true" aria-labelledby="workflow-create-title" onClick={(event) => event.stopPropagation()}>
