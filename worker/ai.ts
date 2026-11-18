@@ -14,6 +14,7 @@ import {
   sendCatalog,
   type CatalogToolState,
 } from "./catalog"
+import { executeInboundWorkflows } from "./workflows"
 
 const OPENAI_URL = "https://api.openai.com/v1/responses"
 const MAX_PDF_BYTES = 10 * 1024 * 1024
@@ -433,7 +434,13 @@ const CATALOG_RULES = `CATÁLOGO (ferramentas)
 `
 
 function systemPrompt(
-  settings: { assistant_name: string; instructions: string },
+  settings: {
+    assistant_name: string
+    instructions: string
+    responseStyle?: string
+    businessDescription?: string
+    language?: string
+  },
   organization: string,
   knowledge: string,
   clientName: string | null = null,
@@ -446,7 +453,24 @@ function systemPrompt(
     assistente: { nome: settings.assistant_name },
   })
 
-  return `Você é ${settings.assistant_name}, atendente virtual de vendas da empresa "${organization}", conversando por WhatsApp em português do Brasil.
+  const styles: Record<string, string> = {
+    conservative:
+      "Use linguagem direta e conservadora. Não faça inferências além dos fatos verificados.",
+    balanced:
+      "Mantenha um tom cordial, natural e equilibrado, sem alongar respostas simples.",
+    creative:
+      "Use linguagem calorosa e envolvente, sem inventar fatos, promessas ou condições comerciais.",
+  }
+  const languages: Record<string, string> = {
+    "pt-BR": "português do Brasil",
+    en: "inglês",
+    es: "espanhol",
+  }
+
+  return `Você é ${settings.assistant_name}, atendente virtual de vendas da empresa "${organization}", conversando por WhatsApp em ${languages[settings.language ?? "pt-BR"] ?? "português do Brasil"}.
+
+ESTILO
+${styles[settings.responseStyle ?? "balanced"] ?? styles.balanced}
 
 HORÁRIO ATUAL CONFIÁVEL
 ${currentStoreDateTime()} (fuso America/Sao_Paulo).
@@ -471,6 +495,11 @@ ${QUALIFICATION_RULES}
 
 ${catalog ? CATALOG_RULES : ""}
 ${
+  settings.businessDescription
+    ? `SOBRE A EMPRESA\n${settings.businessDescription}\n`
+    : ""
+}
+${
   settings.instructions
     ? `INSTRUÇÕES DA EMPRESA\n${settings.instructions}\n`
     : ""
@@ -488,7 +517,7 @@ export async function autoReply(
   if (!env.OPENAI_API_KEY) return
 
   const settings = await env.DB.prepare(
-    "SELECT enabled,assistant_name,instructions,media_processing_enabled mediaProcessingEnabled FROM ai_settings WHERE organization_id=?",
+    "SELECT enabled,assistant_name,instructions,media_processing_enabled mediaProcessingEnabled,response_style responseStyle,business_description businessDescription,language FROM ai_settings WHERE organization_id=?",
   )
     .bind(organizationId)
     .first<{
@@ -496,6 +525,9 @@ export async function autoReply(
       assistant_name: string
       instructions: string
       mediaProcessingEnabled: number
+      responseStyle: string
+      businessDescription: string
+      language: string
     }>()
 
   if (!settings?.enabled) return
@@ -773,6 +805,9 @@ async function generateReply(
     assistant_name: string
     instructions: string
     mediaProcessingEnabled: number
+    responseStyle: string
+    businessDescription: string
+    language: string
   },
 ) {
   const context = await env.DB.prepare(
@@ -891,6 +926,32 @@ async function generateReply(
       ?.externalId !== inboundExternalId
   )
     return false
+
+  const workflowOutcome = await executeInboundWorkflows(
+    env,
+    organizationId,
+    conversationId,
+    inboundExternalId,
+    {
+      sendMessage: async (text, idempotencyKey) => {
+        const sent = await sendText(
+          env,
+          { userId: "", organizationId, role: "ai" },
+          conversationId,
+          text,
+          {
+            assignmentRevision: context.assignmentRevision,
+            aiReplyKey: idempotencyKey,
+          },
+        )
+        if (!sent.ok)
+          throw new Error(
+            `envio da mensagem do fluxo falhou (${sent.status})`,
+          )
+      },
+    },
+  )
+  if (workflowOutcome.sentMessage || workflowOutcome.assignedHuman) return true
 
   if (metaUnavailable) {
     const catalogFailureNotice =
@@ -1488,7 +1549,10 @@ export async function aiRoutes(
 
   if (path === "/api/ai/settings" && request.method === "GET") {
     const settings = await env.DB.prepare(
-      "SELECT enabled,assistant_name assistantName,instructions,media_processing_enabled mediaProcessingEnabled FROM ai_settings WHERE organization_id=?",
+      `SELECT enabled,assistant_name assistantName,instructions,
+       media_processing_enabled mediaProcessingEnabled,response_style responseStyle,
+       business_description businessDescription,language
+       FROM ai_settings WHERE organization_id=?`,
     )
       .bind(org)
       .first<{
@@ -1496,6 +1560,9 @@ export async function aiRoutes(
         assistantName: string
         instructions: string
         mediaProcessingEnabled: number
+        responseStyle: string
+        businessDescription: string
+        language: string
       }>()
 
     return json({
@@ -1504,6 +1571,9 @@ export async function aiRoutes(
         assistantName: settings?.assistantName ?? "Assistente",
         instructions: settings?.instructions ?? "",
         mediaProcessingEnabled: !!settings?.mediaProcessingEnabled,
+        responseStyle: settings?.responseStyle ?? "balanced",
+        businessDescription: settings?.businessDescription ?? "",
+        language: settings?.language ?? "pt-BR",
       },
       serverReady: !!env.OPENAI_API_KEY,
     })
@@ -1512,7 +1582,9 @@ export async function aiRoutes(
   if (path === "/api/ai/knowledge" && request.method === "GET")
     return json(
       await env.DB.prepare(
-        "SELECT id,name,length(content) size,created_at createdAt FROM ai_knowledge WHERE organization_id=? ORDER BY created_at DESC",
+        `SELECT id,name,length(content) size,source_type sourceType,
+         source_url sourceUrl,question,answer,created_at createdAt
+         FROM ai_knowledge WHERE organization_id=? ORDER BY created_at DESC`,
       )
         .bind(org)
         .all(),
@@ -1527,10 +1599,33 @@ export async function aiRoutes(
     const name = clip(body.assistantName, 60) ?? "Assistente"
     const instructions =
       typeof body.instructions === "string" ? body.instructions.trim() : ""
+    const responseStyle =
+      typeof body.responseStyle === "string" &&
+      ["conservative", "balanced", "creative"].includes(body.responseStyle)
+        ? body.responseStyle
+        : "balanced"
+    const language =
+      typeof body.language === "string" &&
+      ["pt-BR", "en", "es"].includes(body.language)
+        ? body.language
+        : "pt-BR"
+    const businessDescription =
+      typeof body.businessDescription === "string"
+        ? body.businessDescription.trim().slice(0, 4000)
+        : ""
 
     await env.DB.prepare(
-      `INSERT INTO ai_settings(organization_id,enabled,assistant_name,instructions,media_processing_enabled) VALUES(?,?,?,?,?)
-       ON CONFLICT(organization_id) DO UPDATE SET enabled=excluded.enabled,assistant_name=excluded.assistant_name,instructions=excluded.instructions,media_processing_enabled=excluded.media_processing_enabled,updated_at=CURRENT_TIMESTAMP`,
+      `INSERT INTO ai_settings(
+         organization_id,enabled,assistant_name,instructions,media_processing_enabled,
+         response_style,business_description,language
+       ) VALUES(?,?,?,?,?,?,?,?)
+       ON CONFLICT(organization_id) DO UPDATE SET
+         enabled=excluded.enabled,assistant_name=excluded.assistant_name,
+         instructions=excluded.instructions,
+         media_processing_enabled=excluded.media_processing_enabled,
+         response_style=excluded.response_style,
+         business_description=excluded.business_description,
+         language=excluded.language,updated_at=CURRENT_TIMESTAMP`,
     )
       .bind(
         org,
@@ -1538,6 +1633,9 @@ export async function aiRoutes(
         name,
         instructions,
         body.mediaProcessingEnabled === true ? 1 : 0,
+        responseStyle,
+        businessDescription,
+        language,
       )
       .run()
 
@@ -1581,7 +1679,9 @@ export async function aiRoutes(
     const id = uid()
 
     await env.DB.prepare(
-      "INSERT INTO ai_knowledge(id,organization_id,name,content,created_by) VALUES(?,?,?,?,?)",
+      `INSERT INTO ai_knowledge(
+         id,organization_id,name,content,created_by,source_type
+       ) VALUES(?,?,?,?,?,'pdf')`,
     )
       .bind(
         id,
@@ -1593,6 +1693,170 @@ export async function aiRoutes(
       .run()
 
     return json({ ok: true, id, size: content.length }, 201)
+  }
+
+  if (path === "/api/ai/knowledge/faq" && request.method === "POST") {
+    const body = await request.json<Record<string, unknown>>()
+    const question =
+      typeof body.question === "string" ? body.question.trim() : ""
+    const answer = typeof body.answer === "string" ? body.answer.trim() : ""
+    if (!question || question.length > 1000 || !answer || answer.length > 5000)
+      return json(
+        { error: "Informe uma pergunta e uma resposta (até 1.000 e 5.000 caracteres)." },
+        400,
+      )
+    const id = uid()
+    const content = `Pergunta: ${question}\nResposta: ${answer}`
+    await env.DB.prepare(
+      `INSERT INTO ai_knowledge(
+         id,organization_id,name,content,created_by,source_type,question,answer
+       ) VALUES(?,?,?,?,?,'faq',?,?)`,
+    )
+      .bind(
+        id,
+        org,
+        question.slice(0, 160),
+        content,
+        auth.userId,
+        question,
+        answer,
+      )
+      .run()
+    return json({ ok: true, id }, 201)
+  }
+
+  if (path === "/api/ai/knowledge/website" && request.method === "POST") {
+    const body = await request.json<Record<string, unknown>>()
+    const rawUrl = typeof body.url === "string" ? body.url.trim() : ""
+    const parsePublicUrl = (value: string) => {
+      try {
+        const parsed = new URL(value)
+        const host = parsed.hostname.toLowerCase()
+        if (
+          parsed.protocol !== "https:" ||
+          parsed.username ||
+          parsed.password ||
+          !host.includes(".") ||
+          host === "localhost" ||
+          host.endsWith(".local") ||
+          host.endsWith(".internal") ||
+          host.includes(":")
+        )
+          return null
+        if (/^\d{1,3}(?:\.\d{1,3}){3}$/.test(host)) {
+          const octets = host.split(".").map(Number)
+          if (octets.some((part) => part > 255)) return null
+          const [a, b] = octets
+          if (
+            a === 0 ||
+            a === 10 ||
+            a === 127 ||
+            a >= 224 ||
+            (a === 169 && b === 254) ||
+            (a === 172 && b! >= 16 && b! <= 31) ||
+            (a === 192 && b === 168) ||
+            (a === 100 && b! >= 64 && b! <= 127)
+          )
+            return null
+        }
+        parsed.hash = ""
+        return parsed
+      } catch {
+        return null
+      }
+    }
+
+    let target = parsePublicUrl(rawUrl)
+    if (!target) return json({ error: "Informe uma URL pública e segura em HTTPS." }, 400)
+    let response: Response | null = null
+    try {
+      for (let redirect = 0; redirect <= 3; redirect++) {
+        const controller = new AbortController()
+        const timeout = setTimeout(() => controller.abort(), 12000)
+        try {
+          response = await fetch(target.href, {
+            redirect: "manual",
+            signal: controller.signal,
+            headers: { accept: "text/html,text/plain;q=0.9" },
+          })
+        } finally {
+          clearTimeout(timeout)
+        }
+        if ([301, 302, 303, 307, 308].includes(response.status)) {
+          const location = response.headers.get("location")
+          if (!location || redirect === 3)
+            return json({ error: "O site excedeu o limite de redirecionamentos." }, 422)
+          target = parsePublicUrl(new URL(location, target).href)
+          if (!target)
+            return json({ error: "O site redirecionou para um endereço não permitido." }, 422)
+          continue
+        }
+        break
+      }
+      if (!response?.ok)
+        return json({ error: "Não foi possível acessar a página informada." }, 502)
+      const contentType = response.headers.get("content-type") ?? ""
+      if (!/^(text\/html|text\/plain)(?:;|$)/i.test(contentType))
+        return json({ error: "A URL precisa apontar para uma página HTML ou texto." }, 415)
+      if (!response.body)
+        return json({ error: "A página não retornou conteúdo." }, 422)
+      const reader = response.body.getReader()
+      const chunks: Uint8Array[] = []
+      let totalBytes = 0
+      while (true) {
+        const { done, value } = await reader.read()
+        if (done) break
+        totalBytes += value.byteLength
+        if (totalBytes > 1_000_000) {
+          await reader.cancel()
+          return json({ error: "A página excede o limite de 1 MB." }, 413)
+        }
+        chunks.push(value)
+      }
+      const bytes = new Uint8Array(totalBytes)
+      let offset = 0
+      for (const chunk of chunks) {
+        bytes.set(chunk, offset)
+        offset += chunk.byteLength
+      }
+      const html = new TextDecoder().decode(bytes)
+      const title =
+        html.match(/<title[^>]*>([\s\S]*?)<\/title>/i)?.[1]?.replace(/<[^>]+>/g, "").trim() ??
+        target.hostname
+      const content = html
+        .replace(/<!--[\s\S]*?-->/g, " ")
+        .replace(/<(script|style|noscript|svg|nav|footer|header)\b[^>]*>[\s\S]*?<\/\1>/gi, " ")
+        .replace(/<(br|\/p|\/div|\/li|\/h[1-6])\b[^>]*>/gi, "\n")
+        .replace(/<[^>]+>/g, " ")
+        .replace(/&(nbsp|#160);/gi, " ")
+        .replace(/&amp;/gi, "&")
+        .replace(/&quot;/gi, '"')
+        .replace(/&#39;|&apos;/gi, "'")
+        .replace(/&lt;/gi, "<")
+        .replace(/&gt;/gi, ">")
+        .replace(/[ \t]+/g, " ")
+        .replace(/\n\s+/g, "\n")
+        .trim()
+        .slice(0, 30000)
+      if (content.length < 40)
+        return json({ error: "A página não contém texto suficiente para importar." }, 422)
+      const id = uid()
+      await env.DB.prepare(
+        `INSERT INTO ai_knowledge(
+           id,organization_id,name,content,created_by,source_type,source_url
+         ) VALUES(?,?,?,?,?,'website',?)`,
+      )
+        .bind(id, org, title.slice(0, 160), content, auth.userId, target.href)
+        .run()
+      return json({ ok: true, id, name: title.slice(0, 160), size: content.length }, 201)
+    } catch (error) {
+      console.error("ai_knowledge_website_import_failed", {
+        organizationId: org,
+        host: target.hostname,
+        error: error instanceof Error ? error.message : "unknown",
+      })
+      return json({ error: "Falha ao importar o conteúdo do site." }, 502)
+    }
   }
 
   const match = path.match(/^\/api\/ai\/knowledge\/([\w-]+)$/)

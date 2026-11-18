@@ -30,6 +30,7 @@ import {
   sendVerificationEmail,
 } from "./verification"
 import { supportRoutes } from "./support"
+import { workflowRoutes } from "./workflows"
 import {
   cleanupPendingWhatsappSignups,
   handleMetaPayload,
@@ -1357,6 +1358,10 @@ async function api(
   const ai = await aiRoutes(request, env, url, auth)
 
   if (ai) return ai
+
+  const workflows = await workflowRoutes(request, env, url, auth)
+
+  if (workflows) return workflows
 
   const catalog = await catalogRoutes(request, env, url, auth)
 

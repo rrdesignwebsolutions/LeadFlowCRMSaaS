@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState, type FormEvent } from "react"
 
 import {
   Boxes,
+  Bot,
   ChartNoAxesCombined,
   ChevronRight,
   ContactRound,
@@ -16,6 +17,7 @@ import {
   Settings,
   ShieldCheck,
   UsersRound,
+  Workflow as WorkflowIcon,
   X,
   Zap,
 } from "lucide-react"
@@ -36,6 +38,7 @@ import SalesPage from "./SalesPage"
 import Support from "./Support"
 
 import WhatsAppSettings from "./WhatsAppSettings"
+import Workflows from "./Workflows"
 
 import { applyBranding, BrandingSettings, type Branding } from "./Branding"
 
@@ -53,7 +56,7 @@ import {
   type Metrics,
 } from "./api"
 
-type View = "overview" | "inbox" | "leads" | "catalog" | "quick-replies" | "campaigns" | "reports" | "team" | "plans" | "settings" | "support"
+type View = "overview" | "inbox" | "leads" | "catalog" | "quick-replies" | "campaigns" | "reports" | "agent" | "workflows" | "team" | "plans" | "settings" | "support"
 
 const work: Array<{ id: View; label: string; icon: typeof Inbox }> = [
   { id: "overview", label: "Visão geral", icon: LayoutDashboard },
@@ -67,6 +70,10 @@ const work: Array<{ id: View; label: string; icon: typeof Inbox }> = [
   { id: "quick-replies", label: "Mensagens rápidas", icon: Zap },
 
   { id: "campaigns", label: "Campanhas", icon: Megaphone },
+
+  { id: "agent", label: "Agente de IA", icon: Bot },
+
+  { id: "workflows", label: "Fluxos de IA", icon: WorkflowIcon },
 
   { id: "reports", label: "Relatórios", icon: ChartNoAxesCombined },
 ]
@@ -743,6 +750,24 @@ function Shell({
             </>
           )}
 
+          {view === "agent" && (
+            <>
+              <div className="page-heading">
+                <div>
+                  <h1>Agente de IA</h1>
+                  <p>Configure o perfil, as instruções e o treinamento do assistente.</p>
+                </div>
+              </div>
+              <AISettings
+                canEdit={me.role === "admin" || me.role === "manager"}
+              />
+            </>
+          )}
+
+          {view === "workflows" && (
+            <Workflows canEdit={me.role === "admin" || me.role === "manager"} />
+          )}
+
           {view === "settings" && (
             <>
               <div className="page-heading">
@@ -775,9 +800,6 @@ function Shell({
                 isAdmin={me.role === "admin"}
                 onSaved={onBranding}
                 companyName={me.organization}
-              />
-              <AISettings
-                canEdit={me.role === "admin" || me.role === "manager"}
               />
               <WhatsAppSettings
                 isAdmin={me.role === "admin"}
