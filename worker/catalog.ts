@@ -760,7 +760,7 @@ export const catalogTools = [
     name: "enviarCatalogoFiltrado",
 
     description:
-      "Envia fotos e fichas resumidas somente dos modelos aprovados, autorizados e com estoque confirmado nos últimos sete dias. Use quando o cliente pedir o catálogo. Só diga que enviou se enviadas > 0 e informe apenas os modelos listados em modelosEnviados.",
+      "Envia fotos e fichas resumidas de todos os modelos aprovados e autorizados, independentemente do estoque. Use quando o cliente pedir o catálogo. Só diga que enviou se enviadas > 0 e informe apenas os modelos listados em modelosEnviados.",
 
     parameters: {
       type: "object",
@@ -918,8 +918,6 @@ export async function sendCatalog(
 
     imageFailures: new Map(),
   },
-
-  availableOnly = false,
 ) {
   const organizationId = sender.organizationId
 
@@ -941,17 +939,13 @@ export async function sendCatalog(
     ids,
   )
 
-  const rows = availableOnly
-    ? approvedRows.filter(stockConfirmed)
-    : approvedRows
+  const rows = approvedRows
 
   if (!rows.length)
     return {
       enviadas: 0,
 
-      erro: availableOnly
-        ? "Nenhum produto aprovado e autorizado tem estoque confirmado recentemente."
-        : "Nenhum produto aprovado e autorizado para enviar.",
+      erro: "Nenhum produto aprovado e autorizado para enviar.",
     }
 
   let sent = 0
@@ -998,7 +992,7 @@ export async function sendCatalog(
 
     erro: error ?? (sent ? null : "Os produtos não têm foto cadastrada."),
 
-    ...(availableOnly ? { modelosEnviados: sentModels } : {}),
+    modelosEnviados: sentModels,
   }
 }
 
@@ -1180,8 +1174,6 @@ export async function runCatalogTool(
       null,
 
       state,
-
-      true,
     )
 
     return {

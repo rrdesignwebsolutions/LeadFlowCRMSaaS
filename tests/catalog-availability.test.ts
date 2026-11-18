@@ -53,21 +53,30 @@ function product(
 function setup(
   rows: ReturnType<typeof product>[],
 
-  images: Array<{ id: string key: string mime: string }> = [],
+  images: Array<{ id: string; key: string; mime: string; productId?: string }> = [],
 ) {
   const env = {
     DB: {
       prepare(sql: string) {
+        let params: unknown[] = []
+
         return {
-          bind() {
+          bind(...values: unknown[]) {
+            params = values
+
             return this
           },
 
           async all() {
-        return {
-              results: sql.includes("FROM catalog_images") ? images : rows,
-        }
-      },
+            return {
+              results: sql.includes("FROM catalog_images")
+                ? images.filter(
+                    (image) =>
+                      !image.productId || image.productId === params[0],
+                  )
+                : rows,
+            }
+          },
         }
       },
     },
@@ -136,12 +145,20 @@ describe("disponibilidade no catálogo da IA", () => {
       })
   })
 
-  it("não envia pelo catálogo da IA produtos sem estoque atual confirmado", async () => {
+  it("envia pelo catálogo da IA todos os produtos aprovados, mesmo sem estoque confirmado", async () => {
+    const now = new Date().toISOString()
     const env = setup([
-      product("GT1000", "in_stock", null),
-
+      product("TERA", "out_of_stock", now),
+      product("GT1000", "in_stock", now),
       product("PIX", "unknown", null),
+    ], [
+      { id: "image-tera", productId: "TERA", key: "tera", mime: "image/jpeg" },
+      { id: "image-gt1000", productId: "GT1000", key: "gt1000", mime: "image/jpeg" },
+      { id: "image-pix", productId: "PIX", key: "pix", mime: "image/jpeg" },
     ])
+    const sendFileMock = vi.mocked(sendFile)
+    sendFileMock.mockReset()
+    sendFileMock.mockResolvedValue(new Response(null, { status: 200 }))
 
     await expect(
       runCatalogTool(
@@ -153,12 +170,13 @@ describe("disponibilidade no catálogo da IA", () => {
         toolState(),
       ),
     )
-
       .resolves.toMatchObject({
-        enviadas: 0,
-
-        erro: "Nenhum produto aprovado e autorizado tem estoque confirmado recentemente.",
+        enviadas: 3,
+        erro: null,
+        modelosEnviados: ["TERA", "GT1000", "PIX"],
       })
+
+    expect(sendFileMock).toHaveBeenCalledTimes(3)
   })
 
   it("não tenta enviar novamente uma foto após erro da API no mesmo turno", async () => {

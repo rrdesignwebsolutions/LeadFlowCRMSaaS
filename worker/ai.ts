@@ -618,7 +618,6 @@ async function sendInitialWelcomeAndCatalog(
         imageFailures: new Map(),
         inboundExternalId: sourceId,
       },
-      true,
     )
     const sent = result.enviadas > 0 && !result.erro
     const catalogStatus = sent ? "ENVIADO" : "FALHOU"

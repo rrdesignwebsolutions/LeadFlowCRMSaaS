@@ -144,6 +144,7 @@ describe("oferta de vendedor pela IA", () => {
       sendCatalog.mock.invocationCallOrder[0]!,
     )
     expect(sendCatalog).toHaveBeenCalledOnce()
+    expect(vi.mocked(sendCatalog).mock.calls[0]).toHaveLength(5)
     expect(calls).toHaveLength(2)
     expect(statements.some((sql) => sql.includes("ai_state='HUMANO'"))).toBe(false)
   })
