@@ -1,11 +1,13 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent, type PointerEvent as ReactPointerEvent } from "react"
 import {
   Activity,
+  ArrowLeft,
   ArrowRight,
   Ban,
   Bot,
   Code2,
   Copy,
+  Ellipsis,
   Sparkles,
   Crosshair,
   Download,
@@ -17,6 +19,8 @@ import {
   RotateCcw,
   Save,
   Search,
+  Send,
+  Settings2,
   Trash2,
   Workflow as WorkflowIcon,
   X,
@@ -57,6 +61,7 @@ type Simulation = {
   matched: boolean
   steps: Array<{ id: string; kind: string; result: string }>
 }
+type TestLine = { id: string; role: "user" | "assistant" | "note" | "system"; text: string }
 
 const types: Record<NodeType, Array<{ value: string; label: string }>> = {
   trigger: [
@@ -116,6 +121,52 @@ function defaultConfig(type: NodeType, kind: string): Record<string, unknown> {
 
 function statusLabel(status: Summary["status"]) {
   return status === "active" ? "Publicado" : status === "blocked" ? "Bloqueado" : "Rascunho"
+}
+
+function previewOutputs(
+  definition: Definition,
+  simulation: Simulation,
+  message: string,
+  leadStatus: string,
+): TestLine[] {
+  const nodes = new Map(definition.nodes.map((node) => [node.id, node]))
+  const outputs: TestLine[] = []
+  for (const step of simulation.steps) {
+    const node = nodes.get(step.id)
+    if (!node || node.type !== "action") continue
+    const id = `${step.id}-${outputs.length}`
+    if (node.kind === "send_message") {
+      outputs.push({
+        id,
+        role: "assistant",
+        text: String(node.config.text ?? "")
+          .replaceAll("{{contact.name}}", "Cliente de teste")
+          .replaceAll("{{lead.status}}", leadStatuses.find(([value]) => value === leadStatus)?.[1] ?? leadStatus)
+          .replaceAll("{{message.text}}", message),
+      })
+    } else if (node.kind === "private_note") {
+      outputs.push({ id, role: "note", text: String(node.config.text ?? "Nota privada") })
+    } else if (node.kind === "reply_with_ai") {
+      outputs.push({
+        id,
+        role: "system",
+        text: "Este caminho continuaria com a IA no atendimento real. O teste não chama a IA nem envia mensagens.",
+      })
+    } else if (node.kind === "stop") {
+      outputs.push({ id, role: "system", text: "O fluxo foi encerrado nesta etapa." })
+    } else {
+      outputs.push({ id, role: "system", text: `Ação simulada: ${nodeLabel(node)}.` })
+    }
+  }
+  if (!outputs.length)
+    outputs.push({
+      id: `result-${Date.now()}`,
+      role: "system",
+      text: simulation.matched
+        ? "O caminho foi executado sem uma mensagem de saída para o cliente."
+        : "O gatilho não foi acionado. Confira as condições do fluxo.",
+    })
+  return outputs
 }
 
 type WorkflowCanvasProps = {
@@ -368,6 +419,13 @@ export default function Workflows({ canEdit, organizationId }: { canEdit: boolea
   const [notice, setNotice] = useState("")
   const [message, setMessage] = useState("")
   const [simulation, setSimulation] = useState<Simulation | null>(null)
+  const [testConversation, setTestConversation] = useState<TestLine[]>([])
+  const [testOpen, setTestOpen] = useState(false)
+  const [testDefinitionsOpen, setTestDefinitionsOpen] = useState(false)
+  const [testLeadStatus, setTestLeadStatus] = useState("new")
+  const [testPriority, setTestPriority] = useState(false)
+  const [testHumanRequested, setTestHumanRequested] = useState(false)
+  const [testHasFollowUp, setTestHasFollowUp] = useState(false)
   const [logs, setLogs] = useState<Array<Record<string, unknown>> | null>(null)
   const [heatmap, setHeatmap] = useState<Array<{ nodeId: string; status: string; count: number }> | null>(null)
   const [apiInfo, setApiInfo] = useState<{ endpoint: string; note: string } | null>(null)
@@ -379,6 +437,8 @@ export default function Workflows({ canEdit, organizationId }: { canEdit: boolea
   const [zoom, setZoom] = useState(1)
   const [canvasResetVersion, setCanvasResetVersion] = useState(0)
   const [connectionSource, setConnectionSource] = useState<{ nodeId: string; handle?: "true" | "false" } | null>(null)
+  const [inspectorOpen, setInspectorOpen] = useState(false)
+  const [moreActionsOpen, setMoreActionsOpen] = useState(false)
   const [history, setHistory] = useState<Definition[]>([])
   const [future, setFuture] = useState<Definition[]>([])
   const starterRequest = useRef(false)
@@ -417,6 +477,9 @@ export default function Workflows({ canEdit, organizationId }: { canEdit: boolea
       const response = await api<WorkflowDetail>(`/api/workflows/${id}`)
       setDetail(response)
       setSelectedNodeId(response.definition.nodes[0]?.id ?? "")
+      setInspectorOpen(false)
+      setTestConversation([])
+      setSimulation(null)
       setHistory([])
       setFuture([])
     } catch (e) {
@@ -622,13 +685,31 @@ export default function Workflows({ canEdit, organizationId }: { canEdit: boolea
 
   async function test() {
     if (!detail) return
+    const testMessage = message.trim()
+    if (!testMessage) {
+      setError("Digite uma mensagem para testar o fluxo.")
+      return
+    }
     setBusy(true); setError(""); setNotice("")
     try {
       const response = await api<Simulation>(`/api/workflows/${detail.id}/test`, {
         method: "POST",
-        body: { message, leadStatus: "new" },
+        body: {
+          message: testMessage,
+          leadStatus: testLeadStatus,
+          priority: testPriority,
+          humanRequested: testHumanRequested,
+          hasFollowUp: testHasFollowUp,
+        },
       })
       setSimulation(response)
+      const output = previewOutputs(detail.definition, response, testMessage, testLeadStatus)
+      setTestConversation((previous) => [
+        ...previous,
+        { id: `user-${Date.now()}`, role: "user", text: testMessage },
+        ...output,
+      ].slice(-60))
+      setMessage("")
     } catch (e) { setError(errorMessage(e)) } finally { setBusy(false) }
   }
 
