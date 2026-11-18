@@ -35,7 +35,17 @@ type TestDecision = {
   }
 }
 
-function setup(decision: TestDecision, inboundCount = 2, options: { assignedTo?: string; takenOver?: boolean } = {}) {
+function setup(
+  decision: TestDecision,
+  inboundCount = 2,
+  options: {
+    assignedTo?: string
+    takenOver?: boolean
+    messageType?: string
+    messageErrorCode?: string
+    messageBody?: string
+  } = {},
+) {
   const statements: string[] = []
   const db = {
     prepare(sql: string) {
@@ -58,7 +68,10 @@ function setup(decision: TestDecision, inboundCount = 2, options: { assignedTo?:
         async all() {
           if (sql.includes("SELECT direction,body,type")) return {
             results: Array.from({ length: inboundCount }, (_, index) => ({
-              direction: "inbound", body: "Olá", type: "text",
+              direction: "inbound",
+              body: index === 0 ? options.messageBody ?? "Olá" : "Olá",
+              type: index === 0 ? options.messageType ?? "text" : "text",
+              errorCode: index === 0 ? options.messageErrorCode ?? null : null,
               externalId: index === 0 ? "latest" : `previous-${index}`,
             })),
           }
@@ -133,6 +146,35 @@ describe("oferta de vendedor pela IA", () => {
     expect(calls.every((call) => String(call[3]).length <= 1024)).toBe(true)
     expect(calls[0]?.[4]).toEqual({ talkButton: false, assignmentRevision: 0 })
     expect(calls[1]?.[4]).toEqual({ talkButton: true, assignmentRevision: 0 })
+  })
+
+  it("responde a formulários do WhatsApp recebidos como mensagens interativas", async () => {
+    const { env } = setup(decision(), 1, {
+      messageType: "interactive",
+      messageBody:
+        "O cliente concluiu um formulário no WhatsApp. Nome: Anderson. Interesse: moto elétrica.",
+    })
+
+    await autoReply(env, "org", "conversation", "latest")
+
+    expect(vi.mocked(sendText).mock.calls[0]?.[3]).toBe("Como posso ajudar?")
+  })
+
+  it("inicia a conversa quando a Meta omite o conteúdo e a IA não gera uma resposta", async () => {
+    const { env, fetchMock } = setup(decision({ reply: "" }), 1, {
+      messageType: "unsupported",
+      messageErrorCode: "131060",
+      messageBody: "[Conteúdo da mensagem não fornecido pela Meta.]",
+    })
+
+    await autoReply(env, "org", "conversation", "latest")
+
+    const call = vi.mocked(sendText).mock.calls[0]
+    expect(call?.[3]).toBe(
+      "Olá! Recebi seu contato, mas o conteúdo da mensagem não chegou para mim. Pode me dizer o que gostaria de saber?",
+    )
+    const request = JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body))
+    expect(request.instructions).toContain("MENSAGEM RECEBIDA SEM CONTEÚDO")
   })
 
   it("não separa um emoji entre duas mensagens", async () => {

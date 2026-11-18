@@ -1,42 +1,64 @@
 import type { Env, Session } from "./index"
+
 import { sendFile } from "./whatsapp"
 
 const json = (data: unknown, status = 200) =>
   new Response(JSON.stringify(data), {
     status,
+
     headers: { "content-type": "application/json; charset=utf-8" },
   })
 
 const uid = () => crypto.randomUUID()
 
 const MAX_IMAGE_BYTES = 5 * 1024 * 1024
+
 const MAX_IMAGES_PER_PRODUCT = 10
+
 const MAX_PHOTOS_PER_TURN = 14
+
 const MAX_CATALOG_SEND = 12
+
 const STOCK_FRESH_DAYS = 7
 
 const clip = (value: unknown, max: number) =>
   typeof value === "string" && value.trim() ? value.trim().slice(0, max) : null
 
-type Spec = { label: string; value: string }
+type Spec = { label: string value: string }
 
 type ProductRow = {
   id: string
+
   name: string
+
   model: string
+
   version: string | null
+
   brand: string | null
+
   category: string | null
+
   description: string | null
+
   specs: string
+
   priceText: string | null
+
   salePriceText: string | null
+
   cardInstallments: string | null
+
   cardInstallmentText: string | null
+
   status: string
+
   authorized: number
+
   availability: string
+
   availabilityAt: string | null
+
   updatedAt: string
 }
 
@@ -56,21 +78,29 @@ function parseSpecs(raw: unknown): Spec[] {
   if (!Array.isArray(value)) return []
 
   return value
+
     .map((item) => ({
       label: clip((item as Spec)?.label, 80) ?? "",
+
       value: clip((item as Spec)?.value, 300) ?? "",
     }))
+
     .filter((spec) => spec.label && spec.value)
+
     .slice(0, 40)
 }
 
 // O estoque só vale quando foi confirmado há pouco tempo.
-function stockConfirmed(row: Pick<ProductRow, "availability" | "availabilityAt">) {
+
+function stockConfirmed(
+  row: Pick<ProductRow, "availability" | "availabilityAt">,
+) {
   if (row.availability !== "in_stock" || !row.availabilityAt) return false
 
   const timestamp = /(?:Z|[+-]\d{2}:\d{2})$/i.test(row.availabilityAt)
     ? row.availabilityAt
     : `${row.availabilityAt.replace(" ", "T")}Z`
+
   const age = Date.now() - new Date(timestamp).getTime()
 
   return age >= 0 && age < STOCK_FRESH_DAYS * 86_400_000
@@ -78,9 +108,13 @@ function stockConfirmed(row: Pick<ProductRow, "availability" | "availabilityAt">
 
 const normalize = (value: string) =>
   value
+
     .normalize("NFD")
+
     .replace(/[\u0300-\u036f]/g, "")
+
     .toLowerCase()
+
     .replace(/[^a-z0-9]+/g, "")
 
 function imageMime(bytes: Uint8Array) {
@@ -100,23 +134,31 @@ function imageMime(bytes: Uint8Array) {
 
 async function loadProducts(
   env: Env,
+
   organizationId: string,
+
   where = "",
+
   extra: unknown[] = [],
 ) {
   return (
     await env.DB.prepare(
       `SELECT ${PRODUCT_COLUMNS} FROM catalog_products WHERE organization_id=? ${where} ORDER BY name,model`,
     )
+
       .bind(organizationId, ...extra)
+
       .all<ProductRow>()
   ).results
 }
 
 export async function catalogRoutes(
   request: Request,
+
   env: Env,
+
   url: URL,
+
   auth: Session,
 ): Promise<Response | null> {
   const path = url.pathname
@@ -124,13 +166,21 @@ export async function catalogRoutes(
   if (!path.startsWith("/api/catalog/")) return null
 
   const org = auth.organizationId
+
   const canEdit = auth.role === "admin" || auth.role === "manager"
 
   if (path === "/api/catalog/send" && request.method === "POST") {
     const body = await request.json<Record<string, unknown>>().catch(() => ({}))
-    const conversationId = typeof body.conversationId === "string" ? body.conversationId : ""
+
+    const conversationId =
+      typeof body.conversationId === "string" ? body.conversationId : ""
+
     const productId = Array.isArray(body.productIds)
-      ? body.productIds.filter((x): x is string => typeof x === "string" && /^[\w-]+$/.test(x)).slice(0, MAX_CATALOG_SEND)
+      ? body.productIds
+          .filter(
+            (x): x is string => typeof x === "string" && /^[\w-]+$/.test(x),
+          )
+          .slice(0, MAX_CATALOG_SEND)
       : typeof body.productId === "string"
         ? body.productId
         : null
@@ -139,7 +189,10 @@ export async function catalogRoutes(
       return json({ error: "Conversa inválida." }, 400)
 
     if (!env.CATALOG)
-      return json({ error: "O armazenamento de fotos ainda não foi configurado." }, 503)
+      return json(
+        { error: "O armazenamento de fotos ainda não foi configurado." },
+        503,
+      )
 
     const result = await sendCatalog(env, auth, conversationId, productId)
 
@@ -156,20 +209,30 @@ export async function catalogRoutes(
       await env.DB.prepare(
         "SELECT id,product_id productId,is_primary isPrimary FROM catalog_images WHERE organization_id=? ORDER BY is_primary DESC,position,created_at",
       )
+
         .bind(org)
-        .all<{ id: string; productId: string; isPrimary: number }>()
+
+        .all<{ id: string productId: string isPrimary: number }>()
     ).results
 
     return json({
       storageReady: !!env.CATALOG,
+
       canEdit,
+
       products: products.map((p) => ({
         ...p,
+
         specs: parseSpecs(p.specs),
+
         authorized: !!p.authorized,
+
         stockConfirmed: stockConfirmed(p),
+
         images: images
+
           .filter((i) => i.productId === p.id)
+
           .map((i) => ({ id: i.id, isPrimary: !!i.isPrimary })),
       })),
     })
@@ -183,8 +246,10 @@ export async function catalogRoutes(
     const image = await env.DB.prepare(
       "SELECT r2_key key,mime FROM catalog_images WHERE id=? AND organization_id=?",
     )
+
       .bind(imageMatch[1], org)
-      .first<{ key: string; mime: string }>()
+
+      .first<{ key: string mime: string }>()
 
     const object = image && (await env.CATALOG.get(image.key))
 
@@ -193,7 +258,9 @@ export async function catalogRoutes(
     return new Response(object.body, {
       headers: {
         "content-type": image.mime,
+
         "cache-control": "private, max-age=3600",
+
         "x-content-type-options": "nosniff",
       },
     })
@@ -204,7 +271,9 @@ export async function catalogRoutes(
 
   if (path === "/api/catalog/products" && request.method === "POST") {
     const body = await request.json<Record<string, unknown>>().catch(() => ({}))
+
     const name = clip(body.name, 120)
+
     const model = clip(body.model, 80)
 
     if (!name || !model)
@@ -215,28 +284,45 @@ export async function catalogRoutes(
     await env.DB.prepare(
       "INSERT INTO catalog_products(id,organization_id,name,model,version,brand,category,description,specs,price_text,sale_price_text,card_installments,card_installment_text,status,authorized_for_sale,created_by) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,'approved',1,?)",
     )
+
       .bind(
         id,
+
         org,
+
         name,
+
         model,
+
         clip(body.version, 80),
+
         clip(body.brand, 80),
+
         clip(body.category, 80),
+
         clip(body.description, 2000),
+
         JSON.stringify(parseSpecs(body.specs)),
+
         clip(body.priceText, 80),
+
         clip(body.salePriceText, 80),
+
         clip(body.cardInstallments, 10),
+
         clip(body.cardInstallmentText, 80),
+
         auth.userId,
       )
+
       .run()
 
     return json({ ok: true, id }, 201)
   }
 
-  const orderMatch = path.match(/^\/api\/catalog\/products\/([\w-]+)\/images\/order$/)
+  const orderMatch = path.match(
+    /^\/api\/catalog\/products\/([\w-]+)\/images\/order$/,
+  )
 
   if (orderMatch && request.method === "PUT") {
     const body = await request.json<Record<string, unknown>>().catch(() => ({}))
@@ -249,7 +335,9 @@ export async function catalogRoutes(
       await env.DB.prepare(
         "SELECT id FROM catalog_images WHERE product_id=? AND organization_id=?",
       )
+
         .bind(orderMatch[1], org)
+
         .all<{ id: string }>()
     ).results.map((r) => r.id)
 
@@ -271,10 +359,17 @@ export async function catalogRoutes(
 
   if (productMatch && request.method === "PUT") {
     const body = await request.json<Record<string, unknown>>().catch(() => ({}))
+
     const sets: string[] = []
+
     const values: unknown[] = []
 
-    const text = (key: string, column: string, max: number, required = false) => {
+    const text = (
+      key: string,
+      column: string,
+      max: number,
+      required = false,
+    ) => {
       if (!(key in body)) return
 
       const value = clip(body[key], max)
@@ -282,19 +377,29 @@ export async function catalogRoutes(
       if (required && !value) throw new Error(`Campo obrigatório: ${key}`)
 
       sets.push(`${column}=?`)
+
       values.push(value)
     }
 
     try {
       text("name", "name", 120, true)
+
       text("model", "model", 80, true)
+
       text("version", "version", 80)
+
       text("brand", "brand", 80)
+
       text("category", "category", 80)
+
       text("description", "description", 2000)
+
       text("priceText", "price_text", 80)
+
       text("salePriceText", "sale_price_text", 80)
+
       text("cardInstallments", "card_installments", 10)
+
       text("cardInstallmentText", "card_installment_text", 80)
     } catch (error) {
       return json({ error: (error as Error).message }, 400)
@@ -302,6 +407,7 @@ export async function catalogRoutes(
 
     if ("specs" in body) {
       sets.push("specs=?")
+
       values.push(JSON.stringify(parseSpecs(body.specs)))
     }
 
@@ -310,11 +416,13 @@ export async function catalogRoutes(
         return json({ error: "Status inválido." }, 400)
 
       sets.push("status=?")
+
       values.push(body.status)
     }
 
     if (typeof body.authorized === "boolean") {
       sets.push("authorized_for_sale=?")
+
       values.push(body.authorized ? 1 : 0)
     }
 
@@ -323,6 +431,7 @@ export async function catalogRoutes(
         return json({ error: "Disponibilidade inválida." }, 400)
 
       sets.push("availability=?", "availability_updated_at=CURRENT_TIMESTAMP")
+
       values.push(body.availability)
     }
 
@@ -331,7 +440,9 @@ export async function catalogRoutes(
     const result = await env.DB.prepare(
       `UPDATE catalog_products SET ${sets.join(",")},updated_at=CURRENT_TIMESTAMP WHERE id=? AND organization_id=?`,
     )
+
       .bind(...values, productMatch[1], org)
+
       .run()
 
     return result.meta.changes
@@ -344,14 +455,18 @@ export async function catalogRoutes(
       await env.DB.prepare(
         "SELECT r2_key key FROM catalog_images WHERE product_id=? AND organization_id=?",
       )
+
         .bind(productMatch[1], org)
+
         .all<{ key: string }>()
     ).results
 
     const result = await env.DB.prepare(
       "DELETE FROM catalog_products WHERE id=? AND organization_id=?",
     )
+
       .bind(productMatch[1], org)
+
       .run()
 
     if (!result.meta.changes)
@@ -369,18 +484,22 @@ export async function catalogRoutes(
     if (!env.CATALOG)
       return json(
         { error: "O armazenamento de fotos (R2) ainda não foi configurado." },
+
         503,
       )
 
     const product = await env.DB.prepare(
       "SELECT 1 x FROM catalog_products WHERE id=? AND organization_id=?",
     )
+
       .bind(uploadMatch[1], org)
+
       .first()
 
     if (!product) return json({ error: "Produto não encontrado." }, 404)
 
     const form = await request.formData().catch(() => null)
+
     const file = form?.get("file")
 
     if (!(file instanceof File) || file.size === 0)
@@ -390,41 +509,57 @@ export async function catalogRoutes(
       return json({ error: "A imagem deve ter no máximo 5 MB." }, 413)
 
     const bytes = new Uint8Array(await file.arrayBuffer())
+
     const mime = imageMime(bytes)
 
     if (!mime)
       return json(
         { error: "Use imagens JPEG ou PNG (formatos aceitos pelo WhatsApp)." },
+
         415,
       )
 
     const count = await env.DB.prepare(
       "SELECT COUNT(*) n,COALESCE(MAX(position),-1) last FROM catalog_images WHERE product_id=? AND organization_id=?",
     )
+
       .bind(uploadMatch[1], org)
-      .first<{ n: number; last: number }>()
+
+      .first<{ n: number last: number }>()
 
     if ((count?.n ?? 0) >= MAX_IMAGES_PER_PRODUCT)
       return json({ error: "Limite de 10 fotos por produto." }, 409)
 
     const id = uid()
-    const key = `${org}/${uploadMatch[1]}/${id}.${mime === "image/png" ? "png" : "jpg"}`
+
+    const key = `${org}/${uploadMatch[1]}/${id}.${
+      mime === "image/png" ? "png" : "jpg"
+    }`
 
     await env.CATALOG.put(key, bytes, { httpMetadata: { contentType: mime } })
 
     await env.DB.prepare(
       "INSERT INTO catalog_images(id,organization_id,product_id,r2_key,mime,size,position,is_primary) VALUES(?,?,?,?,?,?,?,?)",
     )
+
       .bind(
         id,
+
         org,
+
         uploadMatch[1],
+
         key,
+
         mime,
+
         bytes.length,
+
         (count?.last ?? -1) + 1,
+
         count?.n ? 0 : 1,
       )
+
       .run()
 
     return json({ ok: true, id }, 201)
@@ -434,7 +569,9 @@ export async function catalogRoutes(
     const image = await env.DB.prepare(
       "SELECT product_id productId FROM catalog_images WHERE id=? AND organization_id=?",
     )
+
       .bind(imageMatch[1], org)
+
       .first<{ productId: string }>()
 
     if (!image) return json({ error: "Imagem não encontrada." }, 404)
@@ -443,6 +580,7 @@ export async function catalogRoutes(
       env.DB.prepare(
         "UPDATE catalog_images SET is_primary=0 WHERE product_id=? AND organization_id=?",
       ).bind(image.productId, org),
+
       env.DB.prepare(
         "UPDATE catalog_images SET is_primary=1 WHERE id=? AND organization_id=?",
       ).bind(imageMatch[1], org),
@@ -455,15 +593,19 @@ export async function catalogRoutes(
     const image = await env.DB.prepare(
       "SELECT r2_key key,product_id productId,is_primary isPrimary FROM catalog_images WHERE id=? AND organization_id=?",
     )
+
       .bind(imageMatch[1], org)
-      .first<{ key: string; productId: string; isPrimary: number }>()
+
+      .first<{ key: string productId: string isPrimary: number }>()
 
     if (!image) return json({ error: "Imagem não encontrada." }, 404)
 
     await env.DB.prepare(
       "DELETE FROM catalog_images WHERE id=? AND organization_id=?",
     )
+
       .bind(imageMatch[1], org)
+
       .run()
 
     if (env.CATALOG) await env.CATALOG.delete(image.key)
@@ -472,7 +614,9 @@ export async function catalogRoutes(
       await env.DB.prepare(
         "UPDATE catalog_images SET is_primary=1 WHERE id=(SELECT id FROM catalog_images WHERE product_id=? AND organization_id=? ORDER BY position LIMIT 1)",
       )
+
         .bind(image.productId, org)
+
         .run()
 
     return json({ ok: true })
@@ -482,7 +626,9 @@ export async function catalogRoutes(
 }
 
 // ---------------------------------------------------------------------------
+
 // Ferramentas da IA
+
 // ---------------------------------------------------------------------------
 
 export async function catalogEnabled(env: Env, organizationId: string) {
@@ -491,7 +637,9 @@ export async function catalogEnabled(env: Env, organizationId: string) {
   const row = await env.DB.prepare(
     "SELECT 1 x FROM catalog_products WHERE organization_id=? AND status='approved' LIMIT 1",
   )
+
     .bind(organizationId)
+
     .first()
 
   return !!row
@@ -499,88 +647,144 @@ export async function catalogEnabled(env: Env, organizationId: string) {
 
 const searchParam = (description: string) => ({
   type: "object",
+
   additionalProperties: false,
+
   properties: { busca: { type: "string", description } },
+
   required: ["busca"],
 })
 
 export const catalogTools = [
   {
     type: "function",
+
     name: "listarModelosDisponiveis",
+
     description:
       "Lista somente modelos autorizados com estoque confirmado nos últimos sete dias. Use antes de oferecer produtos como disponíveis.",
+
     parameters: {
       type: "object",
+
       additionalProperties: false,
+
       properties: {},
+
       required: [],
     },
+
     strict: true,
   },
+
   {
     type: "function",
+
     name: "consultarProduto",
+
     description:
       "Busca um produto aprovado por nome, modelo ou versão e retorna as especificações verificadas.",
+
     parameters: searchParam("Nome ou modelo do produto, ex.: TERA"),
+
     strict: true,
   },
+
   {
     type: "function",
+
     name: "obterFotosProduto",
+
     description:
       "Informa quantas fotos aprovadas existem para o produto. Não envia nada ao cliente.",
+
     parameters: searchParam("Nome ou modelo do produto"),
+
     strict: true,
   },
+
   {
     type: "function",
+
     name: "compararProdutos",
+
     description:
       "Compara especificações verificadas de 2 a 4 produtos aprovados.",
+
     parameters: {
       type: "object",
+
       additionalProperties: false,
+
       properties: {
         modelos: { type: "array", items: { type: "string" } },
       },
+
       required: ["modelos"],
     },
+
     strict: true,
   },
+
   {
     type: "function",
+
     name: "enviarFotoProduto",
+
     description:
       "Envia ao cliente, pelo WhatsApp, fotos aprovadas de um produto autorizado (por padrão envie todas). Só diga que enviou se o retorno tiver enviadas > 0.",
+
     parameters: {
       type: "object",
+
       additionalProperties: false,
+
       properties: {
         busca: { type: "string", description: "Nome ou modelo do produto" },
-        quantidade: { type: "integer", description: "Use 10 para enviar todas as fotos cadastradas" },
+
+        quantidade: {
+          type: "integer",
+          description: "Use 10 para enviar todas as fotos cadastradas",
+        },
       },
+
       required: ["busca", "quantidade"],
     },
+
     strict: true,
   },
+
   {
     type: "function",
+
     name: "enviarCatalogoFiltrado",
+
     description:
       "Envia fotos e fichas resumidas somente dos modelos aprovados, autorizados e com estoque confirmado nos últimos sete dias. Use quando o cliente pedir o catálogo. Só diga que enviou se enviadas > 0 e informe apenas os modelos listados em modelosEnviados.",
+
     parameters: {
       type: "object",
+
       additionalProperties: false,
+
       properties: {},
+
       required: [],
     },
+
     strict: true,
   },
 ]
 
-export type CatalogToolState = { sentImages: Set<string>; assignmentRevision?: number }
+export type CatalogToolState = {
+  sentImages: Set<string>
+
+  attemptedImages: Set<string>
+
+  imageFailures: Map<string, string>
+
+  assignmentRevision?: number
+}
 
 async function findProducts(env: Env, organizationId: string, query: string) {
   const wanted = normalize(query)
@@ -590,7 +794,12 @@ async function findProducts(env: Env, organizationId: string, query: string) {
   const rows = await loadProducts(env, organizationId, "AND status='approved'")
 
   const keys = (p: ProductRow) =>
-    [p.model, p.name, `${p.model}${p.version ?? ""}`, `${p.name}${p.version ?? ""}`].map(
+    [
+      p.model,
+      p.name,
+      `${p.model}${p.version ?? ""}`,
+      `${p.name}${p.version ?? ""}`,
+    ].map(
       normalize,
     )
 
@@ -598,7 +807,9 @@ async function findProducts(env: Env, organizationId: string, query: string) {
 
   if (exact.length) return exact
 
-  return rows.filter((p) => keys(p).some((k) => k.includes(wanted) || wanted.includes(k)))
+  return rows.filter((p) =>
+    keys(p).some((k) => k.includes(wanted) || wanted.includes(k)),
+  )
 }
 
 const FINANCING_NOTE =
@@ -613,23 +824,36 @@ const cardLine = (p: ProductRow) =>
 
 const summarize = (p: ProductRow) => ({
   nome: p.name,
+
   modelo: p.model,
+
   versao: p.version,
+
   marca: p.brand,
+
   categoria: p.category,
+
   descricao: p.description,
+
   especificacoes: parseSpecs(p.specs),
+
   preco: p.priceText,
+
   precoOferta: p.salePriceText,
+
   precoAVista: "Valores à vista são no Pix ou dinheiro.",
+
   precoCartao: cardLine(p) || null,
+
   financiamento: FINANCING_NOTE,
+
   ...(p.salePriceText
     ? {
         instrucaoPreco:
           "Há promoção: informe o preço normal (preco) e o preço de oferta (precoOferta) ao cliente.",
       }
     : {}),
+
   estoque: stockConfirmed(p)
     ? `disponível (confirmado em ${p.availabilityAt})`
     : "não confirmado: não afirme que há estoque, diga que vai confirmar com a equipe",
@@ -637,6 +861,7 @@ const summarize = (p: ProductRow) => ({
 
 const NOT_AUTHORIZED = {
   autorizado: false,
+
   instrucao:
     "Modelo não autorizado para oferta. Não ofereça nem descreva; diga que precisa consultar a equipe comercial (handoff=true).",
 }
@@ -644,44 +869,76 @@ const NOT_AUTHORIZED = {
 const CAPTION_SPECS = ["Motor", "Bateria", "Roda", "Cores disponíveis"]
 
 // Legenda com a ficha resumida; não menciona estoque.
+
 function productCaption(p: ProductRow) {
   const specs = parseSpecs(p.specs)
 
   return [
     `*${p.name}${p.version ? ` ${p.version}` : ""}*`,
-    ...CAPTION_SPECS.map((label) => specs.find((s) => s.label === label)).flatMap(
+
+    ...CAPTION_SPECS.map((label) =>
+      specs.find((s) => s.label === label),
+    ).flatMap(
       (s) => (s ? [`${s.label}: ${s.value}`] : []),
     ),
+
     p.salePriceText && p.priceText
       ? `De ~${p.priceText}~ por *${p.salePriceText}* 🔥 (à vista no Pix ou dinheiro)`
       : p.salePriceText || p.priceText
         ? `Valor: ${p.salePriceText || p.priceText} (à vista no Pix ou dinheiro)`
         : "",
+
     cardLine(p),
+
     FINANCING_NOTE,
   ]
+
     .filter(Boolean)
+
     .join("\n")
 }
 
 // Envia o catálogo completo (modelos aprovados e autorizados) ou um modelo.
+
 export async function sendCatalog(
   env: Env,
+
   sender: Session,
+
   conversationId: string,
+
   productId: string | string[] | null,
-  state: CatalogToolState = { sentImages: new Set() },
+
+  state: CatalogToolState = {
+    sentImages: new Set(),
+
+    attemptedImages: new Set(),
+
+    imageFailures: new Map(),
+  },
+
   availableOnly = false,
 ) {
   const organizationId = sender.organizationId
-  const ids = Array.isArray(productId) ? productId : productId ? [productId] : []
+
+  const ids = Array.isArray(productId)
+    ? productId
+    : productId
+      ? [productId]
+      : []
 
   const approvedRows = await loadProducts(
     env,
+
     organizationId,
-    `AND status='approved' AND authorized_for_sale=1${ids.length ? ` AND id IN (${ids.map(() => "?").join(",")})` : ""}`,
+
+    `AND status='approved' AND authorized_for_sale=1${
+      ids.length ? ` AND id IN (${ids.map(() => "?").join(",")})` : ""
+    }`,
+
     ids,
   )
+
   const rows = availableOnly
     ? approvedRows.filter(stockConfirmed)
     : approvedRows
@@ -689,72 +946,109 @@ export async function sendCatalog(
   if (!rows.length)
     return {
       enviadas: 0,
+
       erro: availableOnly
         ? "Nenhum produto aprovado e autorizado tem estoque confirmado recentemente."
         : "Nenhum produto aprovado e autorizado para enviar.",
     }
 
   let sent = 0
+
   let error: string | null = null
+
   const sentModels: string[] = []
 
   for (const product of rows.slice(0, MAX_CATALOG_SEND)) {
     const result = await sendProductPhotos(
       env,
+
       organizationId,
+
       conversationId,
+
       state,
+
       product,
+
       MAX_IMAGES_PER_PRODUCT,
+
       (index) => (index === 0 ? productCaption(product) : ""),
+
       sender,
     )
 
     sent += result.enviadas
-    if (result.enviadas > 0) sentModels.push(`${product.model}${product.version ? ` ${product.version}` : ""}`)
+
+    if (result.enviadas > 0)
+      sentModels.push(
+        `${product.model}${product.version ? ` ${product.version}` : ""}`,
+      )
 
     if (result.erro) {
       error = result.erro
+
       break
     }
   }
 
   return {
     enviadas: sent,
+
     erro: error ?? (sent ? null : "Os produtos não têm foto cadastrada."),
+
     ...(availableOnly ? { modelosEnviados: sentModels } : {}),
   }
 }
 
 async function sendProductPhotos(
   env: Env,
+
   organizationId: string,
+
   conversationId: string,
+
   state: CatalogToolState,
+
   product: ProductRow,
+
   limit: number,
+
   caption: (index: number) => string,
+
   sender: Session = { userId: "", organizationId, role: "ai" },
 ) {
   const images = (
     await env.DB.prepare(
       "SELECT id,r2_key key,mime FROM catalog_images WHERE product_id=? AND organization_id=? ORDER BY is_primary DESC,position LIMIT ?",
     )
+
       .bind(product.id, organizationId, limit)
-      .all<{ id: string; key: string; mime: string }>()
+
+      .all<{ id: string key: string mime: string }>()
   ).results
 
   let sent = 0
+
   let skipped = 0
+
   let error: string | null = null
 
   for (const [index, image] of images.entries()) {
-    if (state.sentImages.has(image.id)) {
+    if (state.attemptedImages.has(image.id)) {
       skipped++
+
+      const previousError = state.imageFailures.get(image.id)
+
+      if (previousError) {
+        error = previousError
+
+        break
+      }
+
       continue
     }
 
-    if (state.sentImages.size >= MAX_PHOTOS_PER_TURN) break
+    if (state.attemptedImages.size >= MAX_PHOTOS_PER_TURN) break
 
     const object = await env.CATALOG?.get(image.key)
 
@@ -762,25 +1056,43 @@ async function sendProductPhotos(
 
     const file = new File(
       [await object.arrayBuffer()],
-      `${product.model}-${index + 1}.${image.mime === "image/png" ? "png" : "jpg"}`,
+
+      `${product.model}-${index + 1}.${
+        image.mime === "image/png" ? "png" : "jpg"
+      }`,
+
       { type: image.mime },
     )
 
+    state.attemptedImages.add(image.id)
+
     const response = await sendFile(
       env,
+
       sender,
+
       conversationId,
+
       file,
+
       caption(index),
+
       state.assignmentRevision,
     )
 
     if (response.ok) {
       state.sentImages.add(image.id)
+
       sent++
     } else {
-      const data = (await response.json().catch(() => ({}))) as { error?: string }
+      const data = (await response.json().catch(() => ({}))) as {
+        error?: string
+      }
+
       error = data.error ?? `HTTP ${response.status}`
+
+      state.imageFailures.set(image.id, error)
+
       break
     }
   }
@@ -790,10 +1102,15 @@ async function sendProductPhotos(
 
 export async function runCatalogTool(
   env: Env,
+
   organizationId: string,
+
   conversationId: string,
+
   name: string,
+
   args: Record<string, unknown>,
+
   state: CatalogToolState,
 ): Promise<unknown> {
   const search = typeof args.busca === "string" ? args.busca : ""
@@ -801,24 +1118,32 @@ export async function runCatalogTool(
   if (name === "listarModelosDisponiveis") {
     const rows = await loadProducts(
       env,
+
       organizationId,
+
       "AND status='approved' AND authorized_for_sale=1",
     )
+
     const available = rows.filter(stockConfirmed)
 
     return {
       modelosDisponiveis: available.map((p) => ({
         nome: p.name,
+
         modelo: p.model,
+
         versao: p.version,
+
         estoque: "confirmado",
       })),
+
       quantidadeComEstoqueNaoConfirmado: rows.length - available.length,
     }
   }
 
   if (name === "compararProdutos") {
     const models = Array.isArray(args.modelos) ? args.modelos.slice(0, 4) : []
+
     const result = []
 
     for (const model of models) {
@@ -841,28 +1166,42 @@ export async function runCatalogTool(
   if (name === "enviarCatalogoFiltrado") {
     const result = await sendCatalog(
       env,
+
       { userId: "", organizationId, role: "ai" },
+
       conversationId,
+
       null,
+
       state,
+
       true,
     )
 
     return {
       ...result,
+
       instrucao:
         "As legendas das fotos não falam de estoque. Não afirme disponibilidade se não estiver confirmada.",
     }
   }
 
   if (!matches.length)
-    return { encontrado: false, instrucao: "Produto não está no catálogo aprovado." }
+    return {
+      encontrado: false,
+      instrucao: "Produto não está no catálogo aprovado.",
+    }
 
   if (matches.length > 1)
     return {
       encontrado: true,
+
       ambiguo: true,
-      opcoes: matches.map((p) => `${p.model}${p.version ? ` ${p.version}` : ""}`),
+
+      opcoes: matches.map(
+        (p) => `${p.model}${p.version ? ` ${p.version}` : ""}`,
+      ),
+
       instrucao: "Pergunte qual das opções o cliente quer.",
     }
 
@@ -876,7 +1215,9 @@ export async function runCatalogTool(
     const row = await env.DB.prepare(
       "SELECT COUNT(*) n FROM catalog_images WHERE product_id=? AND organization_id=?",
     )
+
       .bind(product.id, organizationId)
+
       .first<{ n: number }>()
 
     return { modelo: product.model, fotosAprovadas: row?.n ?? 0 }
@@ -885,18 +1226,29 @@ export async function runCatalogTool(
   if (name === "enviarFotoProduto") {
     const quantity = Math.max(
       1,
-      Math.min(MAX_IMAGES_PER_PRODUCT, Math.round(Number(args.quantidade) || MAX_IMAGES_PER_PRODUCT)),
+
+      Math.min(
+        MAX_IMAGES_PER_PRODUCT,
+        Math.round(Number(args.quantidade) || MAX_IMAGES_PER_PRODUCT),
+      ),
     )
 
     return {
       modelo: product.model,
+
       ...(await sendProductPhotos(
         env,
+
         organizationId,
+
         conversationId,
+
         state,
+
         product,
+
         quantity,
+
         (index) => (index === 0 ? productCaption(product) : ""),
       )),
     }

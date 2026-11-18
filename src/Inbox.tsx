@@ -1,4 +1,11 @@
-import { useCallback, useEffect, useRef, useState, type CSSProperties, type FormEvent } from "react"
+import {
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+  type CSSProperties,
+  type FormEvent,
+} from "react"
 
 import {
   ArrowLeft,
@@ -22,7 +29,12 @@ import { Boxes } from "lucide-react"
 import { api, errorMessage, type Member, type Team } from "./api"
 import { displayMessage } from "./messageDisplay"
 import { QuickReplyForm, type QuickReply } from "./QuickReplies"
-import { clampSidebarWidth, DEFAULT_SIDEBAR_WIDTH, MIN_SIDEBAR_WIDTH, sidebarWidthLimit } from "./inboxResize"
+import {
+  clampSidebarWidth,
+  DEFAULT_SIDEBAR_WIDTH,
+  MIN_SIDEBAR_WIDTH,
+  sidebarWidthLimit,
+} from "./inboxResize"
 
 const SIDEBAR_WIDTH_KEY = "avflow-inbox-sidebar-width"
 
@@ -37,7 +49,14 @@ function savedSidebarWidth() {
   }
 }
 
-type CatalogItem = { id: string; name: string; version: string | null; status: string; authorized: boolean; images: Array<{ id: string; isPrimary: boolean }> }
+type CatalogItem = {
+  id: string
+  name: string
+  version: string | null
+  status: string
+  authorized: boolean
+  images: Array<{ id: string; isPrimary: boolean }>
+}
 
 type Conversation = {
   id: string
@@ -71,6 +90,7 @@ type Message = {
   status: string
 
   errorCode: string | null
+  errorMessage: string | null
 
   hasMedia: number
 
@@ -189,7 +209,12 @@ export default function Inbox({
   const [members, setMembers] = useState<Member[]>([])
   const [assigning, setAssigning] = useState(false)
   const [assignmentNotice, setAssignmentNotice] = useState("")
-  const [contextMenu, setContextMenu] = useState<{ kind: "conversation" | "message"; id: string; x: number; y: number } | null>(null)
+  const [contextMenu, setContextMenu] = useState<{
+    kind: "conversation" | "message"
+    id: string
+    x: number
+    y: number
+  } | null>(null)
   const [quickOpen, setQuickOpen] = useState(false)
   const [quickCreate, setQuickCreate] = useState(false)
   const [quickBusy, setQuickBusy] = useState(false)
@@ -197,19 +222,39 @@ export default function Inbox({
   const [quickQuery, setQuickQuery] = useState("")
 
   async function toggleQuickReplies() {
-    if (quickOpen) { setQuickOpen(false); setQuickCreate(false); return }
-    setQuickOpen(true); setCatalogOpen(false); setQuickCreate(false); setQuickQuery(""); setError("")
-    try { setQuickReplies((await api<{ results: QuickReply[] }>("/api/quick-replies")).results) }
-    catch (e) { setError(errorMessage(e)) }
+    if (quickOpen) {
+      setQuickOpen(false)
+      setQuickCreate(false)
+      return
+    }
+    setQuickOpen(true)
+    setCatalogOpen(false)
+    setQuickCreate(false)
+    setQuickQuery("")
+    setError("")
+    try {
+      setQuickReplies(
+        (await api<{ results: QuickReply[] }>("/api/quick-replies")).results,
+      )
+    } catch (e) {
+      setError(errorMessage(e))
+    }
   }
 
   async function createQuickReply(title: string, body: string) {
-    setQuickBusy(true); setError("")
+    setQuickBusy(true)
+    setError("")
     try {
       await api("/api/quick-replies", { method: "POST", body: { title, body } })
-      setQuickReplies((await api<{ results: QuickReply[] }>("/api/quick-replies")).results)
+      setQuickReplies(
+        (await api<{ results: QuickReply[] }>("/api/quick-replies")).results,
+      )
       setQuickCreate(false)
-    } catch (e) { setError(errorMessage(e)) } finally { setQuickBusy(false) }
+    } catch (e) {
+      setError(errorMessage(e))
+    } finally {
+      setQuickBusy(false)
+    }
   }
 
   function insertQuickReply(body: string) {
@@ -229,12 +274,16 @@ export default function Inbox({
   const shellRef = useRef<HTMLElement>(null)
   const [sidebarWidth, setSidebarWidth] = useState(savedSidebarWidth)
   const [containerWidth, setContainerWidth] = useState(0)
-  const displayedWidth = containerWidth ? clampSidebarWidth(sidebarWidth, containerWidth) : DEFAULT_SIDEBAR_WIDTH
+  const displayedWidth = containerWidth
+    ? clampSidebarWidth(sidebarWidth, containerWidth)
+    : DEFAULT_SIDEBAR_WIDTH
 
   useEffect(() => {
     const shell = shellRef.current
     if (!shell) return
-    const observer = new ResizeObserver((entries) => setContainerWidth(entries[0].contentRect.width))
+    const observer = new ResizeObserver((entries) =>
+      setContainerWidth(entries[0].contentRect.width),
+    )
     observer.observe(shell)
     return () => observer.disconnect()
   }, [])
@@ -251,14 +300,26 @@ export default function Inbox({
     }
   }
 
-  function showMenu(kind: "conversation" | "message", id: string, x: number, y: number) {
-    setContextMenu({ kind, id, x: Math.max(8, Math.min(x, window.innerWidth - 270)), y: Math.max(8, Math.min(y, window.innerHeight - 170)) })
+  function showMenu(
+    kind: "conversation" | "message",
+    id: string,
+    x: number,
+    y: number,
+  ) {
+    setContextMenu({
+      kind,
+      id,
+      x: Math.max(8, Math.min(x, window.innerWidth - 270)),
+      y: Math.max(8, Math.min(y, window.innerHeight - 170)),
+    })
   }
 
   useEffect(() => {
     if (!contextMenu) return
     const close = () => setContextMenu(null)
-    const escape = (event: KeyboardEvent) => { if (event.key === "Escape") close() }
+    const escape = (event: KeyboardEvent) => {
+      if (event.key === "Escape") close()
+    }
     window.addEventListener("click", close)
     window.addEventListener("keydown", escape)
     window.addEventListener("scroll", close, true)
@@ -274,10 +335,15 @@ export default function Inbox({
     setError("")
     try {
       await api(`/api/conversations/${id}/unread`, { method: "POST" })
-      if (activeId === id) { setActiveId(null); setThread(null) }
+      if (activeId === id) {
+        setActiveId(null)
+        setThread(null)
+      }
       await loadList()
       onRead()
-    } catch (e) { setError(errorMessage(e)) }
+    } catch (e) {
+      setError(errorMessage(e))
+    }
   }
 
   async function clearHumanRequest(id: string) {
@@ -286,26 +352,47 @@ export default function Inbox({
     try {
       await api(`/api/conversations/${id}/human-request`, { method: "DELETE" })
       await loadList()
-    } catch (e) { setError(errorMessage(e)) }
+    } catch (e) {
+      setError(errorMessage(e))
+    }
   }
 
   async function removeItem(kind: "conversation" | "message", id: string) {
     setContextMenu(null)
-    const label = kind === "conversation" ? "esta conversa, o histórico e as notas internas" : "esta mensagem"
-    if (!window.confirm(`Excluir ${label} permanentemente do AV Flow? Isso não apaga no WhatsApp do cliente.`)) return
+    const label =
+      kind === "conversation"
+        ? "esta conversa, o histórico e as notas internas"
+        : "esta mensagem"
+    if (
+      !window.confirm(
+        `Excluir ${label} permanentemente do AV Flow? Isso não apaga no WhatsApp do cliente.`,
+      )
+    )
+      return
     setError("")
     try {
-      await api(kind === "conversation" ? `/api/conversations/${id}` : `/api/messages/${id}`, { method: "DELETE" })
-      if (kind === "conversation" && activeId === id) { setActiveId(null); setThread(null) }
-      else if (activeId) await loadThread(activeId)
+      await api(
+        kind === "conversation"
+          ? `/api/conversations/${id}`
+          : `/api/messages/${id}`,
+        { method: "DELETE" },
+      )
+      if (kind === "conversation" && activeId === id) {
+        setActiveId(null)
+        setThread(null)
+      } else if (activeId) await loadThread(activeId)
       await loadList()
       onRead()
-    } catch (e) { setError(errorMessage(e)) }
+    } catch (e) {
+      setError(errorMessage(e))
+    }
   }
 
   useEffect(() => {
     api<Team>("/api/team")
-      .then((team) => setMembers(team.members.filter((member) => member.status === "active")))
+      .then((team) =>
+        setMembers(team.members.filter((member) => member.status === "active")),
+      )
       .catch((e) => setError(errorMessage(e)))
   }, [])
 
@@ -314,13 +401,21 @@ export default function Inbox({
     setError("")
     setAssignmentNotice("")
     try {
-      const result = await api<{ warning?: string }>(`/api/conversations/${id}/assignment`, {
+      const result = await api<{ warning?: string }>(
+        `/api/conversations/${id}/assignment`,
+        {
         method: "POST",
         body: { assignedTo },
-      })
+        },
+      )
       await loadList()
       await loadThread(id)
-      setAssignmentNotice(result.warning ?? (assignedTo ? "Conversa atribuída. A IA está pausada." : "Conversa devolvida à IA."))
+      setAssignmentNotice(
+        result.warning ??
+          (assignedTo
+            ? "Conversa atribuída. A IA está pausada."
+            : "Conversa devolvida à IA."),
+      )
     } catch (e) {
       setError(errorMessage(e))
       await loadList()
@@ -336,8 +431,14 @@ export default function Inbox({
     setSelected([])
     if (!next) return
     try {
-      const data = await api<{ products: CatalogItem[] }>("/api/catalog/products")
-      setCatalogItems(data.products.filter((p) => p.status === "approved" && p.authorized && p.images.length))
+      const data = await api<{ products: CatalogItem[] }>(
+        "/api/catalog/products",
+      )
+      setCatalogItems(
+        data.products.filter(
+          (p) => p.status === "approved" && p.authorized && p.images.length,
+        ),
+      )
     } catch (e) {
       setError(errorMessage(e))
     }
@@ -352,7 +453,10 @@ export default function Inbox({
     try {
       await api("/api/catalog/send", {
         method: "POST",
-        body: { conversationId: activeId, ...(productIds ? { productIds } : {}) },
+        body: {
+          conversationId: activeId,
+          ...(productIds ? { productIds } : {}),
+        },
       })
     } catch (e) {
       setError(errorMessage(e))
@@ -507,7 +611,9 @@ export default function Inbox({
           <span className="inbox-brand-mark">
             <MessageCircle size={18} />
           </span>
-          <b>AV Flow <span>CRM</span></b>
+          <b>
+            AV Flow <span>CRM</span>
+          </b>
           <i />
           <span>WhatsApp</span>
         </div>
@@ -520,7 +626,9 @@ export default function Inbox({
         ref={shellRef}
         className={`inbox-shell${activeId ? " has-active" : ""}`}
         aria-label="Caixa de entrada do WhatsApp"
-        style={{ "--inbox-sidebar-width": `${displayedWidth}px` } as CSSProperties}
+        style={
+          { "--inbox-sidebar-width": `${displayedWidth}px` } as CSSProperties
+        }
       >
       <aside className="inbox-sidebar" id="inbox-conversation-list">
         <div className="inbox-sidebar-head">
@@ -554,7 +662,10 @@ export default function Inbox({
               const label = conversation.name ?? conversation.phone
 
               return (
-                <div className="inbox-conversation-wrap" key={conversation.id}>
+                  <div
+                    className="inbox-conversation-wrap"
+                    key={conversation.id}
+                  >
                 <button
                   type="button"
                   role="listitem"
@@ -562,7 +673,15 @@ export default function Inbox({
                     conversation.id === activeId ? " selected" : ""
                   }`}
                   onClick={() => void open(conversation.id)}
-                  onContextMenu={(event) => { event.preventDefault(); showMenu("conversation", conversation.id, event.clientX, event.clientY) }}
+                      onContextMenu={(event) => {
+                        event.preventDefault()
+                        showMenu(
+                          "conversation",
+                          conversation.id,
+                          event.clientX,
+                          event.clientY,
+                        )
+                      }}
                 >
                   <span
                     className="inbox-avatar"
@@ -574,7 +693,9 @@ export default function Inbox({
                     <span className="inbox-conversation-top">
                       <b>{label}</b>
                       {conversation.humanRequestedAt && (
-                        <span className="inbox-human">Quer falar com vendedor</span>
+                            <span className="inbox-human">
+                              Quer falar com vendedor
+                            </span>
                       )}
                       {conversation.leadStatus &&
                         temperature[conversation.leadStatus] && (
@@ -587,15 +708,33 @@ export default function Inbox({
                       <time>{time(conversation.lastMessageAt)}</time>
                     </span>
                     <span className="inbox-conversation-bottom">
-                      <span>{displayMessage(conversation.preview, conversation.previewType) || conversation.phone}</span>
+                          <span>
+                            {displayMessage(
+                              conversation.preview,
+                              conversation.previewType,
+                            ) || conversation.phone}
+                          </span>
                       {conversation.unread > 0 && (
                         <em>{conversation.unread}</em>
                       )}
                     </span>
                   </span>
                 </button>
-                <button type="button" className="inbox-item-menu" aria-label={`Opções da conversa ${label}`}
-                  onClick={(event) => { event.stopPropagation(); const box = event.currentTarget.getBoundingClientRect(); showMenu("conversation", conversation.id, box.left, box.bottom) }}>
+                    <button
+                      type="button"
+                      className="inbox-item-menu"
+                      aria-label={`Opções da conversa ${label}`}
+                      onClick={(event) => {
+                        event.stopPropagation()
+                        const box = event.currentTarget.getBoundingClientRect()
+                        showMenu(
+                          "conversation",
+                          conversation.id,
+                          box.left,
+                          box.bottom,
+                        )
+                      }}
+                    >
                   <MoreVertical size={16} />
                 </button>
                 </div>
@@ -631,7 +770,11 @@ export default function Inbox({
         aria-label="Ajustar largura da lista de conversas"
         aria-orientation="vertical"
         aria-valuemin={MIN_SIDEBAR_WIDTH}
-        aria-valuemax={containerWidth ? sidebarWidthLimit(containerWidth) : DEFAULT_SIDEBAR_WIDTH}
+          aria-valuemax={
+            containerWidth
+              ? sidebarWidthLimit(containerWidth)
+              : DEFAULT_SIDEBAR_WIDTH
+          }
         aria-valuenow={displayedWidth}
         aria-valuetext={`${displayedWidth} pixels`}
         aria-controls="inbox-conversation-list"
@@ -641,11 +784,17 @@ export default function Inbox({
           if (event.button !== 0) return
           event.preventDefault()
           event.currentTarget.setPointerCapture(event.pointerId)
-          resizeSidebar(event.clientX - (shellRef.current?.getBoundingClientRect().left ?? 0))
+            resizeSidebar(
+              event.clientX -
+                (shellRef.current?.getBoundingClientRect().left ?? 0),
+            )
         }}
         onPointerMove={(event) => {
           if (!event.currentTarget.hasPointerCapture(event.pointerId)) return
-          resizeSidebar(event.clientX - (shellRef.current?.getBoundingClientRect().left ?? 0))
+            resizeSidebar(
+              event.clientX -
+                (shellRef.current?.getBoundingClientRect().left ?? 0),
+            )
         }}
         onPointerUp={(event) => {
           if (event.currentTarget.hasPointerCapture(event.pointerId))
@@ -654,10 +803,13 @@ export default function Inbox({
         onDoubleClick={() => resizeSidebar(DEFAULT_SIDEBAR_WIDTH)}
         onKeyDown={(event) => {
           const change = event.shiftKey ? 50 : 10
-          if (event.key === "ArrowLeft") resizeSidebar(displayedWidth - change)
-          else if (event.key === "ArrowRight") resizeSidebar(displayedWidth + change)
+            if (event.key === "ArrowLeft")
+              resizeSidebar(displayedWidth - change)
+            else if (event.key === "ArrowRight")
+              resizeSidebar(displayedWidth + change)
           else if (event.key === "Home") resizeSidebar(MIN_SIDEBAR_WIDTH)
-          else if (event.key === "End") resizeSidebar(sidebarWidthLimit(containerWidth))
+            else if (event.key === "End")
+              resizeSidebar(sidebarWidthLimit(containerWidth))
           else return
           event.preventDefault()
         }}
@@ -697,16 +849,31 @@ export default function Inbox({
                   aria-label="Destinar conversa para"
                   value={active.assignedTo ?? ""}
                   disabled={assigning}
-                  onChange={(event) => void assign(active.id, event.target.value || null)}
+                    onChange={(event) =>
+                      void assign(active.id, event.target.value || null)
+                    }
                 >
                   <option value="">Assistente de IA</option>
-                  {active.assignedTo && !members.some((member) => member.id === active.assignedTo) && (
-                    <option value={active.assignedTo}>Membro indisponível</option>
+                    {active.assignedTo &&
+                      !members.some(
+                        (member) => member.id === active.assignedTo,
+                      ) && (
+                        <option value={active.assignedTo}>
+                          Membro indisponível
+                        </option>
                   )}
-                  {members.map((member) => <option key={member.id} value={member.id}>{member.name}</option>)}
+                    {members.map((member) => (
+                      <option key={member.id} value={member.id}>
+                        {member.name}
+                      </option>
+                    ))}
                 </select>
                 {!active.assignedTo && (
-                  <button type="button" disabled={assigning} onClick={() => void assign(active.id, null)}>
+                    <button
+                      type="button"
+                      disabled={assigning}
+                      onClick={() => void assign(active.id, null)}
+                    >
                     Retomar IA
                   </button>
                 )}
@@ -724,7 +891,10 @@ export default function Inbox({
                 className="inbox-head-action"
                 aria-label="Mais opções"
                 title="Mais opções"
-                aria-expanded={contextMenu?.kind === "conversation" && contextMenu.id === active.id}
+                  aria-expanded={
+                    contextMenu?.kind === "conversation" &&
+                    contextMenu.id === active.id
+                  }
                 onClick={(event) => {
                   event.stopPropagation()
                   const box = event.currentTarget.getBoundingClientRect()
@@ -735,27 +905,59 @@ export default function Inbox({
               </button>
             </header>
 
-            {assignmentNotice && <p className="inbox-assignment-notice" role="status">{assignmentNotice}</p>}
+              {assignmentNotice && (
+                <p className="inbox-assignment-notice" role="status">
+                  {assignmentNotice}
+                </p>
+              )}
             <div className="inbox-message-area">
               <div className="inbox-day-label">Mensagens</div>
               {thread?.messages.map((message) => (
                 <div
                   key={message.id}
                   className={`inbox-message-row ${message.direction}`}
-                  onContextMenu={(event) => { if (isAdmin) { event.preventDefault(); showMenu("message", message.id, event.clientX, event.clientY) } }}
+                    onContextMenu={(event) => {
+                      if (isAdmin) {
+                        event.preventDefault()
+                        showMenu(
+                          "message",
+                          message.id,
+                          event.clientX,
+                          event.clientY,
+                        )
+                      }
+                    }}
                 >
                   <div className={`inbox-bubble ${message.direction}`}>
-                    {isAdmin && <button type="button" className="inbox-message-menu" aria-label="Opções da mensagem"
-                      onClick={(event) => { event.stopPropagation(); const box = event.currentTarget.getBoundingClientRect(); showMenu("message", message.id, box.left, box.bottom) }}>
+                      {isAdmin && (
+                        <button
+                          type="button"
+                          className="inbox-message-menu"
+                          aria-label="Opções da mensagem"
+                          onClick={(event) => {
+                            event.stopPropagation()
+                            const box =
+                              event.currentTarget.getBoundingClientRect()
+                            showMenu(
+                              "message",
+                              message.id,
+                              box.left,
+                              box.bottom,
+                            )
+                          }}
+                        >
                       <MoreVertical size={14} />
-                    </button>}
+                        </button>
+                      )}
                     {message.hasMedia &&
                     (message.type === "image" ||
                       message.type === "sticker") ? (
                       <img
                         className="inbox-image"
                         src={`/api/messages/${message.id}/media?inline=1`}
-                        alt={message.type === "sticker" ? "Figurinha" : "Imagem"}
+                          alt={
+                            message.type === "sticker" ? "Figurinha" : "Imagem"
+                          }
                         loading="lazy"
                       />
                     ) : null}
@@ -821,9 +1023,28 @@ export default function Inbox({
                           />
                         ))}
                       {message.status === "failed" && (
-                        <span className="inbox-failed">
+                          <span
+                            className="inbox-failed"
+                            title={message.errorMessage ?? undefined}
+                            aria-label={[
+                              "Falhou",
+                              message.errorCode,
+                              message.errorMessage,
+                            ]
+                              .filter(Boolean)
+                              .join(": ")}
+                          >
                           Falhou
                           {message.errorCode ? ` (${message.errorCode})` : ""}
+                        </span>
+                      )}
+                      {message.errorCode === "missing_message_id" && (
+                        <span
+                          className="inbox-failed"
+                          title={message.errorMessage ?? undefined}
+                          aria-label={`Sem confirmação da Meta: ${message.errorMessage ?? ""}`}
+                        >
+                          Sem confirmação da Meta
                         </span>
                       )}
                     </span>
@@ -890,27 +1111,46 @@ export default function Inbox({
                         <p>Nenhum modelo aprovado com foto.</p>
                       ) : (
                         <>
-                          <button type="button" role="menuitem" className="all" onClick={() => void sendCatalog(null)}>
+                          <button
+                            type="button"
+                            role="menuitem"
+                            className="all"
+                            onClick={() => void sendCatalog(null)}
+                          >
                             Catálogo completo ({catalogItems.length})
                           </button>
                           <div className="inbox-catalog-grid">
                             {catalogItems.map((p) => {
                               const on = selected.includes(p.id)
-                              const photo = p.images.find((i) => i.isPrimary) ?? p.images[0]
+                              const photo =
+                                p.images.find((i) => i.isPrimary) ?? p.images[0]
                               return (
                                 <button
                                   type="button"
                                   key={p.id}
-                                  className={on ? "inbox-catalog-card on" : "inbox-catalog-card"}
+                                  className={
+                                    on
+                                      ? "inbox-catalog-card on"
+                                      : "inbox-catalog-card"
+                                  }
                                   aria-pressed={on}
                                   onClick={() =>
                                     setSelected((s) =>
-                                      s.includes(p.id) ? s.filter((x) => x !== p.id) : [...s, p.id],
+                                      s.includes(p.id)
+                                        ? s.filter((x) => x !== p.id)
+                                        : [...s, p.id],
                                     )
                                   }
                                 >
-                                  <img src={`/api/catalog/images/${photo.id}`} alt="" loading="lazy" />
-                                  <span>{p.name}{p.version ? ` ${p.version}` : ""}</span>
+                                  <img
+                                    src={`/api/catalog/images/${photo.id}`}
+                                    alt=""
+                                    loading="lazy"
+                                  />
+                                  <span>
+                                    {p.name}
+                                    {p.version ? ` ${p.version}` : ""}
+                                  </span>
                                   {on && <em>✓</em>}
                                 </button>
                               )
@@ -930,26 +1170,81 @@ export default function Inbox({
                   )}
                 </span>
                 <span className="inbox-catalog">
-                  <button type="button" className="inbox-attach" disabled={sending} onClick={() => void toggleQuickReplies()}
-                    aria-label="Mensagens rápidas" aria-expanded={quickOpen} title="Mensagens rápidas">
+                  <button
+                    type="button"
+                    className="inbox-attach"
+                    disabled={sending}
+                    onClick={() => void toggleQuickReplies()}
+                    aria-label="Mensagens rápidas"
+                    aria-expanded={quickOpen}
+                    title="Mensagens rápidas"
+                  >
                     <Zap size={19} />
                   </button>
-                  {quickOpen && <div className="inbox-catalog-menu quick-reply-menu">
-                    {quickCreate ? <>
+                  {quickOpen && (
+                    <div className="inbox-catalog-menu quick-reply-menu">
+                      {quickCreate ? (
+                        <>
                       <b>Cadastrar mensagem rápida</b>
-                      <QuickReplyForm busy={quickBusy} onSave={createQuickReply} onCancel={() => setQuickCreate(false)} />
-                    </> : <>
+                          <QuickReplyForm
+                            busy={quickBusy}
+                            onSave={createQuickReply}
+                            onCancel={() => setQuickCreate(false)}
+                          />
+                        </>
+                      ) : (
+                        <>
                       <b>Mensagens rápidas</b>
-                      <input className="quick-reply-search" aria-label="Buscar mensagens rápidas" placeholder="Buscar mensagem" value={quickQuery} onChange={(event) => setQuickQuery(event.target.value)} />
-                      {quickReplies.filter((item) => `${item.title} ${item.body}`.toLocaleLowerCase().includes(quickQuery.trim().toLocaleLowerCase())).map((item) =>
-                        <button key={item.id} type="button" className="quick-reply-option" onClick={() => insertQuickReply(item.body)}>
-                          <strong>{item.title}</strong><span>{item.body}</span>
-                        </button>)}
-                      {!quickReplies.length && <p>Nenhuma mensagem cadastrada.</p>}
-                      {quickReplies.length > 0 && !quickReplies.some((item) => `${item.title} ${item.body}`.toLocaleLowerCase().includes(quickQuery.trim().toLocaleLowerCase())) && <p>Nenhuma mensagem encontrada.</p>}
-                      <button type="button" className="all" onClick={() => setQuickCreate(true)}>+ Cadastrar mensagem rápida</button>
-                    </>}
-                  </div>}
+                          <input
+                            className="quick-reply-search"
+                            aria-label="Buscar mensagens rápidas"
+                            placeholder="Buscar mensagem"
+                            value={quickQuery}
+                            onChange={(event) =>
+                              setQuickQuery(event.target.value)
+                            }
+                          />
+                          {quickReplies
+                            .filter((item) =>
+                              `${item.title} ${item.body}`
+                                .toLocaleLowerCase()
+                                .includes(
+                                  quickQuery.trim().toLocaleLowerCase(),
+                                ),
+                            )
+                            .map((item) => (
+                              <button
+                                key={item.id}
+                                type="button"
+                                className="quick-reply-option"
+                                onClick={() => insertQuickReply(item.body)}
+                              >
+                                <strong>{item.title}</strong>
+                                <span>{item.body}</span>
+                              </button>
+                            ))}
+                          {!quickReplies.length && (
+                            <p>Nenhuma mensagem cadastrada.</p>
+                          )}
+                          {quickReplies.length > 0 &&
+                            !quickReplies.some((item) =>
+                              `${item.title} ${item.body}`
+                                .toLocaleLowerCase()
+                                .includes(
+                                  quickQuery.trim().toLocaleLowerCase(),
+                                ),
+                            ) && <p>Nenhuma mensagem encontrada.</p>}
+                          <button
+                            type="button"
+                            className="all"
+                            onClick={() => setQuickCreate(true)}
+                          >
+                            + Cadastrar mensagem rápida
+                          </button>
+                        </>
+                      )}
+                    </div>
+                  )}
                 </span>
                 {file && (
                   <span className="inbox-file-chip" title={file.name}>
@@ -970,7 +1265,9 @@ export default function Inbox({
                   rows={1}
                   onInput={fitComposer}
                   placeholder={
-                    file ? "Adicione uma legenda (opcional)" : "Digite uma mensagem"
+                    file
+                      ? "Adicione uma legenda (opcional)"
+                      : "Digite uma mensagem"
                   }
                   maxLength={4096}
                   autoComplete="off"
@@ -1004,13 +1301,45 @@ export default function Inbox({
       </div>
       </section>
       {contextMenu && (
-        <div className="inbox-context-menu" role="menu" style={{ left: contextMenu.x, top: contextMenu.y }} onClick={(event) => event.stopPropagation()}>
-          {contextMenu.kind === "conversation" && <button type="button" role="menuitem" onClick={() => void markUnread(contextMenu.id)}>Marcar como não lida</button>}
-          {contextMenu.kind === "conversation" && list.some((item) => item.id === contextMenu.id && item.humanRequestedAt) &&
-            <button type="button" role="menuitem" onClick={() => void clearHumanRequest(contextMenu.id)}>Remover “Quer falar com vendedor”</button>}
-          {isAdmin && <button type="button" role="menuitem" className="destructive" onClick={() => void removeItem(contextMenu.kind, contextMenu.id)}>
-            {contextMenu.kind === "conversation" ? "Excluir conversa" : "Excluir mensagem"}
-          </button>}
+        <div
+          className="inbox-context-menu"
+          role="menu"
+          style={{ left: contextMenu.x, top: contextMenu.y }}
+          onClick={(event) => event.stopPropagation()}
+        >
+          {contextMenu.kind === "conversation" && (
+            <button
+              type="button"
+              role="menuitem"
+              onClick={() => void markUnread(contextMenu.id)}
+            >
+              Marcar como não lida
+            </button>
+          )}
+          {contextMenu.kind === "conversation" &&
+            list.some(
+              (item) => item.id === contextMenu.id && item.humanRequestedAt,
+            ) && (
+              <button
+                type="button"
+                role="menuitem"
+                onClick={() => void clearHumanRequest(contextMenu.id)}
+              >
+                Remover “Quer falar com vendedor”
+              </button>
+            )}
+          {isAdmin && (
+            <button
+              type="button"
+              role="menuitem"
+              className="destructive"
+              onClick={() => void removeItem(contextMenu.kind, contextMenu.id)}
+            >
+              {contextMenu.kind === "conversation"
+                ? "Excluir conversa"
+                : "Excluir mensagem"}
+            </button>
+          )}
         </div>
       )}
     </div>
