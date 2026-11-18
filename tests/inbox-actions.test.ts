@@ -44,6 +44,22 @@ function setup() {
 }
 
 describe("ações da caixa de entrada", () => {
+  it("remove somente o aviso de solicitação humana, preservando atribuição e pausa da IA", async () => {
+    const { db, call } = setup()
+    db.exec(`UPDATE conversations SET human_requested_at=CURRENT_TIMESTAMP,assigned_to='user',assignment_revision=3;
+      UPDATE leads SET ai_handoff_at=CURRENT_TIMESTAMP,next_action='Cliente quer falar com o vendedor';`)
+    expect((await call("/api/conversations/conv/human-request", "DELETE", "agent"))?.status).toBe(200)
+    expect(db.prepare("SELECT human_requested_at,assigned_to,assignment_revision FROM conversations").get()).toMatchObject({
+      human_requested_at: null, assigned_to: "user", assignment_revision: 3,
+    })
+    expect(db.prepare("SELECT ai_handoff_at,next_action FROM leads").get()).toMatchObject({
+      ai_handoff_at: expect.any(String), next_action: "Cliente quer falar com o vendedor",
+    })
+    expect((await call("/api/conversations/conv/human-request", "DELETE", "agent", "other"))?.status).toBe(404)
+    expect((await call("/api/conversations/conv/human-request", "DELETE", "agent"))?.status).toBe(200)
+    db.close()
+  })
+
   it("permite marcar como não lida para toda a equipe sem reduzir contagem existente", async () => {
     const { db, call } = setup()
     expect((await call("/api/conversations/conv/unread", "POST", "agent"))?.status).toBe(200)

@@ -1867,7 +1867,7 @@ export async function whatsappRoutes(
   }
 
   const match = path.match(
-    /^\/api\/conversations\/([\w-]+)\/(messages|read|unread|attachments|assignment)$/,
+    /^\/api\/conversations\/([\w-]+)\/(messages|read|unread|attachments|assignment|human-request)$/,
   )
 
   if (!match) return null
@@ -1892,6 +1892,13 @@ export async function whatsappRoutes(
     .first()
 
   if (!owned) return json({ error: "Conversa não encontrada." }, 404)
+
+  if (match[2] === "human-request" && request.method === "DELETE") {
+    await env.DB.prepare(
+      "UPDATE conversations SET human_requested_at=NULL,updated_at=CURRENT_TIMESTAMP WHERE id=? AND organization_id=?",
+    ).bind(conversationId, org).run()
+    return json({ ok: true })
+  }
 
   if (match[2] === "assignment" && request.method === "POST") {
     const body = await request.json<{ assignedTo?: unknown }>()

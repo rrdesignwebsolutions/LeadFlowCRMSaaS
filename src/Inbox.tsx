@@ -250,7 +250,7 @@ export default function Inbox({
   }
 
   function showMenu(kind: "conversation" | "message", id: string, x: number, y: number) {
-    setContextMenu({ kind, id, x: Math.max(8, Math.min(x, window.innerWidth - 210)), y: Math.max(8, Math.min(y, window.innerHeight - 130)) })
+    setContextMenu({ kind, id, x: Math.max(8, Math.min(x, window.innerWidth - 270)), y: Math.max(8, Math.min(y, window.innerHeight - 170)) })
   }
 
   useEffect(() => {
@@ -275,6 +275,15 @@ export default function Inbox({
       if (activeId === id) { setActiveId(null); setThread(null) }
       await loadList()
       onRead()
+    } catch (e) { setError(errorMessage(e)) }
+  }
+
+  async function clearHumanRequest(id: string) {
+    setContextMenu(null)
+    setError("")
+    try {
+      await api(`/api/conversations/${id}/human-request`, { method: "DELETE" })
+      await loadList()
     } catch (e) { setError(errorMessage(e)) }
   }
 
@@ -713,6 +722,12 @@ export default function Inbox({
                 className="inbox-head-action"
                 aria-label="Mais opções"
                 title="Mais opções"
+                aria-expanded={contextMenu?.kind === "conversation" && contextMenu.id === active.id}
+                onClick={(event) => {
+                  event.stopPropagation()
+                  const box = event.currentTarget.getBoundingClientRect()
+                  showMenu("conversation", active.id, box.left, box.bottom)
+                }}
               >
                 <MoreVertical size={19} />
               </button>
@@ -989,6 +1004,8 @@ export default function Inbox({
       {contextMenu && (
         <div className="inbox-context-menu" role="menu" style={{ left: contextMenu.x, top: contextMenu.y }} onClick={(event) => event.stopPropagation()}>
           {contextMenu.kind === "conversation" && <button type="button" role="menuitem" onClick={() => void markUnread(contextMenu.id)}>Marcar como não lida</button>}
+          {contextMenu.kind === "conversation" && list.some((item) => item.id === contextMenu.id && item.humanRequestedAt) &&
+            <button type="button" role="menuitem" onClick={() => void clearHumanRequest(contextMenu.id)}>Remover “Quer falar com vendedor”</button>}
           {isAdmin && <button type="button" role="menuitem" className="destructive" onClick={() => void removeItem(contextMenu.kind, contextMenu.id)}>
             {contextMenu.kind === "conversation" ? "Excluir conversa" : "Excluir mensagem"}
           </button>}

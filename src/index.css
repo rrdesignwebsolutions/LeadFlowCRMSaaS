@@ -377,7 +377,7 @@ h3 { font: 700 14px var(--font-display); }
   .inbox-exit span { display: none; }
   .content.inbox-content .inbox-sidebar-head { padding: 15px 13px 12px; }
   .content.inbox-content .inbox-chat-head { min-height: 62px; padding: 8px 10px; }
-  .content.inbox-content .inbox-chat-head .inbox-head-action { display: none; }
+  .content.inbox-content .inbox-chat-head .inbox-head-action[aria-label="Informações da conversa"] { display: none; }
   .content.inbox-content .inbox-assignment { flex-basis: 130px; }
   .content.inbox-content .inbox-composer { padding: 9px 10px; }
   .content.inbox-content .inbox-welcome { padding: 20px; }
