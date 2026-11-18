@@ -55,6 +55,33 @@ function database(duplicateMessage: { conversation_id: string } | null = null) {
         },
 
         async all() {
+          if (sql.includes("FROM catalog_delivery_batches b"))
+            return {
+              results: [
+                {
+                  id: "catalog-batch",
+                  deliveryJobId: "catalog-job",
+                  messageIds: JSON.stringify(["stored-message"]),
+                },
+              ],
+            }
+
+          if (sql.includes("SELECT status FROM messages WHERE organization_id")) {
+            const update = statements.find((statement) =>
+              statement.sql.includes("UPDATE messages SET status="),
+            )
+            return {
+              results: [
+                {
+                  status:
+                    typeof update?.args[0] === "string"
+                      ? update.args[0]
+                      : "accepted",
+                },
+              ],
+            }
+          }
+
           return { results: [{ id: "integration", organization_id: "org" }] }
         },
 

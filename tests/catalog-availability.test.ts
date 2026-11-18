@@ -1,5 +1,4 @@
 import { describe, expect, it, vi } from "vitest"
-import { PDFDocument } from "pdf-lib"
 
 import type { Env } from "../worker/index"
 
@@ -158,7 +157,7 @@ describe("disponibilidade no catálogo da IA", () => {
       })
   })
 
-  it("envia PDFs em lotes com todos os produtos aprovados, sem filtrar estoque ou fotos", async () => {
+  it("envia cada produto aprovado por texto e foto, sem filtrar por estoque", async () => {
     const products = Array.from({ length: 16 }, (_, index) =>
       product(
         `MODEL-${index + 1}`,
@@ -191,20 +190,19 @@ describe("disponibilidade no catálogo da IA", () => {
         null,
       ),
     )
-      .resolves.toMatchObject({
-        enviadas: 4,
-        erro: null,
-        modelosEnviados: products.map((item) => item.model),
-      })
+    .resolves.toMatchObject({
+      enviadas: 16,
+      erro: null,
+      modelosEnviados: products.map((item) => item.model),
+    })
 
-    expect(sendFileMock).toHaveBeenCalledTimes(4)
-    expect(sendTextMock).not.toHaveBeenCalled()
-    const includedIds: string[] = []
-    for (const [file] of sendFileMock.mock.calls.map((call) => [call[3]])) {
-      const pdf = await PDFDocument.load(await file.arrayBuffer())
-      includedIds.push(...(pdf.getSubject() ?? "").split(","))
-      expect(pdf.getPageCount()).toBeGreaterThan(0)
-    }
-    expect(includedIds).toEqual(products.map((item) => item.id))
+    expect(sendFileMock).toHaveBeenCalledTimes(15)
+    expect(sendTextMock).toHaveBeenCalledTimes(16)
+    expect(
+    sendTextMock.mock.calls.map((call) => String(call[3])),
+    ).toEqual(expect.arrayContaining(products.map((item) => expect.stringContaining(item.model))))
+    expect(
+    sendFileMock.mock.calls.every((call) => call[3].type === "image/jpeg"),
+    ).toBe(true)
   })
 })

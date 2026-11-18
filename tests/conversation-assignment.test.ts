@@ -25,6 +25,9 @@ function setup(options: { member?: boolean; assignedTo?: string | null; pending?
           if (sql.startsWith("SELECT assigned_to")) return { assignedTo: options.assignedTo ?? null }
           if (sql.includes("FROM ai_settings")) return { enabled: 1 }
           if (sql.startsWith("SELECT direction,type,status,external_id")) return options.pending ?? null
+          if (sql.includes("FROM whatsapp_processing_jobs")) {
+            return { id: "job", status: "processing", active: 1 }
+          }
           return null
         },
         async run() { statements.push({ sql, args: this.args }); return { meta: { changes: 1 } } },
@@ -65,14 +68,22 @@ describe("atribuição de conversas", () => {
     expect(statements).toHaveLength(0)
   })
 
-  it("devolve à IA e responde à última mensagem pendente", async () => {
+  it("coloca a mensagem pendente na fila e não chama a IA diretamente", async () => {
     const { call, env, statements } = setup({
       assignedTo: "agent",
       pending: { direction: "inbound", type: "text", externalId: "wamid", at: new Date().toISOString() },
     })
     const response = await call(null)
     expect(response?.status).toBe(200)
-    expect(autoReply).toHaveBeenCalledWith(env, "org", "conv", "wamid")
+    expect(await response?.json()).toMatchObject({
+      notice: "A IA já está processando a mensagem pendente.",
+    })
+    expect(autoReply).not.toHaveBeenCalledWith(env, "org", "conv", "wamid")
+    expect(
+      statements.some((statement) =>
+        statement.sql.includes("INSERT OR IGNORE INTO whatsapp_processing_jobs"),
+      ),
+    ).toBe(true)
     expect(statements.some((s) => s.sql.includes("ai_handoff_at=NULL"))).toBe(true)
   })
 

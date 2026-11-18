@@ -6,33 +6,27 @@ import { join } from "node:path"
 
 import { afterEach, describe, expect, it, vi } from "vitest"
 
-import {
-  decodePDFRawStream,
-  PDFArray,
-  PDFDocument,
-  PDFRawStream,
-} from "pdf-lib"
-
-import type { Env } from "../worker/index"
+import type { Env, Session } from "../worker/index"
 
 import {
   queueCatalogDelivery,
   processPendingCatalogDeliveries,
   recoverUnqueuedCatalogDeliveries,
+  sendCatalog,
 } from "../worker/catalog"
 
-import { createCatalogPdf } from "../worker/catalog-pdf"
-
-import { sendFile } from "../worker/whatsapp"
+import { sendFile, sendText } from "../worker/whatsapp"
 
 vi.mock("../worker/whatsapp", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../worker/whatsapp")>()
 
-  return { ...actual, sendFile: vi.fn() }
+  return { ...actual, sendFile: vi.fn(), sendText: vi.fn() }
 })
 
 function setup() {
   const db = new DatabaseSync(":memory:")
+
+  const files = new Map<string, Uint8Array>()
 
   for (const file of readdirSync("migrations")
 
@@ -96,9 +90,23 @@ function setup() {
         })
       },
     },
+
+    CATALOG: {
+      async get(key: string) {
+        const bytes = files.get(key)
+
+        if (!bytes) return null
+
+        return {
+          async arrayBuffer() {
+            return bytes.slice().buffer
+          },
+        }
+      },
+    },
   } as unknown as Env
 
-  return { db, env }
+  return { db, env, files }
 }
 
 function addProduct(
@@ -118,8 +126,9 @@ function addProduct(
 ) {
   db.prepare(
     `INSERT INTO catalog_products(
-      id,organization_id,name,model,status,authorized_for_sale,availability,description
-    ) VALUES(?,?,?,?,?,?,?,?)`,
+      id,organization_id,name,model,status,authorized_for_sale,availability,
+      description,specs,price_text,sale_price_text
+    ) VALUES(?,?,?,?,?,?,?,?,?,?,?)`,
   ).run(
     id,
 
@@ -136,71 +145,57 @@ function addProduct(
     options.availability ?? "unknown",
 
     `Descrição comercial verificada ${id}`,
+
+    JSON.stringify([{ label: "Autonomia", value: "50 km" }]),
+
+    "R$ 10.000",
+
+    "R$ 9.500",
   )
 }
 
-function mockAcceptedFiles() {
-  const mock = vi.mocked(sendFile)
+function addImage(
+  db: DatabaseSync,
 
-  mock.mockReset()
+  productId: string,
 
-  mock.mockImplementation(async () => {
-    const messageId = `accepted-${mock.mock.calls.length}`
+  key: string,
 
-    return new Response(JSON.stringify({ messageId }), { status: 200 })
+  organizationId = "org",
+) {
+  db.prepare(
+    `INSERT INTO catalog_images(
+      id,organization_id,product_id,r2_key,mime,size,is_primary
+    ) VALUES(?,?,?,?,?,?,1)`,
+  ).run(`image-${productId}`, organizationId, productId, key, "image/png", 4)
+}
+
+function mockAcceptedMessages() {
+  const textMock = vi.mocked(sendText)
+
+  const fileMock = vi.mocked(sendFile)
+
+  textMock.mockReset()
+
+  fileMock.mockReset()
+
+  textMock.mockImplementation(async () => {
+    return new Response(
+      JSON.stringify({ messageId: `text-${textMock.mock.calls.length}` }),
+
+      { status: 200 },
+    )
   })
 
-  return mock
-}
+  fileMock.mockImplementation(async () => {
+    return new Response(
+      JSON.stringify({ messageId: `image-${fileMock.mock.calls.length}` }),
 
-async function includedPdfIds(mock: ReturnType<typeof mockAcceptedFiles>) {
-  const ids: string[] = []
+      { status: 200 },
+    )
+  })
 
-  for (const call of mock.mock.calls) {
-    const file = call[3]
-
-    const pdf = await PDFDocument.load(await file.arrayBuffer())
-
-    ids.push(...(pdf.getSubject() ?? "").split(",").filter(Boolean))
-
-    expect(pdf.getPageCount()).toBeGreaterThan(0)
-  }
-
-  return ids
-}
-
-async function pdfText(file: File) {
-  const pdf = await PDFDocument.load(await file.arrayBuffer())
-
-  const text: string[] = []
-
-  for (const page of pdf.getPages()) {
-    const contents = pdf.context.lookup(page.node.Contents())
-
-    const streams =
-      contents instanceof PDFArray ? contents.asArray() : [page.node.Contents()]
-
-    for (const reference of streams) {
-      const stream = pdf.context.lookup(reference)
-
-      if (!(stream instanceof PDFRawStream))
-        throw new Error("O conteúdo da página do PDF não é um stream.")
-
-      text.push(new TextDecoder().decode(decodePDFRawStream(stream).decode()))
-    }
-  }
-
-  return text.join("\n")
-}
-
-function pdfHexText(value: string) {
-  return `<${Array.from(new TextEncoder().encode(value), (byte) =>
-    byte.toString(16).padStart(2, "0"),
-  )
-
-    .join("")
-
-    .toUpperCase()}> Tj`
+  return { textMock, fileMock }
 }
 
 afterEach(() => {
@@ -208,52 +203,8 @@ afterEach(() => {
 })
 
 describe("envio integral do catálogo aprovado", () => {
-  it("inclui todas as fotos cadastradas para o produto no PDF", async () => {
-    const png = Uint8Array.from(
-      Buffer.from(
-        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/lFcAAAAASUVORK5CYII=",
-        "base64",
-      ),
-    )
-    const pdf = await createCatalogPdf(
-      [
-        {
-          id: "MODEL",
-          name: "Scooter MODEL",
-          model: "MODEL",
-          version: null,
-          brand: "GoO",
-          category: "Scooter",
-          description: "Descrição verificada",
-          specs: [],
-          priceText: null,
-          salePriceText: null,
-          cardInstallments: null,
-          cardInstallmentText: null,
-        },
-      ],
-      new Map([
-        [
-          "MODEL",
-          [
-            { mime: "image/png", bytes: png },
-            { mime: "image/png", bytes: png },
-          ],
-        ],
-      ]),
-      "Financiamento sujeito à aprovação.",
-    )
-    const file = new File([pdf], "catalogo.pdf", {
-      type: "application/pdf",
-    })
-    const pageContent = await pdfText(file)
-
-    expect(pageContent).toContain(pdfHexText("Scooter MODEL - fotos"))
-    expect(pageContent.match(/\bDo\b/g)).toHaveLength(2)
-  })
-
-  it("inclui 20 aprovados com apenas 5 em estoque e registra ficha textual sem foto", async () => {
-    const { db, env } = setup()
+  it("envia os 20 aprovados sem exigir estoque ou fotografia e inclui preço, especificações e foto disponível", async () => {
+    const { db, env, files } = setup()
 
     const approvedIds = Array.from(
       { length: 20 },
@@ -273,7 +224,11 @@ describe("envio integral do catálogo aprovado", () => {
 
     addProduct(db, "OUTRA-EMPRESA", "org-other")
 
-    const mock = mockAcceptedFiles()
+    files.set("photo-GOO-1", Uint8Array.from([1, 2, 3, 4]))
+
+    addImage(db, "GOO-1", "photo-GOO-1")
+
+    const { textMock, fileMock } = mockAcceptedMessages()
 
     const queued = await queueCatalogDelivery(env, "org", "conv", "inbound-20")
 
@@ -286,50 +241,44 @@ describe("envio integral do catálogo aprovado", () => {
 
       totalIncluidos: 20,
 
-      totalLotes: 5,
+      totalLotes: 20,
     })
 
     await processPendingCatalogDeliveries(env, "org", "conv", 10)
 
-    expect((await includedPdfIds(mock)).sort()).toEqual([...approvedIds].sort())
+    const sentTexts = textMock.mock.calls.map((call) => String(call[3]))
 
-    for (const call of mock.mock.calls) {
-      const pdf = await PDFDocument.load(await call[3].arrayBuffer())
+    expect(sentTexts).toHaveLength(20)
 
-      const text = await pdfText(call[3])
+    for (const id of approvedIds)
+      expect(sentTexts.join("\n")).toContain(`*${id}*`)
 
-      for (const id of (pdf.getSubject() ?? "").split(","))
-        expect(text).toContain(pdfHexText(`Modelo: ${id}`))
-    }
+    expect(sentTexts.join("\n")).not.toContain("PENDENTE")
 
-    expect(mock).toHaveBeenCalledTimes(5)
+    expect(sentTexts.join("\n")).not.toContain("REPROVADO")
+
+    expect(sentTexts.join("\n")).toContain("R$ 9.500")
+
+    expect(sentTexts.join("\n")).toContain("Autonomia: 50 km")
+
+    expect(fileMock).toHaveBeenCalledOnce()
+
+    expect(fileMock.mock.calls[0]?.[3]).toMatchObject({ type: "image/png" })
+
+    expect(String(fileMock.mock.calls[0]?.[4])).toContain("R$ 9.500")
 
     expect(
-      db
-
-        .prepare(
-          "SELECT status,total_approved,total_selected,total_included FROM catalog_delivery_jobs",
-        )
-
-        .get(),
-    ).toMatchObject({
-      status: "completed",
-
-      total_approved: 20,
-
-      total_selected: 20,
-
-      total_included: 20,
-    })
+      db.prepare("SELECT status FROM catalog_delivery_jobs").get(),
+    ).toMatchObject({ status: "completed" })
 
     expect(
       db.prepare("SELECT product_ids FROM catalog_delivery_batches").all(),
-    ).toHaveLength(5)
+    ).toHaveLength(20)
 
     db.close()
   })
 
-  it("inclui 30 aprovados em várias páginas, inclusive modelo fora da lista histórica", async () => {
+  it("envia 30 modelos em sequência, inclusive produto fora da lista histórica", async () => {
     const { db, env } = setup()
 
     const approvedIds = Array.from(
@@ -344,7 +293,7 @@ describe("envio integral do catálogo aprovado", () => {
         availability: index < 5 ? "in_stock" : "unknown",
       })
 
-    const mock = mockAcceptedFiles()
+    const { textMock, fileMock } = mockAcceptedMessages()
 
     const queued = await queueCatalogDelivery(env, "org", "conv", "inbound-30")
 
@@ -355,78 +304,58 @@ describe("envio integral do catálogo aprovado", () => {
 
       totalIncluidos: 30,
 
-      totalLotes: 8,
+      totalLotes: 30,
     })
 
     await processPendingCatalogDeliveries(env, "org", "conv", 10)
 
-    expect((await includedPdfIds(mock)).sort()).toEqual([...approvedIds].sort())
+    const sentTexts = textMock.mock.calls
+      .map((call) => String(call[3]))
+      .join("\n")
 
-    expect(mock).toHaveBeenCalledTimes(8)
+    for (const id of approvedIds) expect(sentTexts).toContain(`*${id}*`)
 
-    db.close()
-  })
+    expect(textMock).toHaveBeenCalledTimes(30)
 
-  it("recupera o catálogo se a saudação foi aceita antes de uma interrupção", async () => {
-    const { db, env } = setup()
-    addProduct(db, "RECUPERADO", "org")
-    db.prepare(
-      `UPDATE conversations SET ai_catalog_status='ENVIANDO',
-       ai_catalog_source_external_id='inbound-orphan' WHERE id='conv'`,
-    ).run()
-    db.prepare(
-      `INSERT INTO messages(
-        id,organization_id,conversation_id,direction,type,body,status,is_ai,ai_reply_key
-      ) VALUES('welcome','org','conv','outbound','text','Saudação','accepted',1,
-        'ai:inbound-orphan:welcome')`,
-    ).run()
+    expect(fileMock).not.toHaveBeenCalled()
 
-    const mock = mockAcceptedFiles()
-    expect(await recoverUnqueuedCatalogDeliveries(env)).toBe(1)
-    await processPendingCatalogDeliveries(env, "org", "conv", 1)
-
-    expect(mock).toHaveBeenCalledOnce()
     expect(
       db.prepare("SELECT status FROM catalog_delivery_jobs").get(),
     ).toMatchObject({ status: "completed" })
+
     db.close()
   })
 
-  it("retoma no terceiro lote após rejeição recuperável sem reenviar lotes já aceitos", async () => {
+  it("retoma no terceiro produto após rejeição recuperável sem duplicar os anteriores", async () => {
     const { db, env } = setup()
 
-    for (let index = 1; index <= 12; index++)
+    for (let index = 1; index <= 5; index++)
       addProduct(db, `RETRY-${index}`, "org")
 
-    const mock = vi.mocked(sendFile)
+    const textMock = vi.mocked(sendText)
 
-    mock.mockReset()
+    vi.mocked(sendFile).mockReset()
 
-    mock.mockImplementation(
-      async (
-        _env,
-        _sender,
-        _conversationId,
-        _file,
-        _caption,
-        _revision,
-        replyKey,
-      ) => {
-        const callNumber = mock.mock.calls.length
+    textMock.mockReset()
+
+    textMock.mockImplementation(
+      async (_env, _sender, _conversation, text, options) => {
+        const callNumber = textMock.mock.calls.length
 
         if (callNumber === 3) {
           const messageId = "failed-third-attempt"
 
           db.prepare(
             `INSERT INTO messages(
-            id,organization_id,conversation_id,direction,type,body,status,is_ai,ai_reply_key,error_code
-          ) VALUES(?, 'org','conv','outbound','document','PDF','failed',1,?,'131000')`,
-          ).run(messageId, replyKey)
+            id,organization_id,conversation_id,direction,type,body,status,is_ai,
+            ai_reply_key,error_code
+          ) VALUES(?, 'org','conv','outbound','text',?,'failed',1,?,'131000')`,
+          ).run(messageId, String(text), options?.aiReplyKey)
 
           return new Response(
             JSON.stringify({
               messageId,
-              error: "Meta recusou temporariamente o lote.",
+              error: "Meta recusou temporariamente o item.",
             }),
 
             { status: 500 },
@@ -435,9 +364,8 @@ describe("envio integral do catálogo aprovado", () => {
 
         return new Response(
           JSON.stringify({ messageId: `accepted-${callNumber}` }),
-          {
-            status: 200,
-          },
+
+          { status: 200 },
         )
       },
     )
@@ -446,15 +374,7 @@ describe("envio integral do catálogo aprovado", () => {
 
     await processPendingCatalogDeliveries(env, "org", "conv", 1)
 
-    expect(mock).toHaveBeenCalledTimes(3)
-
-    expect(
-      db
-
-        .prepare("SELECT status FROM catalog_delivery_jobs")
-
-        .get(),
-    ).toMatchObject({ status: "pending" })
+    expect(textMock).toHaveBeenCalledTimes(3)
 
     expect(
       db
@@ -470,6 +390,10 @@ describe("envio integral do catálogo aprovado", () => {
       { status: "accepted" },
 
       { status: "pending" },
+
+      { status: "pending" },
+
+      { status: "pending" },
     ])
 
     db.exec(
@@ -478,25 +402,101 @@ describe("envio integral do catálogo aprovado", () => {
 
     await processPendingCatalogDeliveries(env, "org", "conv", 10)
 
-    expect(mock).toHaveBeenCalledTimes(4)
+    expect(textMock).toHaveBeenCalledTimes(6)
 
-    expect(mock.mock.calls.map((call) => call[6])).toEqual([
-      expect.stringContaining(":batch:0:attempt:1"),
+    expect(
+      textMock.mock.calls.map((call) => call[4]?.aiReplyKey),
+    ).toEqual([
+      expect.stringContaining(":batch:0:product:RETRY-1:text:0:attempt:1"),
 
-      expect.stringContaining(":batch:1:attempt:1"),
+      expect.stringContaining(":batch:1:product:RETRY-2:text:0:attempt:1"),
 
-      expect.stringContaining(":batch:2:attempt:1"),
+      expect.stringContaining(":batch:2:product:RETRY-3:text:0:attempt:1"),
 
-      expect.stringContaining(":batch:2:attempt:2"),
+      expect.stringContaining(":batch:2:product:RETRY-3:text:0:attempt:2"),
+
+      expect.stringContaining(":batch:3:product:RETRY-4:text:0:attempt:1"),
+
+      expect.stringContaining(":batch:4:product:RETRY-5:text:0:attempt:1"),
     ])
 
     expect(
-      db
-
-        .prepare("SELECT status FROM catalog_delivery_jobs")
-
-        .get(),
+      db.prepare("SELECT status FROM catalog_delivery_jobs").get(),
     ).toMatchObject({ status: "completed" })
+
+    db.close()
+  })
+
+  it("retoma o catálogo se a saudação foi aceita antes de uma interrupção", async () => {
+    const { db, env } = setup()
+
+    addProduct(db, "RECUPERADO", "org")
+
+    db.prepare(
+      `UPDATE conversations SET ai_catalog_status='ENVIANDO',
+       ai_catalog_source_external_id='inbound-orphan' WHERE id='conv'`,
+    ).run()
+
+    db.prepare(
+      `INSERT INTO messages(
+        id,organization_id,conversation_id,direction,type,body,status,is_ai,ai_reply_key
+      ) VALUES('welcome','org','conv','outbound','text','Saudação','accepted',1,
+        'ai:inbound-orphan:welcome')`,
+    ).run()
+
+    const { textMock } = mockAcceptedMessages()
+
+    expect(await recoverUnqueuedCatalogDeliveries(env)).toBe(1)
+
+    await processPendingCatalogDeliveries(env, "org", "conv", 1)
+
+    expect(textMock).toHaveBeenCalledOnce()
+
+    expect(
+      db.prepare("SELECT status FROM catalog_delivery_jobs").get(),
+    ).toMatchObject({ status: "completed" })
+
+    db.close()
+  })
+
+  it("envia manualmente por produto e não cria documentos PDF", async () => {
+    const { db, env, files } = setup()
+
+    addProduct(db, "MANUAL", "org")
+
+    files.set("manual-photo", Uint8Array.from([5, 6, 7]))
+
+    addImage(db, "MANUAL", "manual-photo")
+
+    const { textMock, fileMock } = mockAcceptedMessages()
+
+    const result = await sendCatalog(
+      env,
+
+      { userId: "user", organizationId: "org", role: "admin" } as Session,
+
+      "conv",
+
+      ["MANUAL"],
+    )
+
+    expect(result).toMatchObject({
+      status: "ENVIADO",
+
+      totalSelecionados: 1,
+
+      totalIncluidos: 1,
+
+      totalAceitos: 1,
+    })
+
+    expect(textMock).toHaveBeenCalledOnce()
+
+    expect(String(textMock.mock.calls[0]?.[3])).toContain("Autonomia: 50 km")
+
+    expect(fileMock).toHaveBeenCalledOnce()
+
+    expect(fileMock.mock.calls[0]?.[3]).toMatchObject({ type: "image/png" })
 
     db.close()
   })
