@@ -39,9 +39,24 @@ function setup() {
     DB: adapter,
     APP_ORIGIN: "https://example.test",
   } as unknown as Env
-  const call = (path: string, method: string, role: Session["role"] = "admin", organizationId = "org") => {
+  const call = (
+    path: string,
+    method: string,
+    role: Session["role"] = "admin",
+    organizationId = "org",
+    body?: unknown,
+  ) => {
     const url = new URL(`https://example.com${path}`)
-    return whatsappRoutes(new Request(url, { method }), env, url, { userId: "user", organizationId, role })
+    return whatsappRoutes(
+      new Request(url, {
+        method,
+        headers: body === undefined ? undefined : { "content-type": "application/json" },
+        body: body === undefined ? undefined : JSON.stringify(body),
+      }),
+      env,
+      url,
+      { userId: "user", organizationId, role },
+    )
   }
   return { db, env, call }
 }
@@ -120,6 +135,57 @@ describe("ações da caixa de entrada", () => {
         followUpAt: null,
       }],
     })
+    db.close()
+  })
+
+  it("marca prioridade, exibe a etiqueta e ordena a conversa acima das demais", async () => {
+    const { db, call } = setup()
+    db.exec(`
+      INSERT INTO contacts(id,organization_id,phone_e164)
+        VALUES('priority-contact','org','15559876543');
+      INSERT INTO conversations(
+        id,organization_id,contact_id,integration_id,last_message_at
+      ) VALUES(
+        'priority-conv','org','priority-contact','integration','2020-01-01T00:00:00.000Z'
+      );
+    `)
+
+    const response = await call(
+      "/api/conversations/priority-conv/priority",
+      "POST",
+      "admin",
+      "org",
+      { priority: true },
+    )
+    expect(response?.status).toBe(200)
+    expect(await response?.json()).toMatchObject({ ok: true, priority: true })
+    expect(
+      db
+        .prepare("SELECT priority FROM conversations WHERE id='priority-conv'")
+        .get(),
+    ).toMatchObject({ priority: 1 })
+
+    const list = await call("/api/conversations", "GET")
+    expect(await list?.json()).toMatchObject({
+      results: [
+        { id: "priority-conv", priority: 1 },
+        { id: "conv", priority: 0 },
+      ],
+    })
+
+    const cleared = await call(
+      "/api/conversations/priority-conv/priority",
+      "POST",
+      "admin",
+      "org",
+      { priority: false },
+    )
+    expect(await cleared?.json()).toMatchObject({ ok: true, priority: false })
+    expect(
+      db
+        .prepare("SELECT priority FROM conversations WHERE id='priority-conv'")
+        .get(),
+    ).toMatchObject({ priority: 0 })
     db.close()
   })
 

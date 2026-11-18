@@ -91,6 +91,7 @@ type Conversation = {
   aiSummary: string | null
 
   humanRequestedAt?: string | null
+  priority: number
   assignedTo: string | null
   aiState: "IA_ATIVA" | "HUMANO"
 }
@@ -373,6 +374,23 @@ export default function Inbox({
     setError("")
     try {
       await api(`/api/conversations/${id}/human-request`, { method: "DELETE" })
+      await loadList()
+    } catch (e) {
+      setError(errorMessage(e))
+    }
+  }
+
+  async function togglePriority(id: string) {
+    const conversation = list.find((item) => item.id === id)
+    if (!conversation) return
+
+    setContextMenu(null)
+    setError("")
+    try {
+      await api(`/api/conversations/${id}/priority`, {
+        method: "POST",
+        body: { priority: !conversation.priority },
+      })
       await loadList()
     } catch (e) {
       setError(errorMessage(e))
@@ -763,6 +781,9 @@ export default function Inbox({
                   <span className="inbox-conversation-copy">
                     <span className="inbox-conversation-top">
                       <b>{label}</b>
+                      {conversation.priority === 1 && (
+                        <span className="inbox-priority">Prioridade</span>
+                      )}
                       {conversation.humanRequestedAt && (
                             <span className="inbox-human">
                               Quer falar com vendedor
@@ -1400,6 +1421,17 @@ export default function Inbox({
               onClick={() => editLead(contextMenu.id)}
             >
               Qualificar lead / agendar follow-up
+            </button>
+          )}
+          {contextMenu.kind === "conversation" && (
+            <button
+              type="button"
+              role="menuitem"
+              onClick={() => void togglePriority(contextMenu.id)}
+            >
+              {list.find((item) => item.id === contextMenu.id)?.priority === 1
+                ? "Remover prioridade"
+                : "Dar prioridade"}
             </button>
           )}
           {contextMenu.kind === "conversation" && (

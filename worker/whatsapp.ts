@@ -4410,7 +4410,7 @@ export async function whatsappRoutes(
 
   if (path === "/api/conversations" && request.method === "GET") {
     return json(
-      await env.DB.prepare(`SELECT c.id,c.unread_count unread,c.last_message_at lastMessageAt,c.human_requested_at humanRequestedAt,c.assigned_to assignedTo,c.ai_state aiState,ct.name,ct.phone_e164 phone,
+      await env.DB.prepare(`SELECT c.id,c.unread_count unread,c.last_message_at lastMessageAt,c.human_requested_at humanRequestedAt,c.priority priority,c.assigned_to assignedTo,c.ai_state aiState,ct.name,ct.phone_e164 phone,
       l.id leadId,${effectiveLeadStatus("l")} leadStatus,l.product_interest productInterest,l.next_action nextAction,
       l.follow_up_at followUpAt,l.notes leadNotes,l.loss_reason lossReason,l.ai_score aiScore,l.ai_summary aiSummary,
       (SELECT m.body FROM messages m WHERE m.conversation_id=c.id AND m.organization_id=c.organization_id ORDER BY COALESCE(m.external_created_at,strftime('%Y-%m-%dT%H:%M:%fZ',m.created_at)) DESC,m.rowid DESC LIMIT 1) preview,
@@ -4418,6 +4418,7 @@ export async function whatsappRoutes(
       FROM conversations c JOIN contacts ct ON ct.id=c.contact_id AND ct.organization_id=c.organization_id
       LEFT JOIN leads l ON l.contact_id=ct.id AND l.organization_id=c.organization_id
       WHERE c.organization_id=? ORDER BY
+        c.priority DESC,
         (c.human_requested_at IS NOT NULL) DESC,
         (leadStatus='hot') DESC,
         c.last_message_at DESC LIMIT 200`)
@@ -4560,7 +4561,7 @@ export async function whatsappRoutes(
   }
 
   const match = path.match(
-    /^\/api\/conversations\/([\w-]+)\/(messages|read|unread|attachments|assignment|human-request)$/,
+    /^\/api\/conversations\/([\w-]+)\/(messages|read|unread|attachments|assignment|human-request|priority)$/,
   )
 
   if (!match) return null
@@ -4601,6 +4602,20 @@ export async function whatsappRoutes(
       .run()
 
     return json({ ok: true })
+  }
+
+  if (match[2] === "priority" && request.method === "POST") {
+    const body = await request.json<{ priority?: unknown }>().catch(() => ({}))
+    if (typeof body.priority !== "boolean")
+      return json({ error: "Informe se a conversa deve ter prioridade." }, 400)
+
+    await env.DB.prepare(
+      "UPDATE conversations SET priority=?,updated_at=CURRENT_TIMESTAMP WHERE id=? AND organization_id=?",
+    )
+      .bind(body.priority ? 1 : 0, conversationId, org)
+      .run()
+
+    return json({ ok: true, priority: body.priority })
   }
 
   if (match[2] === "assignment" && request.method === "POST") {
