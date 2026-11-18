@@ -5,6 +5,7 @@ import {
   ArrowRight,
   Ban,
   Bot,
+  ChevronRight,
   Code2,
   Copy,
   Ellipsis,
@@ -14,6 +15,7 @@ import {
   Eye,
   GitBranch,
   MessageSquareText,
+  Pencil,
   Play,
   Plus,
   RotateCcw,
@@ -29,6 +31,7 @@ import { api, errorMessage } from "./api"
 import { DEFAULT_WORKFLOW } from "../worker/workflow-model"
 
 type NodeType = "trigger" | "condition" | "action"
+type BlockCategory = "event" | "agent" | "action" | "condition" | "exit"
 type Node = {
   id: string
   type: NodeType
@@ -87,6 +90,38 @@ const types: Record<NodeType, Array<{ value: string; label: string }>> = {
   ],
 }
 
+const blockCategories: Array<{ id: BlockCategory; label: string }> = [
+  { id: "event", label: "Evento" },
+  { id: "agent", label: "Agente" },
+  { id: "action", label: "Ação" },
+  { id: "condition", label: "Condição" },
+  { id: "exit", label: "Saída" },
+]
+
+const blockTemplates: Array<{
+  category: BlockCategory
+  type: NodeType
+  kind: string
+  title: string
+  description: string
+}> = [
+  { category: "event", type: "trigger", kind: "message_received", title: "Nova mensagem recebida", description: "Quando uma nova mensagem chegar à conversa." },
+  { category: "event", type: "trigger", kind: "message_contains", title: "Mensagem corresponde", description: "Quando a mensagem incluir um texto definido." },
+  { category: "event", type: "trigger", kind: "button_reply", title: "Resposta de botão", description: "Quando o cliente responder a um botão." },
+  { category: "agent", type: "action", kind: "reply_with_ai", title: "Responder com IA", description: "Continuar a conversa com o assistente de IA." },
+  { category: "agent", type: "action", kind: "assign_to_human", title: "Encaminhar para equipe", description: "Sinalizar que a conversa precisa de atendimento humano." },
+  { category: "action", type: "action", kind: "send_message", title: "Enviar mensagem", description: "Adicionar uma mensagem à conversa." },
+  { category: "action", type: "action", kind: "private_note", title: "Nota interna", description: "Adicionar uma nota visível apenas para a equipe." },
+  { category: "action", type: "action", kind: "update_lead", title: "Atualizar lead e follow-up", description: "Registrar status, interesse e próxima ação." },
+  { category: "action", type: "action", kind: "set_priority", title: "Definir prioridade", description: "Marcar ou remover a prioridade da conversa." },
+  { category: "condition", type: "condition", kind: "message_contains", title: "Mensagem contém", description: "Separar o fluxo conforme o texto recebido." },
+  { category: "condition", type: "condition", kind: "lead_status", title: "Status do lead", description: "Verificar o status atual do lead." },
+  { category: "condition", type: "condition", kind: "is_priority", title: "Conversa prioritária", description: "Verificar se a conversa está marcada como prioritária." },
+  { category: "condition", type: "condition", kind: "human_requested", title: "Pedido de atendimento humano", description: "Verificar se o cliente pediu uma pessoa." },
+  { category: "condition", type: "condition", kind: "has_follow_up", title: "Follow-up agendado", description: "Verificar se a conversa tem follow-up." },
+  { category: "exit", type: "action", kind: "stop", title: "Parar fluxo", description: "Encerrar este caminho da automação." },
+]
+
 const leadStatuses = [
   ["new", "Novo"],
   ["not_contacted", "Não contatado"],
@@ -103,6 +138,8 @@ const leadStatuses = [
 const makeId = () => `node-${crypto.randomUUID().slice(0, 8)}`
 
 function nodeLabel(node: Node) {
+  const customLabel = node.config.customLabel
+  if (typeof customLabel === "string" && customLabel.trim()) return customLabel.trim()
   return types[node.type].find((item) => item.value === node.kind)?.label ?? node.kind
 }
 
@@ -179,10 +216,12 @@ type WorkflowCanvasProps = {
   nodeUsage: Map<string, number>
   connectionSource: { nodeId: string; handle?: "true" | "false" } | null
   onSelect: (nodeId: string) => void
+  onRemove: (nodeId: string) => void
+  onDuplicate: (nodeId: string) => void
   onMove: (nodeId: string, position: { x: number; y: number }) => void
   onStartConnection: (nodeId: string, handle?: "true" | "false") => void
   onConnect: (targetId: string) => void
-  onAddNode: (type: NodeType) => void
+  onAddNode: (type: NodeType, kind: string, config?: Record<string, unknown>) => void
   onZoom: (amount: number) => void
   onReset: () => void
 }
@@ -197,6 +236,8 @@ function WorkflowCanvas({
   nodeUsage,
   connectionSource,
   onSelect,
+  onRemove,
+  onDuplicate,
   onMove,
   onStartConnection,
   onConnect,
@@ -204,6 +245,10 @@ function WorkflowCanvas({
   onZoom,
   onReset,
 }: WorkflowCanvasProps) {
+  const [pickerOpen, setPickerOpen] = useState(false)
+  const [pickerCategory, setPickerCategory] = useState<BlockCategory | null>(null)
+  const [pickerSearch, setPickerSearch] = useState("")
+  const [openNodeMenuId, setOpenNodeMenuId] = useState("")
   const [positions, setPositions] = useState<Record<string, { x: number; y: number }>>(() =>
     Object.fromEntries(nodes.map((node, index) => [node.id, node.position ?? { x: 100 + index * 340, y: 120 }])),
   )
@@ -266,6 +311,19 @@ function WorkflowCanvas({
   const stageWidth = Math.max(1500, ...nodes.map((node) => positionOf(node.id).x + nodeWidth + 180))
   const stageHeight = Math.max(1000, ...nodes.map((node) => positionOf(node.id).y + nodeHeight(node) + 180))
   const triggerNode = nodes.find((node) => node.type === "trigger")
+  const normalizedSearch = pickerSearch.trim().toLowerCase()
+  const visibleTemplates = blockTemplates.filter((template) => {
+    const categoryMatches = !pickerCategory || template.category === pickerCategory
+    const searchMatches = !normalizedSearch || `${template.title} ${template.description} ${template.category}`.toLowerCase().includes(normalizedSearch)
+    return categoryMatches && searchMatches
+  })
+
+  function chooseTemplate(template: (typeof blockTemplates)[number]) {
+    onAddNode(template.type, template.kind)
+    setPickerOpen(false)
+    setPickerCategory(null)
+    setPickerSearch("")
+  }
 
   function centerMiniMap(event: ReactPointerEvent<HTMLButtonElement>) {
     const bounds = event.currentTarget.getBoundingClientRect()
@@ -281,6 +339,12 @@ function WorkflowCanvas({
 
   function beginPan(event: ReactPointerEvent<HTMLDivElement>) {
     const target = event.target as HTMLElement
+    if (!target.closest(".workflow-canvas-add, .workflow-block-picker")) {
+      setPickerOpen(false)
+      setPickerCategory(null)
+      setPickerSearch("")
+    }
+    if (!target.closest(".workflow-node-actions")) setOpenNodeMenuId("")
     if (target.closest("button, article")) return
     interaction.current = {
       type: "pan",
@@ -418,6 +482,55 @@ function WorkflowCanvas({
                             ? "Fim deste caminho"
                             : "Configure esta etapa no painel"}
               </div>
+              {canEdit && (
+                <div className="workflow-node-actions" onPointerDown={(event) => event.stopPropagation()}>
+                  <button
+                    type="button"
+                    aria-label={`Editar bloco ${nodeLabel(node)}`}
+                    title="Editar bloco"
+                    onClick={(event) => { event.stopPropagation(); onSelect(node.id) }}
+                  >
+                    <Pencil size={14} />
+                  </button>
+                  {node.type !== "trigger" && (
+                    <>
+                      <button
+                        type="button"
+                        aria-label={`Excluir bloco ${nodeLabel(node)}`}
+                        title="Excluir bloco"
+                        onClick={(event) => { event.stopPropagation(); onRemove(node.id) }}
+                      >
+                        <Trash2 size={14} />
+                      </button>
+                      <button
+                        type="button"
+                        aria-label={`Mais opções para ${nodeLabel(node)}`}
+                        title="Mais opções"
+                        aria-expanded={openNodeMenuId === node.id}
+                        onClick={(event) => {
+                          event.stopPropagation()
+                          setOpenNodeMenuId((current) => current === node.id ? "" : node.id)
+                        }}
+                      >
+                        <Ellipsis size={15} />
+                      </button>
+                    </>
+                  )}
+                  {openNodeMenuId === node.id && (
+                    <div className="workflow-node-menu" role="menu" onClick={(event) => event.stopPropagation()}>
+                      <button type="button" role="menuitem" onClick={() => { onSelect(node.id); setOpenNodeMenuId("") }}>
+                        <Pencil size={14} /> Renomear bloco
+                      </button>
+                      <button type="button" role="menuitem" onClick={() => { onDuplicate(node.id); setOpenNodeMenuId("") }}>
+                        <Copy size={14} /> Duplicar no fluxo
+                      </button>
+                      <button type="button" role="menuitem" className="danger" onClick={() => { onRemove(node.id); setOpenNodeMenuId("") }}>
+                        <Trash2 size={14} /> Excluir bloco
+                      </button>
+                    </div>
+                  )}
+                </div>
+              )}
               {outgoing.map((handle) => (
                 <button
                   key={handle ?? "default"}
@@ -441,12 +554,79 @@ function WorkflowCanvas({
       </div>
       {canEdit && (
         <div className="workflow-canvas-add">
-          <button type="button" className="workflow-canvas-add-main" aria-label="Adicionar etapa" title="Adicionar etapa"><Plus size={19} /></button>
-          <div className="workflow-canvas-add-menu">
-            <button type="button" onClick={() => onAddNode("condition")}><GitBranch size={15} /> Condição</button>
-            <button type="button" onClick={() => onAddNode("action")}><Sparkles size={15} /> Ação</button>
-          </div>
+          <button
+            type="button"
+            className="workflow-canvas-add-main"
+            aria-label="Adicionar bloco"
+            title="Adicionar bloco"
+            aria-expanded={pickerOpen}
+            onClick={() => {
+              setPickerOpen((open) => !open)
+              setPickerCategory(null)
+              setPickerSearch("")
+            }}
+          >
+            <Plus size={19} />
+          </button>
         </div>
+      )}
+      {canEdit && pickerOpen && (
+        <section
+          className="workflow-block-picker"
+          role="dialog"
+          aria-label="Selecionar bloco para o fluxo"
+          onPointerDown={(event) => event.stopPropagation()}
+        >
+          <header className="workflow-block-picker-header">
+            {pickerCategory && (
+              <button type="button" aria-label="Voltar às categorias" onClick={() => setPickerCategory(null)}>
+                <ArrowLeft size={16} />
+              </button>
+            )}
+            <b>{pickerCategory ? "Selecionar modelo" : "Selecionar tipo de bloco"}</b>
+            <button
+              type="button"
+              aria-label="Fechar seleção de blocos"
+              onClick={() => { setPickerOpen(false); setPickerCategory(null); setPickerSearch("") }}
+            >
+              <X size={16} />
+            </button>
+          </header>
+          <label className="workflow-block-picker-search">
+            <Search size={16} />
+            <input
+              value={pickerSearch}
+              onChange={(event) => setPickerSearch(event.target.value)}
+              placeholder="Introduza para pesquisar"
+              aria-label="Pesquisar blocos"
+            />
+          </label>
+          <div className="workflow-block-picker-list">
+            {!pickerCategory && !normalizedSearch ? blockCategories.map((category) => (
+              <button
+                type="button"
+                className="workflow-block-picker-category"
+                key={category.id}
+                onClick={() => setPickerCategory(category.id)}
+              >
+                <span>{category.label}</span><ChevronRight size={16} />
+              </button>
+            )) : visibleTemplates.map((template) => (
+              <button
+                type="button"
+                className="workflow-block-picker-template"
+                key={`${template.type}-${template.kind}`}
+                onClick={() => chooseTemplate(template)}
+              >
+                <b>{template.title}</b>
+                <small>{template.description}</small>
+              </button>
+            ))}
+            {((pickerCategory || normalizedSearch) && visibleTemplates.length === 0) && (
+              <p className="workflow-block-picker-empty">Nenhum bloco encontrado.</p>
+            )}
+          </div>
+        </section>
       )}
       <button type="button" className="workflow-minimap" aria-label="Mapa do fluxo. Clique para navegar." onPointerDown={(event) => event.stopPropagation()} onPointerUp={centerMiniMap}>
         <svg viewBox={`0 0 ${stageWidth} ${stageHeight}`} preserveAspectRatio="xMidYMid meet" aria-hidden="true">
@@ -598,17 +778,27 @@ export default function Workflows({ canEdit, organizationId }: { canEdit: boolea
     updateNode(node.id, { config: { ...node.config, [field]: value } })
   }
 
-  function addNode(type: NodeType) {
+  function addNode(type: NodeType, kind: string, configOverride?: Record<string, unknown>) {
     if (!detail) return
+    if (type === "trigger") {
+      const trigger = detail.definition.nodes.find((node) => node.type === "trigger")
+      if (!trigger) return
+      updateNode(trigger.id, {
+        kind,
+        config: { ...defaultConfig(type, kind), ...configOverride, customLabel: trigger.config.customLabel },
+      })
+      setSelectedNodeId(trigger.id)
+      setInspectorOpen(true)
+      return
+    }
     const id = makeId()
-    const kind = type === "condition" ? "message_contains" : type === "trigger" ? "message_received" : "send_message"
     const tail = detail.definition.nodes.at(-1)
     const basePosition = tail?.position ?? { x: 80, y: 120 }
     const node: Node = {
       id,
       type,
       kind,
-      config: defaultConfig(type, kind),
+      config: { ...defaultConfig(type, kind), ...configOverride },
       position: {
         x: basePosition.x + 340,
         y: basePosition.y + (type === "condition" ? 0 : 35),
@@ -647,6 +837,7 @@ export default function Workflows({ canEdit, organizationId }: { canEdit: boolea
     if (previousTail) edges.push({ id: makeId(), source: previousTail.id, target: id })
     changeDefinition({ nodes, edges })
     setSelectedNodeId(id)
+    setInspectorOpen(true)
   }
 
   function updateConnection(source: string, handle: "true" | "false" | undefined, target: string) {
@@ -679,13 +870,39 @@ export default function Workflows({ canEdit, organizationId }: { canEdit: boolea
   }
 
   function removeNode(nodeId: string) {
-    if (!detail || detail.definition.nodes.find((node) => node.id === nodeId)?.type === "trigger") return
-    const nextSelected = detail.definition.nodes.find((node) => node.id !== nodeId)
+    if (!detail) return
+    const node = detail.definition.nodes.find((item) => item.id === nodeId)
+    if (!node || node.type === "trigger") return
+    const incoming = detail.definition.edges.filter((edge) => edge.target === nodeId)
+    const outgoing = detail.definition.edges.filter((edge) => edge.source === nodeId)
+    const nextSelected = incoming[0]?.source ?? detail.definition.nodes.find((item) => item.id !== nodeId)?.id ?? ""
+    const nextEdges = detail.definition.edges.filter((edge) => edge.source !== nodeId && edge.target !== nodeId)
+    if (node.type !== "condition" && incoming.length === 1 && outgoing.length === 1) {
+      const [previous] = incoming
+      const [next] = outgoing
+      if (previous && next && previous.source !== next.target) {
+        nextEdges.push({
+          id: makeId(),
+          source: previous.source,
+          target: next.target,
+          ...(previous.sourceHandle ? { sourceHandle: previous.sourceHandle } : {}),
+        })
+      }
+    }
     changeDefinition({
       nodes: detail.definition.nodes.filter((node) => node.id !== nodeId),
-      edges: detail.definition.edges.filter((edge) => edge.source !== nodeId && edge.target !== nodeId),
+      edges: nextEdges,
     })
-    setSelectedNodeId(nextSelected?.id ?? "")
+    setSelectedNodeId(nextSelected)
+  }
+
+  function duplicateNode(nodeId: string) {
+    const node = detail?.definition.nodes.find((item) => item.id === nodeId)
+    if (!node || node.type === "trigger") return
+    addNode(node.type, node.kind, {
+      ...node.config,
+      customLabel: `${nodeLabel(node).slice(0, 50)} (cópia)`,
+    })
   }
 
   function undo() {
@@ -836,7 +1053,7 @@ export default function Workflows({ canEdit, organizationId }: { canEdit: boolea
   const selectedNode = detail?.definition.nodes.find((node) => node.id === selectedNodeId) ?? null
 
   return (
-    <section className="workflow-page">
+    <section className={`workflow-page ${detail ? "workflow-page-editing" : ""}`}>
       <header className="workflow-heading">
         <div>
           <div className="workflow-eyebrow"><span>AV FLOW AUTOMATIONS</span><span>WHATSAPP + IA</span></div>
@@ -980,6 +1197,8 @@ export default function Workflows({ canEdit, organizationId }: { canEdit: boolea
                 onStartConnection={startConnection}
                 onConnect={connectNode}
                 onAddNode={addNode}
+                onRemove={removeNode}
+                onDuplicate={duplicateNode}
                 onZoom={(amount) => setZoom((value) => Math.min(1.5, Math.max(.5, value + amount)))}
                 onReset={() => { setZoom(1); setCanvasResetVersion((value) => value + 1) }}
               />
@@ -1005,15 +1224,20 @@ export default function Workflows({ canEdit, organizationId }: { canEdit: boolea
                           <h3 className="mt-1 font-semibold">{nodeLabel(node)}</h3>
                           {nodeUsage.has(node.id) && <small className="muted">{nodeUsage.get(node.id)} execuções</small>}
                         </div>
-                        {canEdit && node.type !== "trigger" && <button className="icon-button" aria-label="Remover etapa" onClick={() => removeNode(node.id)}><X size={15} /></button>}
+                        {canEdit && node.type !== "trigger" && <button className="icon-button" aria-label={`Excluir bloco ${nodeLabel(node)}`} title="Excluir bloco" onClick={() => removeNode(node.id)}><Trash2 size={15} /></button>}
                       </div>
                       <div className="workflow-inspector-fields">
                         {canEdit && (
-                          <label>Tipo
-                            <select className="mt-1 w-full" value={node.kind} disabled={node.type === "trigger"} onChange={(event) => updateNode(node.id, { kind: event.target.value, config: defaultConfig(node.type, event.target.value) })}>
-                              {types[node.type].map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
-                            </select>
-                          </label>
+                          <>
+                            <label>Nome do bloco (opcional)
+                              <input className="mt-1 w-full" value={String(node.config.customLabel ?? "")} maxLength={60} placeholder={types[node.type].find((option) => option.value === node.kind)?.label ?? node.kind} onChange={(event) => updateConfig(node, "customLabel", event.target.value)} />
+                            </label>
+                            <label>Tipo
+                              <select className="mt-1 w-full" value={node.kind} disabled={node.type === "trigger"} onChange={(event) => updateNode(node.id, { kind: event.target.value, config: { ...defaultConfig(node.type, event.target.value), customLabel: node.config.customLabel } })}>
+                                {types[node.type].map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
+                              </select>
+                            </label>
+                          </>
                         )}
                         {node.kind === "message_contains" && (
                           <label>Texto a procurar
@@ -1101,7 +1325,7 @@ export default function Workflows({ canEdit, organizationId }: { canEdit: boolea
       </div>
       {testOpen && detail && (
         <div className="workflow-test-backdrop" role="presentation" onClick={() => setTestOpen(false)}>
-          <section className="workflow-test-panel" role="dialog" aria-modal="true" aria-labelledby="workflow-test-title" onClick={(event) => event.stopPropagation()}>
+          <section className="workflow-test-panel" role="dialog" aria-modal="true" aria-labelledby="workflow-test-dialog-title" onClick={(event) => event.stopPropagation()}>
             <header className="workflow-test-header">
               <div className="workflow-test-tabs" role="tablist" aria-label="Testador do fluxo">
                 <button type="button" role="tab" aria-selected={!testDefinitionsOpen} className={!testDefinitionsOpen ? "selected" : ""} onClick={() => setTestDefinitionsOpen(false)}>Testador de fluxo</button>
@@ -1111,7 +1335,7 @@ export default function Workflows({ canEdit, organizationId }: { canEdit: boolea
             </header>
             <div className="workflow-test-widget">
               <div className="workflow-test-widget-head">
-                <div className="workflow-test-brand"><span><Bot size={18} /></span><div><b>{detail.name}</b><small>Prévia do workflow · sem efeitos reais</small></div></div>
+                <div className="workflow-test-brand"><span><Bot size={18} /></span><div><b id="workflow-test-dialog-title">{detail.name}</b><small>Prévia do workflow · sem efeitos reais</small></div></div>
                 <span className="workflow-test-online"><i /> Teste</span>
               </div>
               {testDefinitionsOpen ? (
