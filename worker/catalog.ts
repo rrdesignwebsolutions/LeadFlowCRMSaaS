@@ -1,5 +1,6 @@
 import type { Env, Session } from "./index"
 
+import { createCatalogPdf } from "./catalog-pdf"
 import { sendFile } from "./whatsapp"
 
 const json = (data: unknown, status = 200) =>
@@ -15,9 +16,15 @@ const MAX_IMAGE_BYTES = 5 * 1024 * 1024
 
 const MAX_IMAGES_PER_PRODUCT = 10
 
-const MAX_PHOTOS_PER_TURN = 14
+const CATALOG_BATCH_MAX_PRODUCTS = 4
 
-const MAX_CATALOG_SEND = 12
+const CATALOG_BATCH_MAX_SOURCE_BYTES = 16 * 1024 * 1024
+
+const MAX_CATALOG_PDF_BYTES = 24 * 1024 * 1024
+
+const CATALOG_JOB_MAX_ATTEMPTS = 5
+
+const CATALOG_JOB_RETRY_SECONDS = [60, 300, 900, 3600]
 
 const STOCK_FRESH_DAYS = 7
 
@@ -60,6 +67,37 @@ type ProductRow = {
   availabilityAt: string | null
 
   updatedAt: string
+}
+
+type CatalogDeliveryJob = {
+  id: string
+  organizationId: string
+  conversationId: string
+  inboundExternalId: string
+  status: string
+  attempts: number
+  totalApproved: number
+  totalSelected: number
+  totalIncluded: number
+  totalBatches: number
+  errorSummary?: string | null
+}
+
+type CatalogDeliveryBatch = {
+  id: string
+  deliveryJobId: string
+  batchIndex: number
+  productIds: string
+  status: string
+  attempts: number
+  messageId: string | null
+}
+
+class CatalogPdfTooLargeError extends Error {
+  constructor() {
+    super("O PDF textual do catálogo excedeu o limite de envio da Meta.")
+    this.name = "CatalogPdfTooLargeError"
+  }
 }
 
 const PRODUCT_COLUMNS = `id,name,model,version,brand,category,description,specs,price_text priceText,sale_price_text salePriceText,card_installments cardInstallments,card_installment_text cardInstallmentText,status,authorized_for_sale authorized,availability,availability_updated_at availabilityAt,updated_at updatedAt`
@@ -143,7 +181,7 @@ async function loadProducts(
 ) {
   return (
     await env.DB.prepare(
-      `SELECT ${PRODUCT_COLUMNS} FROM catalog_products WHERE organization_id=? ${where} ORDER BY name,model`,
+      `SELECT ${PRODUCT_COLUMNS} FROM catalog_products WHERE organization_id=? ${where} ORDER BY name COLLATE NOCASE,model COLLATE NOCASE,COALESCE(version,''),id`,
     )
 
       .bind(organizationId, ...extra)
@@ -180,7 +218,6 @@ export async function catalogRoutes(
           .filter(
             (x): x is string => typeof x === "string" && /^[\w-]+$/.test(x),
           )
-          .slice(0, MAX_CATALOG_SEND)
       : typeof body.productId === "string"
         ? body.productId
         : null
@@ -188,18 +225,26 @@ export async function catalogRoutes(
     if (!/^[\w-]+$/.test(conversationId))
       return json({ error: "Conversa inválida." }, 400)
 
-    if (!env.CATALOG)
-      return json(
-        { error: "O armazenamento de fotos ainda não foi configurado." },
-        503,
-      )
-
     const result = await sendCatalog(env, auth, conversationId, productId)
 
-    if (!result.enviadas)
-      return json({ error: result.erro ?? "Nada foi enviado." }, 422)
+    if (result.status !== "ENVIADO")
+      return json(
+        {
+          ok: false,
+          enviadas: result.enviadas,
+          totalProdutos: result.totalSelecionados ?? 0,
+          aviso: result.erro ?? "O envio do catálogo ficou incompleto.",
+          idsFaltantes: result.idsFaltantes ?? [],
+        },
+        result.enviadas ? 502 : 422,
+      )
 
-    return json({ ok: true, enviadas: result.enviadas, aviso: result.erro })
+    return json({
+      ok: true,
+      enviadas: result.enviadas,
+      totalProdutos: result.totalSelecionados ?? 0,
+      aviso: null,
+    })
   }
 
   if (path === "/api/catalog/products" && request.method === "GET") {
@@ -757,10 +802,10 @@ export const catalogTools = [
   {
     type: "function",
 
-    name: "enviarCatalogoFiltrado",
+    name: "enviarCatalogoCompleto",
 
     description:
-      "Envia fotos e fichas resumidas de todos os modelos aprovados e autorizados, independentemente do estoque. Use quando o cliente pedir o catálogo. Só diga que enviou se enviadas > 0 e informe apenas os modelos listados em modelosEnviados.",
+      "Envia todos os modelos aprovados e autorizados, independentemente do estoque e da quantidade cadastrada. Envia as fotos disponíveis e, se um modelo não tiver foto, envia sua ficha em texto. Use quando o cliente pedir o catálogo. Só diga que enviou se enviadas > 0 e informe apenas os modelos listados em modelosEnviados.",
 
     parameters: {
       type: "object",
@@ -902,98 +947,1030 @@ function productCaption(p: ProductRow) {
 
 // Envia o catálogo completo (modelos aprovados e autorizados) ou um modelo.
 
+function uniqueProducts(rows: ProductRow[]) {
+  const seen = new Set<string>()
+  return rows.filter((row) => {
+    if (seen.has(row.id)) return false
+    seen.add(row.id)
+    return true
+  })
+}
+
+function splitIntoBatches<T>(items: T[], sizes: number[]) {
+  const batches: T[][] = []
+  let batch: T[] = []
+  let bytes = 0
+
+  for (const [index, item] of items.entries()) {
+    const itemBytes = sizes[index] ?? 0
+    if (
+      batch.length &&
+      (batch.length >= CATALOG_BATCH_MAX_PRODUCTS ||
+        bytes + itemBytes > CATALOG_BATCH_MAX_SOURCE_BYTES)
+    ) {
+      batches.push(batch)
+      batch = []
+      bytes = 0
+    }
+
+    batch.push(item)
+    bytes += itemBytes
+  }
+
+  if (batch.length) batches.push(batch)
+  return batches
+}
+
+async function primaryImageSizes(
+  env: Env,
+  organizationId: string,
+  products: ProductRow[],
+) {
+  if (!products.length) return []
+
+  const rows = (
+    await env.DB.prepare(
+      `SELECT product_id productId,SUM(size) size FROM catalog_images
+       WHERE organization_id=? AND product_id IN (${products.map(() => "?").join(",")})
+       GROUP BY product_id`,
+    )
+      .bind(organizationId, ...products.map((product) => product.id))
+      .all<{ productId: string; size: number }>()
+  ).results
+  const sizes = new Map<string, number>()
+  for (const row of rows)
+    if (!sizes.has(row.productId)) sizes.set(row.productId, row.size)
+  return products.map((product) => sizes.get(product.id) ?? 0)
+}
+
+async function catalogBatches(
+  env: Env,
+  organizationId: string,
+  products: ProductRow[],
+) {
+  return splitIntoBatches(
+    products,
+    await primaryImageSizes(env, organizationId, products),
+  )
+}
+
+async function createProductBatchPdf(
+  env: Env,
+  organizationId: string,
+  products: ProductRow[],
+) {
+  const imageRows = products.length
+    ? (
+        await env.DB.prepare(
+          `SELECT product_id productId,r2_key key,mime FROM catalog_images
+           WHERE organization_id=? AND product_id IN (${products.map(() => "?").join(",")})
+           ORDER BY product_id,is_primary DESC,position,created_at,id`,
+        )
+          .bind(organizationId, ...products.map((product) => product.id))
+          .all<{ productId: string; key: string; mime: string }>()
+      ).results
+    : []
+  const images = new Map<
+    string,
+    Array<{ mime: string; bytes: Uint8Array }>
+  >()
+
+  for (const image of imageRows) {
+    const object = await env.CATALOG?.get(image.key)
+    if (!object) {
+      console.warn("catalog_pdf_image_missing", {
+        organizationId,
+        productId: image.productId,
+      })
+      continue
+    }
+    const productImages = images.get(image.productId) ?? []
+    productImages.push({
+      mime: image.mime,
+      bytes: new Uint8Array(await object.arrayBuffer()),
+    })
+    images.set(image.productId, productImages)
+  }
+
+  const pdfProducts = products.map((product) => ({
+      id: product.id,
+      name: product.name,
+      model: product.model,
+      version: product.version,
+      brand: product.brand,
+      category: product.category,
+      description: product.description,
+      specs: parseSpecs(product.specs),
+      priceText: product.priceText,
+      salePriceText: product.salePriceText,
+      cardInstallments: product.cardInstallments,
+      cardInstallmentText: product.cardInstallmentText,
+    }))
+  let pdf = await createCatalogPdf(pdfProducts, images, FINANCING_NOTE)
+  if (pdf.byteLength > MAX_CATALOG_PDF_BYTES) {
+    console.warn("catalog_pdf_images_omitted_for_meta_limit", {
+      organizationId,
+      productIds: products.map((product) => product.id),
+      sizeBytes: pdf.byteLength,
+    })
+    pdf = await createCatalogPdf(pdfProducts, new Map(), FINANCING_NOTE)
+  }
+  if (pdf.byteLength > MAX_CATALOG_PDF_BYTES)
+    throw new CatalogPdfTooLargeError()
+  return pdf
+}
+
+async function selectApprovedProducts(
+  env: Env,
+  organizationId: string,
+  productIds: string[] = [],
+) {
+  const approvedInDatabase = uniqueProducts(
+    await loadProducts(env, organizationId, "AND status='approved'"),
+  )
+  const approved = approvedInDatabase.filter(
+    (product) => product.authorized === 1,
+  )
+  const requested = productIds.length ? new Set(productIds) : null
+  const selected = requested
+    ? approved.filter((product) => requested.has(product.id))
+    : approved
+
+  return {
+    approved,
+    approvedInDatabase,
+    selected,
+    excludedProductIds: approvedInDatabase
+      .filter((product) => product.authorized !== 1)
+      .map((product) => product.id),
+  }
+}
+
+function productLabel(product: ProductRow) {
+  return `${product.model}${product.version ? ` ${product.version}` : ""}`
+}
+
+function productIdBatches(batches: ProductRow[][]) {
+  return batches.map((batch) => batch.map((product) => product.id))
+}
+
+async function deterministicCatalogJobId(
+  organizationId: string,
+  conversationId: string,
+  inboundExternalId: string,
+) {
+  const data = new TextEncoder().encode(
+    `${organizationId}\u0000${conversationId}\u0000${inboundExternalId}`,
+  )
+  const digest = new Uint8Array(await crypto.subtle.digest("SHA-256", data))
+  const hex = [...digest].map((byte) => byte.toString(16).padStart(2, "0")).join("")
+  return `catalog-${hex}`
+}
+
+export async function queueCatalogDelivery(
+  env: Env,
+  organizationId: string,
+  conversationId: string,
+  inboundExternalId: string,
+) {
+  const { approved, approvedInDatabase, selected, excludedProductIds } =
+    await selectApprovedProducts(env, organizationId)
+  const batches = await catalogBatches(env, organizationId, selected)
+  const includedIds = productIdBatches(batches).flat()
+  const selectedIds = selected.map((product) => product.id)
+  const included = new Set(includedIds)
+  const missingIds = selectedIds.filter((id) => !included.has(id))
+
+  console.info("whatsapp_catalog_selection", {
+    organizationId,
+    conversationId,
+    TOTAL_APROVADOS: approved.length,
+    TOTAL_APROVADOS_NO_BANCO: approvedInDatabase.length,
+    TOTAL_SELECIONADOS: selectedIds.length,
+    TOTAL_INCLUIDOS_NO_CATALOGO: includedIds.length,
+    excludedByAuthorization: excludedProductIds,
+    missingIds,
+  })
+
+  if (missingIds.length || selectedIds.length !== includedIds.length) {
+    console.error("whatsapp_catalog_selection_incomplete", {
+      organizationId,
+      conversationId,
+      missingIds,
+    })
+    return {
+      enviadas: 0,
+      erro: "A seleção do catálogo ficou incompleta e não será enviada.",
+      status: "FALHOU",
+      totalAprovados: approved.length,
+      totalSelecionados: selectedIds.length,
+      totalIncluidos: includedIds.length,
+      idsFaltantes: missingIds,
+    }
+  }
+
+  if (!selected.length) {
+    await env.DB.prepare(
+      "UPDATE conversations SET ai_catalog_status='FALHOU',ai_catalog_updated_at=CURRENT_TIMESTAMP WHERE id=? AND organization_id=?",
+    )
+      .bind(conversationId, organizationId)
+      .run()
+    return {
+      enviadas: 0,
+      erro: "Não há produtos aprovados e autorizados para enviar.",
+      status: "FALHOU",
+      totalAprovados: approved.length,
+      totalSelecionados: 0,
+      totalIncluidos: 0,
+      idsFaltantes: [],
+    }
+  }
+
+  const jobId = await deterministicCatalogJobId(
+    organizationId,
+    conversationId,
+    inboundExternalId,
+  )
+  const batchIds = productIdBatches(batches)
+  const statements = [
+    env.DB.prepare(
+      `INSERT OR IGNORE INTO catalog_delivery_jobs(
+        id,organization_id,conversation_id,inbound_external_id,total_approved,
+        total_selected,total_included,total_batches,excluded_product_ids
+      ) VALUES(?,?,?,?,?,?,?,?,?)`,
+    ).bind(
+      jobId,
+      organizationId,
+      conversationId,
+      inboundExternalId,
+      approved.length,
+      selectedIds.length,
+      includedIds.length,
+      batches.length,
+      JSON.stringify(excludedProductIds),
+    ),
+    ...batchIds.map((ids, batchIndex) =>
+      env.DB.prepare(
+        `INSERT OR IGNORE INTO catalog_delivery_batches(
+          id,delivery_job_id,batch_index,product_ids
+        ) VALUES(?,?,?,?)`,
+      ).bind(
+        `${jobId}:${batchIndex}`,
+        jobId,
+        batchIndex,
+        JSON.stringify(ids),
+      ),
+    ),
+    env.DB.prepare(
+      `UPDATE conversations SET ai_catalog_status=CASE
+         WHEN (SELECT status FROM catalog_delivery_jobs WHERE id=?)='completed' THEN 'ENVIADO'
+         WHEN (SELECT status FROM catalog_delivery_jobs WHERE id=?) IN ('failed','needs_review') THEN 'FALHOU'
+         ELSE 'ENVIANDO' END,
+         ai_catalog_source_external_id=?,ai_catalog_updated_at=CURRENT_TIMESTAMP
+       WHERE id=? AND organization_id=?`,
+    ).bind(jobId, jobId, inboundExternalId, conversationId, organizationId),
+  ]
+  await env.DB.batch(statements)
+
+  const job = await env.DB.prepare(
+    "SELECT id,status,delivery_status deliveryStatus,total_approved totalApproved,total_selected totalSelected,total_included totalIncluded,total_batches totalBatches,error_summary errorSummary FROM catalog_delivery_jobs WHERE id=? AND organization_id=?",
+  )
+    .bind(jobId, organizationId)
+    .first<{
+      id: string
+      status: string
+      deliveryStatus: string
+      totalApproved: number
+      totalSelected: number
+      totalIncluded: number
+      totalBatches: number
+      errorSummary: string | null
+    }>()
+
+  if (!job) throw new Error("O job de envio do catálogo não foi persistido.")
+
+  return {
+    enviadas: 0,
+    status:
+      job.status === "completed"
+        ? "ENVIADO"
+        : job.status === "failed" || job.status === "needs_review"
+          ? "FALHOU"
+          : "ENVIANDO",
+    erro:
+      job.status === "failed" || job.status === "needs_review"
+        ? job.errorSummary ?? "O envio do catálogo requer revisão."
+        : null,
+    jobId: job.id,
+    statusEntrega: job.deliveryStatus,
+    totalAprovados: job.totalApproved,
+    totalSelecionados: job.totalSelected,
+    totalIncluidos: job.totalIncluded,
+    totalLotes: job.totalBatches,
+    modelosEnviados: [],
+    modelosEnfileirados: selected.map(productLabel),
+  }
+}
+
+async function sendCatalogNow(
+  env: Env,
+  sender: Session,
+  conversationId: string,
+  productIds: string[],
+) {
+  const organizationId = sender.organizationId
+  const { approved, approvedInDatabase, selected, excludedProductIds } =
+    await selectApprovedProducts(env, organizationId, productIds)
+  const batches = await catalogBatches(env, organizationId, selected)
+  const includedIds = productIdBatches(batches).flat()
+  const sentModels: string[] = []
+  const selectedIds = selected.map((product) => product.id)
+  const includedSet = new Set(includedIds)
+  const missingBeforeSend = selectedIds.filter((id) => !includedSet.has(id))
+  let sent = 0
+  let error: string | null = null
+
+  console.info("whatsapp_catalog_selection", {
+    organizationId,
+    conversationId,
+    TOTAL_APROVADOS: approved.length,
+    TOTAL_APROVADOS_NO_BANCO: approvedInDatabase.length,
+    TOTAL_SELECIONADOS: selected.length,
+    TOTAL_INCLUIDOS_NO_CATALOGO: includedIds.length,
+    excludedByAuthorization: excludedProductIds,
+    missingIds: missingBeforeSend,
+  })
+
+  if (
+    missingBeforeSend.length ||
+    includedIds.length !== selectedIds.length ||
+    new Set(includedIds).size !== includedIds.length
+  ) {
+    console.error("whatsapp_catalog_selection_incomplete", {
+      organizationId,
+      conversationId,
+      missingIds: missingBeforeSend,
+    })
+    return {
+      enviadas: 0,
+      erro: "A seleção do catálogo ficou incompleta e não será enviada.",
+      status: "FALHOU",
+      totalAprovados: approved.length,
+      totalSelecionados: selected.length,
+      totalIncluidos: includedIds.length,
+      totalLotes: batches.length,
+      idsFaltantes: missingBeforeSend,
+      modelosEnviados: [],
+    }
+  }
+
+  for (const [batchIndex, batch] of batches.entries()) {
+    try {
+      const file = new File(
+        [await createProductBatchPdf(env, organizationId, batch)],
+        `catalogo-${batchIndex + 1}-de-${batches.length}.pdf`,
+        { type: "application/pdf" },
+      )
+      const response = await sendFile(
+        env,
+        sender,
+        conversationId,
+        file,
+        `Catálogo completo - parte ${batchIndex + 1} de ${batches.length}`,
+      )
+      if (!response.ok) {
+        const data = (await response.json().catch(() => ({}))) as {
+          error?: string
+        }
+        error = data.error ?? `HTTP ${response.status}`
+        break
+      }
+      sent++
+      sentModels.push(...batch.map(productLabel))
+    } catch (cause) {
+      error =
+        cause instanceof Error ? cause.message : "Falha inesperada no PDF."
+      console.error("whatsapp_catalog_manual_batch_failed", {
+        organizationId,
+        conversationId,
+        batchIndex,
+        productIds: batch.map((product) => product.id),
+        error,
+      })
+      break
+    }
+  }
+
+  const acceptedIds = batches
+    .slice(0, sent)
+    .flatMap((batch) => batch.map((product) => product.id))
+  const acceptedSet = new Set(acceptedIds)
+  const missingIds = selectedIds.filter((id) => !acceptedSet.has(id))
+  const status =
+    selectedIds.length > 0 &&
+    !error &&
+    !missingIds.length &&
+    acceptedSet.size === selectedIds.length
+      ? "ENVIADO"
+      : "FALHOU"
+  if (missingIds.length)
+    console.error("whatsapp_catalog_manual_delivery_incomplete", {
+      organizationId,
+      conversationId,
+      TOTAL_APROVADOS: approved.length,
+      TOTAL_SELECIONADOS: selected.length,
+      TOTAL_INCLUIDOS_NO_CATALOGO: includedIds.length,
+      TOTAL_ACEITOS_PELA_API: acceptedIds.length,
+      missingIds,
+      error,
+    })
+
+  return {
+    enviadas: sent,
+    erro: error ?? (sent ? null : "Nenhum produto aprovado e autorizado para enviar."),
+    status,
+    modelosEnviados: sentModels,
+    totalAprovados: approved.length,
+    totalSelecionados: selected.length,
+    totalIncluidos: includedIds.length,
+    totalLotes: batches.length,
+    totalAceitos: acceptedIds.length,
+    idsFaltantes: missingIds,
+  }
+}
+
 export async function sendCatalog(
   env: Env,
-
   sender: Session,
-
   conversationId: string,
-
   productId: string | string[] | null,
-
   state: CatalogToolState = {
     sentImages: new Set(),
-
     attemptedImages: new Set(),
-
     imageFailures: new Map(),
   },
 ) {
-  const organizationId = sender.organizationId
+  if (sender.role === "ai") {
+    if (!state.inboundExternalId)
+      return {
+        enviadas: 0,
+        erro: "Não foi possível vincular o envio do catálogo à mensagem recebida.",
+        status: "FALHOU",
+      }
+    return queueCatalogDelivery(
+      env,
+      sender.organizationId,
+      conversationId,
+      state.inboundExternalId,
+    )
+  }
 
   const ids = Array.isArray(productId)
     ? productId
     : productId
       ? [productId]
       : []
+  return sendCatalogNow(env, sender, conversationId, ids)
+}
 
-  const approvedRows = await loadProducts(
-    env,
+function parseProductIds(value: string) {
+  const parsed: unknown = JSON.parse(value)
+  if (!Array.isArray(parsed) || !parsed.every((id) => typeof id === "string"))
+    throw new Error("A lista de produtos do lote do catálogo está inválida.")
+  return parsed
+}
 
-    organizationId,
+async function updateCatalogDeliveryFailure(
+  env: Env,
+  job: CatalogDeliveryJob,
+  batch: CatalogDeliveryBatch,
+  status: "failed" | "needs_review",
+  message: string,
+) {
+  await env.DB.batch([
+    env.DB.prepare(
+      "UPDATE catalog_delivery_batches SET status=?,error_summary=?,updated_at=CURRENT_TIMESTAMP WHERE id=? AND delivery_job_id=?",
+    ).bind(status, message.slice(0, 1000), batch.id, job.id),
+    env.DB.prepare(
+      "UPDATE catalog_delivery_jobs SET status=?,locked_until=NULL,error_summary=?,updated_at=CURRENT_TIMESTAMP WHERE id=? AND organization_id=?",
+    ).bind(status, message.slice(0, 1000), job.id, job.organizationId),
+    env.DB.prepare(
+      "UPDATE conversations SET ai_catalog_status='FALHOU',ai_catalog_updated_at=CURRENT_TIMESTAMP WHERE id=? AND organization_id=?",
+    ).bind(job.conversationId, job.organizationId),
+  ])
+  console.error("whatsapp_catalog_delivery_incomplete", {
+    organizationId: job.organizationId,
+    conversationId: job.conversationId,
+    jobId: job.id,
+    batchIndex: batch.batchIndex,
+    productIds: parseProductIds(batch.productIds),
+    status,
+    error: message,
+  })
+}
 
-    `AND status='approved' AND authorized_for_sale=1${
-      ids.length ? ` AND id IN (${ids.map(() => "?").join(",")})` : ""
-    }`,
-
-    ids,
+async function processCatalogDeliveryJob(env: Env, jobId: string) {
+  const claimed = await env.DB.prepare(
+    `UPDATE catalog_delivery_jobs
+     SET status='processing',attempts=attempts+1,
+       locked_until=datetime('now','+10 minutes'),updated_at=CURRENT_TIMESTAMP
+     WHERE id=? AND (
+       (status='pending' AND next_attempt_at<=CURRENT_TIMESTAMP) OR
+       (status='processing' AND locked_until<=CURRENT_TIMESTAMP)
+     )`,
   )
+    .bind(jobId)
+    .run()
+  if (!claimed.meta.changes) return
 
-  const rows = approvedRows
+  const job = await env.DB.prepare(
+    `SELECT id,organization_id organizationId,conversation_id conversationId,
+       inbound_external_id inboundExternalId,status,attempts,
+       total_approved totalApproved,total_selected totalSelected,
+       total_included totalIncluded,total_batches totalBatches
+     FROM catalog_delivery_jobs WHERE id=? AND status='processing'`,
+  )
+    .bind(jobId)
+    .first<CatalogDeliveryJob>()
+  if (!job) throw new Error("O job de envio do catálogo não foi encontrado.")
 
-  if (!rows.length)
-    return {
-      enviadas: 0,
-
-      erro: "Nenhum produto aprovado e autorizado para enviar.",
-    }
-
-  let sent = 0
-
-  let error: string | null = null
-
-  const sentModels: string[] = []
-
-  for (const product of rows.slice(0, MAX_CATALOG_SEND)) {
-    const result = await sendProductPhotos(
-      env,
-
-      organizationId,
-
-      conversationId,
-
-      state,
-
-      product,
-
-      MAX_IMAGES_PER_PRODUCT,
-
-      (index) => (index === 0 ? productCaption(product) : ""),
-
-      sender,
+  try {
+    const batches = (
+      await env.DB.prepare(
+        `SELECT id,delivery_job_id deliveryJobId,batch_index batchIndex,
+           product_ids productIds,status,attempts,message_id messageId
+         FROM catalog_delivery_batches
+         WHERE delivery_job_id=? ORDER BY batch_index`,
+      )
+        .bind(job.id)
+        .all<CatalogDeliveryBatch>()
+    ).results
+    const selectedIds = batches.flatMap((batch) =>
+      parseProductIds(batch.productIds),
     )
 
-    sent += result.enviadas
+    if (
+      batches.length !== job.totalBatches ||
+      selectedIds.length !== job.totalSelected ||
+      new Set(selectedIds).size !== selectedIds.length
+    ) {
+      await env.DB.prepare(
+        "UPDATE catalog_delivery_jobs SET status='needs_review',locked_until=NULL,error_summary=?,updated_at=CURRENT_TIMESTAMP WHERE id=? AND organization_id=?",
+      )
+        .bind(
+          "A lista de produtos dos lotes diverge da seleção aprovada.",
+          job.id,
+          job.organizationId,
+        )
+        .run()
+      await env.DB.prepare(
+        "UPDATE conversations SET ai_catalog_status='FALHOU',ai_catalog_updated_at=CURRENT_TIMESTAMP WHERE id=? AND organization_id=?",
+      )
+        .bind(job.conversationId, job.organizationId)
+        .run()
+      console.error("whatsapp_catalog_batch_manifest_mismatch", {
+        organizationId: job.organizationId,
+        conversationId: job.conversationId,
+        jobId: job.id,
+        selectedIds,
+        totalSelected: job.totalSelected,
+        totalBatches: job.totalBatches,
+        actualBatches: batches.length,
+      })
+      return
+    }
 
-    if (result.enviadas > 0)
-      sentModels.push(
-        `${product.model}${product.version ? ` ${product.version}` : ""}`,
+    for (const batch of batches) {
+      if (batch.status === "accepted") continue
+      if (batch.status === "failed" || batch.status === "needs_review") {
+        await env.DB.prepare(
+          "UPDATE catalog_delivery_jobs SET status=?,locked_until=NULL,updated_at=CURRENT_TIMESTAMP WHERE id=? AND organization_id=?",
+        )
+          .bind(batch.status, job.id, job.organizationId)
+          .run()
+        return
+      }
+
+      const productIds = parseProductIds(batch.productIds)
+      const placeholders = productIds.map(() => "?").join(",")
+      const matchingProducts = uniqueProducts(
+        await loadProducts(
+          env,
+          job.organizationId,
+          `AND status='approved' AND authorized_for_sale=1 AND id IN (${placeholders})`,
+          productIds,
+        ),
+      )
+      const productById = new Map(
+        matchingProducts.map((product) => [product.id, product]),
+      )
+      const products = productIds
+        .map((id) => productById.get(id))
+        .filter((product): product is ProductRow => !!product)
+      const missingIds = productIds.filter((id) => !productById.has(id))
+
+      if (missingIds.length) {
+        await updateCatalogDeliveryFailure(
+          env,
+          job,
+          batch,
+          "needs_review",
+          `Produtos aprovados removidos ou sem autorização antes do envio: ${missingIds.join(", ")}`,
+        )
+        return
+      }
+
+      const prefix = `ai:${job.inboundExternalId}:catalog:${job.id}:batch:${batch.batchIndex}:attempt:`
+      const priorAttempts = (
+        await env.DB.prepare(
+          `SELECT id,status,error_code errorCode,ai_reply_key aiReplyKey
+           FROM messages WHERE organization_id=? AND is_ai=1
+             AND substr(ai_reply_key,1,?)=?
+           ORDER BY rowid`,
+        )
+          .bind(job.organizationId, prefix.length, prefix)
+          .all<{
+            id: string
+            status: string
+            errorCode: string | null
+            aiReplyKey: string
+          }>()
+      ).results
+      const accepted = priorAttempts.find((message) =>
+        ["accepted", "sent", "delivered", "read"].includes(message.status),
       )
 
-    if (result.erro) {
-      error = result.erro
+      if (accepted) {
+        await env.DB.prepare(
+          `UPDATE catalog_delivery_batches SET status='accepted',
+             delivery_status=?,message_id=?,error_summary=NULL,
+             updated_at=CURRENT_TIMESTAMP WHERE id=? AND delivery_job_id=?`,
+        )
+          .bind(accepted.status, accepted.id, batch.id, job.id)
+          .run()
+        continue
+      }
 
-      break
+      const latestAttempt = priorAttempts.at(-1)
+      if (
+        latestAttempt?.status === "failed" &&
+        (latestAttempt.errorCode === "network" ||
+          latestAttempt.errorCode === "assignment_changed")
+      ) {
+        await updateCatalogDeliveryFailure(
+          env,
+          job,
+          batch,
+          "needs_review",
+          `Não é seguro repetir automaticamente o lote após erro ${latestAttempt.errorCode}.`,
+        )
+        return
+      }
+
+      const previousAttemptNumber = latestAttempt
+        ? Number(latestAttempt.aiReplyKey.slice(prefix.length))
+        : 0
+      const attemptNumber = latestAttempt
+        ? previousAttemptNumber + 1
+        : Math.max(1, batch.attempts)
+      await env.DB.prepare(
+        `UPDATE catalog_delivery_batches SET status='processing',attempts=?,
+           updated_at=CURRENT_TIMESTAMP WHERE id=? AND delivery_job_id=?`,
+      )
+        .bind(attemptNumber, batch.id, job.id)
+        .run()
+
+      const pdf = await createProductBatchPdf(env, job.organizationId, products)
+      const file = new File(
+        [pdf],
+        `catalogo-${batch.batchIndex + 1}-de-${batches.length}.pdf`,
+        { type: "application/pdf" },
+      )
+      const messageKey = `${prefix}${attemptNumber}`
+      const response = await sendFile(
+        env,
+        { userId: "", organizationId: job.organizationId, role: "ai" },
+        job.conversationId,
+        file,
+        `Catálogo completo - parte ${batch.batchIndex + 1} de ${batches.length}`,
+        undefined,
+        messageKey,
+      )
+      const body = (await response.json().catch(() => ({}))) as {
+        error?: string
+        messageId?: string
+      }
+
+      if (response.ok) {
+        if (!body.messageId)
+          throw new Error(
+            `A Meta aceitou o lote ${batch.batchIndex + 1}, mas o registro da mensagem não retornou ID.`,
+          )
+        const message = await env.DB.prepare(
+          "SELECT status FROM messages WHERE id=? AND organization_id=?",
+        )
+          .bind(body.messageId, job.organizationId)
+          .first<{ status: string }>()
+        const deliveryStatus = [
+          "accepted",
+          "sent",
+          "delivered",
+          "read",
+        ].includes(message?.status ?? "")
+          ? message!.status
+          : "accepted"
+        await env.DB.prepare(
+          `UPDATE catalog_delivery_batches SET status='accepted',
+             delivery_status=?,message_id=?,error_summary=NULL,
+             updated_at=CURRENT_TIMESTAMP WHERE id=? AND delivery_job_id=?`,
+        )
+          .bind(deliveryStatus, body.messageId, batch.id, job.id)
+          .run()
+        console.info("whatsapp_catalog_batch_accepted", {
+          organizationId: job.organizationId,
+          conversationId: job.conversationId,
+          jobId: job.id,
+          batchIndex: batch.batchIndex,
+          productIds,
+          messageId: body.messageId,
+        })
+        continue
+      }
+
+      const message = body.messageId
+        ? await env.DB.prepare(
+            "SELECT error_code errorCode FROM messages WHERE id=? AND organization_id=?",
+          )
+            .bind(body.messageId, job.organizationId)
+            .first<{ errorCode: string | null }>()
+        : null
+      const retryable = !!message?.errorCode && /^\d+$/.test(message.errorCode)
+      const retryExhausted = attemptNumber >= CATALOG_JOB_MAX_ATTEMPTS
+      const retryStatus = retryable && !retryExhausted ? "pending" : "failed"
+      const delay =
+        CATALOG_JOB_RETRY_SECONDS[
+          Math.min(attemptNumber - 1, CATALOG_JOB_RETRY_SECONDS.length - 1)
+        ] ?? 3600
+      const error = body.error ?? `HTTP ${response.status}`
+
+      if (retryStatus === "pending") {
+        await env.DB.batch([
+          env.DB.prepare(
+            `UPDATE catalog_delivery_batches SET status='pending',message_id=?,
+               error_summary=?,updated_at=CURRENT_TIMESTAMP
+             WHERE id=? AND delivery_job_id=?`,
+          ).bind(body.messageId ?? null, error.slice(0, 1000), batch.id, job.id),
+          env.DB.prepare(
+            `UPDATE catalog_delivery_jobs SET status='pending',locked_until=NULL,
+               next_attempt_at=datetime('now',?),error_summary=?,
+               updated_at=CURRENT_TIMESTAMP WHERE id=? AND organization_id=?`,
+          ).bind(`+${delay} seconds`, error.slice(0, 1000), job.id, job.organizationId),
+          env.DB.prepare(
+            "UPDATE conversations SET ai_catalog_status='ENVIANDO',ai_catalog_updated_at=CURRENT_TIMESTAMP WHERE id=? AND organization_id=?",
+          ).bind(job.conversationId, job.organizationId),
+        ])
+        console.warn("whatsapp_catalog_batch_retry_scheduled", {
+          organizationId: job.organizationId,
+          conversationId: job.conversationId,
+          jobId: job.id,
+          batchIndex: batch.batchIndex,
+          productIds,
+          attempt: attemptNumber,
+          retryAfterSeconds: delay,
+          error,
+        })
+        return
+      }
+
+      await updateCatalogDeliveryFailure(
+        env,
+        job,
+        batch,
+        retryable || message?.errorCode
+          ? "failed"
+          : "needs_review",
+        error,
+      )
+      return
     }
+
+    const updatedBatches = (
+      await env.DB.prepare(
+        `SELECT id,delivery_job_id deliveryJobId,batch_index batchIndex,
+           product_ids productIds,status,attempts,message_id messageId
+         FROM catalog_delivery_batches
+         WHERE delivery_job_id=? ORDER BY batch_index`,
+      )
+        .bind(job.id)
+        .all<CatalogDeliveryBatch>()
+    ).results
+    const acceptedIds = updatedBatches
+      .filter((batch) => batch.status === "accepted")
+      .flatMap((batch) => parseProductIds(batch.productIds))
+    const acceptedSet = new Set(acceptedIds)
+    const missingIds = selectedIds.filter((id) => !acceptedSet.has(id))
+
+    if (missingIds.length || acceptedSet.size !== job.totalSelected) {
+      console.error("whatsapp_catalog_delivery_ids_incomplete", {
+        organizationId: job.organizationId,
+        conversationId: job.conversationId,
+        jobId: job.id,
+        missingIds,
+        acceptedIds,
+        totalApproved: job.totalApproved,
+        totalSelected: job.totalSelected,
+        totalIncluded: job.totalIncluded,
+      })
+      await env.DB.batch([
+        env.DB.prepare(
+          "UPDATE catalog_delivery_jobs SET status='needs_review',locked_until=NULL,error_summary=?,updated_at=CURRENT_TIMESTAMP WHERE id=? AND organization_id=?",
+        ).bind(
+          `IDs sem aceite da API: ${missingIds.join(", ")}`,
+          job.id,
+          job.organizationId,
+        ),
+        env.DB.prepare(
+          "UPDATE conversations SET ai_catalog_status='FALHOU',ai_catalog_updated_at=CURRENT_TIMESTAMP WHERE id=? AND organization_id=?",
+        ).bind(job.conversationId, job.organizationId),
+      ])
+      return
+    }
+
+    await env.DB.batch([
+      env.DB.prepare(
+        `UPDATE catalog_delivery_jobs SET status='completed',delivery_status=
+           CASE WHEN NOT EXISTS (
+             SELECT 1 FROM catalog_delivery_batches
+             WHERE delivery_job_id=? AND delivery_status NOT IN ('delivered','read')
+           ) THEN 'delivered' ELSE 'pending' END,
+           locked_until=NULL,error_summary=NULL,updated_at=CURRENT_TIMESTAMP
+         WHERE id=? AND organization_id=?`,
+      ).bind(job.id, job.id, job.organizationId),
+      env.DB.prepare(
+        "UPDATE conversations SET ai_catalog_status='ENVIADO',ai_catalog_updated_at=CURRENT_TIMESTAMP WHERE id=? AND organization_id=?",
+      ).bind(job.conversationId, job.organizationId),
+    ])
+    console.info("whatsapp_ai_catalog_completed", {
+      organizationId: job.organizationId,
+      conversationId: job.conversationId,
+      jobId: job.id,
+      totalApproved: job.totalApproved,
+      totalSelected: job.totalSelected,
+      totalIncluded: job.totalIncluded,
+      acceptedIds,
+      deliveryStatus: "pending",
+    })
+  } catch (error) {
+    const summary =
+      error instanceof Error ? error.message.slice(0, 1000) : "Erro desconhecido"
+    if (error instanceof CatalogPdfTooLargeError) {
+      const affectedIds = (
+        await env.DB.prepare(
+          "SELECT product_ids productIds FROM catalog_delivery_batches WHERE delivery_job_id=? AND status='processing'",
+        )
+          .bind(job.id)
+          .all<{ productIds: string }>()
+      ).results.flatMap((batch) => parseProductIds(batch.productIds))
+      await env.DB.batch([
+        env.DB.prepare(
+          "UPDATE catalog_delivery_batches SET status='needs_review',error_summary=?,updated_at=CURRENT_TIMESTAMP WHERE delivery_job_id=? AND status='processing'",
+        ).bind(summary, job.id),
+        env.DB.prepare(
+          "UPDATE catalog_delivery_jobs SET status='needs_review',locked_until=NULL,error_summary=?,updated_at=CURRENT_TIMESTAMP WHERE id=? AND organization_id=?",
+        ).bind(summary, job.id, job.organizationId),
+        env.DB.prepare(
+          "UPDATE conversations SET ai_catalog_status='FALHOU',ai_catalog_updated_at=CURRENT_TIMESTAMP WHERE id=? AND organization_id=?",
+        ).bind(job.conversationId, job.organizationId),
+      ])
+      console.error("whatsapp_catalog_pdf_exceeds_meta_limit", {
+        organizationId: job.organizationId,
+        conversationId: job.conversationId,
+        jobId: job.id,
+        productIds: affectedIds,
+        error: summary,
+      })
+      return
+    }
+
+    const failed = job.attempts >= CATALOG_JOB_MAX_ATTEMPTS
+    await env.DB.batch([
+      env.DB.prepare(
+        `UPDATE catalog_delivery_jobs SET status=?,locked_until=NULL,
+           next_attempt_at=CASE WHEN ?='pending' THEN datetime('now','+60 seconds') ELSE next_attempt_at END,
+           error_summary=?,updated_at=CURRENT_TIMESTAMP
+         WHERE id=? AND organization_id=?`,
+      ).bind(
+        failed ? "failed" : "pending",
+        failed ? "failed" : "pending",
+        summary,
+        job.id,
+        job.organizationId,
+      ),
+      ...(failed
+        ? [
+            env.DB.prepare(
+              "UPDATE conversations SET ai_catalog_status='FALHOU',ai_catalog_updated_at=CURRENT_TIMESTAMP WHERE id=? AND organization_id=?",
+            ).bind(job.conversationId, job.organizationId),
+          ]
+        : []),
+    ])
+    console.error("whatsapp_catalog_delivery_job_failed", {
+      organizationId: job.organizationId,
+      conversationId: job.conversationId,
+      jobId: job.id,
+      attempt: job.attempts,
+      status: failed ? "failed" : "pending",
+      error: summary,
+    })
   }
+}
 
-  return {
-    enviadas: sent,
-
-    erro: error ?? (sent ? null : "Os produtos não têm foto cadastrada."),
-
-    modelosEnviados: sentModels,
+export async function processPendingCatalogDeliveries(
+  env: Env,
+  organizationId?: string,
+  conversationId?: string,
+  limit = 10,
+) {
+  for (let count = 0; count < limit; count++) {
+    const filters = [
+      "(status='pending' AND next_attempt_at<=CURRENT_TIMESTAMP) OR (status='processing' AND locked_until<=CURRENT_TIMESTAMP)",
+    ]
+    const values: string[] = []
+    if (organizationId) {
+      filters.push("organization_id=?")
+      values.push(organizationId)
+    }
+    if (conversationId) {
+      filters.push("conversation_id=?")
+      values.push(conversationId)
+    }
+    const job = await env.DB.prepare(
+      `SELECT id FROM catalog_delivery_jobs WHERE (${filters[0]})${
+        filters.length > 1 ? ` AND ${filters.slice(1).join(" AND ")}` : ""
+      } ORDER BY created_at,id LIMIT 1`,
+    )
+      .bind(...values)
+      .first<{ id: string }>()
+    if (!job) return
+    await processCatalogDeliveryJob(env, job.id)
   }
+}
+
+export async function recoverUnqueuedCatalogDeliveries(
+  env: Env,
+  limit = 20,
+) {
+  const conversations = (
+    await env.DB.prepare(
+      `SELECT c.id conversationId,c.organization_id organizationId,
+         c.ai_catalog_source_external_id inboundExternalId
+       FROM conversations c
+       WHERE c.ai_catalog_status='ENVIANDO'
+         AND c.ai_catalog_source_external_id IS NOT NULL
+         AND EXISTS (
+           SELECT 1 FROM messages m
+           WHERE m.organization_id=c.organization_id
+             AND m.conversation_id=c.id AND m.direction='outbound' AND m.is_ai=1
+             AND m.ai_reply_key='ai:'||c.ai_catalog_source_external_id||':welcome'
+             AND m.status IN ('accepted','sent','delivered','read')
+         )
+         AND NOT EXISTS (
+           SELECT 1 FROM catalog_delivery_jobs j
+           WHERE j.organization_id=c.organization_id
+             AND j.conversation_id=c.id
+             AND j.inbound_external_id=c.ai_catalog_source_external_id
+         )
+       ORDER BY c.ai_catalog_updated_at,c.id LIMIT ?`,
+    )
+      .bind(limit)
+      .all<{
+        conversationId: string
+        organizationId: string
+        inboundExternalId: string
+      }>()
+  ).results
+
+  for (const conversation of conversations) {
+    const result = await queueCatalogDelivery(
+      env,
+      conversation.organizationId,
+      conversation.conversationId,
+      conversation.inboundExternalId,
+    )
+    if (result.status === "FALHOU")
+      await env.DB.prepare(
+        "UPDATE conversations SET ai_catalog_status='FALHOU',ai_catalog_updated_at=CURRENT_TIMESTAMP WHERE id=? AND organization_id=? AND ai_catalog_status='ENVIANDO'",
+      )
+        .bind(conversation.conversationId, conversation.organizationId)
+        .run()
+    console.info("whatsapp_catalog_orphaned_welcome_recovered", {
+      organizationId: conversation.organizationId,
+      conversationId: conversation.conversationId,
+      inboundExternalId: conversation.inboundExternalId,
+      status: result.status,
+    })
+  }
+  return conversations.length
 }
 
 async function sendProductPhotos(
@@ -1043,8 +2020,6 @@ async function sendProductPhotos(
 
       continue
     }
-
-    if (state.attemptedImages.size >= MAX_PHOTOS_PER_TURN) break
 
     const object = await env.CATALOG?.get(image.key)
 
@@ -1161,9 +2136,7 @@ export async function runCatalogTool(
     return result
   }
 
-  const matches = await findProducts(env, organizationId, search)
-
-  if (name === "enviarCatalogoFiltrado") {
+  if (name === "enviarCatalogoCompleto") {
     const result = await sendCatalog(
       env,
 
@@ -1180,9 +2153,11 @@ export async function runCatalogTool(
       ...result,
 
       instrucao:
-        "As legendas das fotos não falam de estoque. Não afirme disponibilidade se não estiver confirmada.",
+        "As legendas das fotos não falam de estoque. Não afirme disponibilidade se não estiver confirmada. ENVIADO confirma aceite de todos os lotes pela API, não entrega ao destinatário; consulte statusEntrega antes de falar sobre entrega.",
     }
   }
+
+  const matches = await findProducts(env, organizationId, search)
 
   if (!matches.length)
     return {

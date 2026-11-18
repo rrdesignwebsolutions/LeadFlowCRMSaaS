@@ -116,12 +116,20 @@ describe("ações da caixa de entrada", () => {
     db.close()
   })
 
-  it("ordena as conversas pela mensagem mais recente, mesmo se outra aguarda vendedor", async () => {
+  it("mantém pedidos de vendedor e leads quentes no topo, ordenando o restante por atividade", async () => {
     const { db, call } = setup()
     db.exec(`
       INSERT INTO contacts(id,organization_id,phone_e164) VALUES('new-contact','org','15559876543');
       INSERT INTO conversations(id,organization_id,contact_id,integration_id,last_message_at)
         VALUES('new-conv','org','new-contact','integration','2026-11-18T15:00:00.000Z');
+      INSERT INTO contacts(id,organization_id,phone_e164) VALUES('hot-contact','org','15551112222');
+      INSERT INTO conversations(id,organization_id,contact_id,integration_id,last_message_at)
+        VALUES('hot-conv','org','hot-contact','integration','2026-11-18T13:00:00.000Z');
+      INSERT INTO leads(id,organization_id,contact_id,status,ai_score)
+        VALUES('hot-lead','org','hot-contact','hot',85);
+      INSERT INTO contacts(id,organization_id,phone_e164) VALUES('old-contact','org','15553334444');
+      INSERT INTO conversations(id,organization_id,contact_id,integration_id,last_message_at)
+        VALUES('old-conv','org','old-contact','integration','2026-11-18T12:00:00.000Z');
       UPDATE conversations
         SET last_message_at='2026-11-18T14:00:00.000Z',human_requested_at='2026-11-18T14:00:00.000Z'
         WHERE id='conv';
@@ -130,7 +138,12 @@ describe("ações da caixa de entrada", () => {
     const response = await call("/api/conversations", "GET")
 
     expect(await response?.json()).toMatchObject({
-      results: [{ id: "new-conv" }, { id: "conv", humanRequestedAt: "2026-11-18T14:00:00.000Z" }],
+      results: [
+        { id: "conv", humanRequestedAt: "2026-11-18T14:00:00.000Z" },
+        { id: "hot-conv", leadStatus: "hot" },
+        { id: "new-conv" },
+        { id: "old-conv" },
+      ],
     })
     db.close()
   })

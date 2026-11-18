@@ -1,18 +1,30 @@
 import { afterEach, describe, expect, it, vi } from "vitest"
 import type { Env } from "../worker/index"
 import { autoReply } from "../worker/ai"
-import { catalogEnabled, sendCatalog } from "../worker/catalog"
-import { sendText } from "../worker/whatsapp"
+import {
+  catalogEnabled,
+  processPendingCatalogDeliveries,
+  sendCatalog,
+} from "../worker/catalog"
+import { sendFile, sendText } from "../worker/whatsapp"
 
 vi.mock("../worker/whatsapp", () => ({
   sendText: vi.fn(async () => new Response(null, { status: 200 })),
+  sendFile: vi.fn(async () => new Response(null, { status: 200 })),
 }))
 
 vi.mock("../worker/catalog", () => ({
   catalogEnabled: vi.fn(async () => false),
   catalogTools: [],
+  processPendingCatalogDeliveries: vi.fn(async () => {}),
   runCatalogTool: vi.fn(),
-  sendCatalog: vi.fn(async () => ({ enviadas: 1, erro: null })),
+  sendCatalog: vi.fn(async () => ({
+    enviadas: 0,
+    erro: null,
+    status: "ENVIANDO",
+    totalSelecionados: 30,
+    totalLotes: 8,
+  })),
 }))
 
 vi.mock("../worker/verification", () => ({
@@ -33,6 +45,7 @@ type TestDecision = {
     budgetRange: string | null
     paymentMethod: string | null
     purchaseTimeline: string | null
+    purchaseReadiness: "ready_now" | "considering" | "future" | "unknown"
     paymentViability: "blocked" | "viable" | "unknown"
   }
 }
@@ -48,6 +61,7 @@ function setup(
     messageBody?: string
     contentAvailable?: number
     catalogStatus?: string
+    catalogJobStatus?: string | null
     aiState?: string
     organization?: string
     assistantName?: string
@@ -66,6 +80,10 @@ function setup(
             catalogStatus: options.catalogStatus ?? "ENVIADO", catalogSourceExternalId: null,
             assignedTo: options.assignedTo ?? null, assignmentRevision: 0,
           }
+          if (sql.includes("FROM catalog_delivery_jobs"))
+            return options.catalogJobStatus
+              ? { status: options.catalogJobStatus }
+              : null
           if (sql.includes("SELECT 1 x FROM conversations")) return options.takenOver ? { x: 1 } : null
           if (sql.includes("SELECT direction,external_id externalId")) return { direction: "inbound", externalId: "latest" }
           if (sql.startsWith("SELECT 1 FROM conversations")) return { ok: 1 }
@@ -111,7 +129,8 @@ function decision(overrides: Partial<TestDecision> = {}): TestDecision {
     offerSalesperson: false,
     lead: {
       status: "hot", score: 70, summary: null, productInterest: null,
-      mainInterest: null, budgetRange: null, paymentMethod: null, purchaseTimeline: null, paymentViability: "viable",
+      mainInterest: null, budgetRange: null, paymentMethod: null, purchaseTimeline: null,
+      purchaseReadiness: "ready_now", paymentViability: "viable",
     },
     ...overrides,
   }
@@ -121,23 +140,43 @@ afterEach(() => {
   vi.clearAllMocks()
   vi.unstubAllGlobals()
   vi.mocked(catalogEnabled).mockResolvedValue(false)
-  vi.mocked(sendCatalog).mockResolvedValue({ enviadas: 1, erro: null })
+  vi.mocked(processPendingCatalogDeliveries).mockResolvedValue(undefined)
+  vi.mocked(sendCatalog).mockResolvedValue({
+    enviadas: 0,
+    erro: null,
+    status: "ENVIANDO",
+    totalSelecionados: 30,
+    totalLotes: 8,
+  })
 })
 
 describe("oferta de vendedor pela IA", () => {
   it("envia a saudação aceita pela API antes de iniciar o catálogo no primeiro contato", async () => {
     vi.mocked(catalogEnabled).mockResolvedValue(true)
-    const { env, statements } = setup(decision(), 1, {
+    const { env, statements, fetchMock } = setup(decision(), 1, {
       catalogStatus: "PENDENTE",
       assistantName: "Theo",
-      organization: "GoO Elétricos Itajubá",
+      organization: "Goo Elétricos",
     })
 
-    await autoReply(env, "org", "conversation", "latest")
+    vi.mocked(processPendingCatalogDeliveries).mockImplementationOnce(
+      async () => {
+        await sendFile(
+          env,
+          { userId: "", organizationId: "org", role: "ai" },
+          "conversation",
+          new File([new Uint8Array([1])], "catalogo.pdf", {
+            type: "application/pdf",
+          }),
+          "Catálogo",
+        )
+      },
+    )
+    expect(await autoReply(env, "org", "conversation", "latest")).toBe(true)
 
     const calls = vi.mocked(sendText).mock.calls
     expect(calls[0]?.[3]).toBe(
-      "Oi! Tudo bem? 😊 Eu sou o Theo, assistente virtual da GoO Elétricos Itajubá! 🛵\n\nVou te enviar nosso catálogo com os modelos disponíveis para você conhecer.\n\nPode olhar com calma! Se surgir alguma dúvida sobre os modelos ou quiser conhecer nossas formas de pagamento, estou à disposição!",
+      "Oi! Tudo bem? 😊 Eu sou o Theo, assistente virtual da GoO Elétricos Itajubá! 🛵\n\nVou te enviar nosso catálogo com todas as nossas opções de scooters para você conhecer.\n\nPode olhar com calma! Se tiver alguma dúvida sobre os modelos ou quiser conhecer as formas de pagamento, estou à disposição!",
     )
     expect(calls[0]?.[4]).toEqual({ aiReplyKey: "ai:latest:welcome" })
     expect(sendText.mock.invocationCallOrder[0]).toBeLessThan(
@@ -146,6 +185,12 @@ describe("oferta de vendedor pela IA", () => {
     expect(sendCatalog).toHaveBeenCalledOnce()
     expect(vi.mocked(sendCatalog).mock.calls[0]).toHaveLength(5)
     expect(calls).toHaveLength(2)
+    expect(calls[1]?.[3]).toBe("Como posso ajudar?")
+    expect(fetchMock).toHaveBeenCalledOnce()
+    expect(sendFile).toHaveBeenCalledOnce()
+    expect(sendText.mock.invocationCallOrder[1]).toBeLessThan(
+      sendFile.mock.invocationCallOrder[0]!,
+    )
     expect(statements.some((sql) => sql.includes("ai_state='HUMANO'"))).toBe(false)
   })
 
@@ -217,11 +262,12 @@ describe("oferta de vendedor pela IA", () => {
     expect(statements.some((sql) => sql.includes("UPDATE conversations SET human_requested_at"))).toBe(false)
     const request = JSON.parse(String(fetchMock.mock.calls[0][1]?.body))
     expect(request.text.format.schema.required).toContain("offerSalesperson")
+    expect(request.text.format.schema.properties.lead.required).toContain("purchaseReadiness")
   })
 
   it.each([
     ["sem necessidade identificada", decision()],
-    ["lead qualificado", decision({ offerSalesperson: true, lead: { ...decision().lead, status: "qualified", score: 80 } })],
+    ["lead qualificado", decision({ offerSalesperson: true, lead: { ...decision().lead, status: "qualified", score: 80, purchaseReadiness: "considering" } })],
     ["nota abaixo de 70", decision({ offerSalesperson: true, lead: { ...decision().lead, score: 69 } })],
     ["nota ausente", decision({ offerSalesperson: true, lead: { ...decision().lead, score: null } })],
     ["nota inválida", decision({ offerSalesperson: true, lead: { ...decision().lead, score: 101 } })],
@@ -286,6 +332,26 @@ describe("oferta de vendedor pela IA", () => {
       "Pode me reenviar sua dúvida por texto?",
     )
     expect(sendCatalog).toHaveBeenCalledOnce()
+  })
+
+  it("responde à pergunta do cliente enquanto o catálogo está sendo enviado", async () => {
+    const { env } = setup(
+      decision({ reply: "A autonomia informada é de até 50 km." }),
+      2,
+      {
+        messageBody: "Qual é a autonomia?",
+        catalogStatus: "ENVIANDO",
+        catalogJobStatus: "processing",
+      },
+    )
+
+    await autoReply(env, "org", "conversation", "latest")
+
+    expect(sendCatalog).not.toHaveBeenCalled()
+    expect(sendText).toHaveBeenCalledOnce()
+    expect(vi.mocked(sendText).mock.calls[0]?.[3]).toBe(
+      "A autonomia informada é de até 50 km.",
+    )
   })
 
   it("não repete saudação nem catálogo em um novo erro 131060", async () => {

@@ -462,7 +462,57 @@ describe("WhatsApp coexistence webhooks", () => {
 
       "org",
     ])
+    expect(
+      statements.some((statement) =>
+        statement.sql.includes(
+          "UPDATE catalog_delivery_batches SET delivery_status=?",
+        ),
+      ),
+    ).toBe(true)
+    expect(
+      statements.some((statement) =>
+        statement.sql.includes("UPDATE catalog_delivery_jobs SET delivery_status=CASE"),
+      ),
+    ).toBe(true)
   })
+
+  it.each(["sent", "delivered", "read"] as const)(
+    "propagates the Meta %s status to the catalog batch",
+    async (status) => {
+      const { env, statements } = database()
+
+      await handleMetaPayload(
+        env,
+        {
+          object: "whatsapp_business_account",
+          entry: [
+            {
+              id: "12345",
+              changes: [
+                {
+                  field: "messages",
+                  value: {
+                    metadata: { phone_number_id: "98765" },
+                    statuses: [{ id: "wamid.outbound", status }],
+                  },
+                },
+              ],
+            },
+          ],
+        },
+        `status-${status}`,
+      )
+
+      expect(
+        statements.some(
+          (statement) =>
+            statement.sql.includes(
+              "UPDATE catalog_delivery_batches SET delivery_status=?",
+            ) && statement.args[0] === status,
+        ),
+      ).toBe(true)
+    },
+  )
 
   it("valida a janela de 24 horas pelo horário da última mensagem recebida", () => {
     const now = Date.parse("2026-03-16T12:00:00.000Z")

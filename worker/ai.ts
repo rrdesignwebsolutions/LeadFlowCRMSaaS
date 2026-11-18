@@ -5,6 +5,7 @@ import { effectiveLeadStatus, normalizeLeadAssessment } from "./lead-status"
 import {
   catalogEnabled,
   catalogTools,
+  processPendingCatalogDeliveries,
   runCatalogTool,
   sendCatalog,
   type CatalogToolState,
@@ -316,6 +317,7 @@ type Decision = {
     budgetRange: string | null
     paymentMethod: string | null
     purchaseTimeline: string | null
+    purchaseReadiness: "ready_now" | "considering" | "future" | "unknown"
     paymentViability: "blocked" | "viable" | "unknown"
   }
 }
@@ -341,6 +343,10 @@ const decisionSchema = {
         budgetRange: nullableString,
         paymentMethod: nullableString,
         purchaseTimeline: nullableString,
+        purchaseReadiness: {
+          type: "string",
+          enum: ["ready_now", "considering", "future", "unknown"],
+        },
         paymentViability: {
           type: "string",
           enum: ["blocked", "viable", "unknown"],
@@ -355,6 +361,7 @@ const decisionSchema = {
         "budgetRange",
         "paymentMethod",
         "purchaseTimeline",
+        "purchaseReadiness",
         "paymentViability",
       ],
     },
@@ -406,14 +413,17 @@ const QUALIFICATION_RULES = `QUALIFICAÇÃO
 - Uma restrição no nome, sozinha, não impede ser quente se houver outra forma de pagamento potencialmente viável. Não trate falta de informação como impedimento confirmado.
 - Se blocked, status=financial_pending e score no máximo 69; explique a pendência no resumo. Não classifique como quente nem ofereça vendedor apenas para fechar.
 - Se antes havia pendência, mantenha-a enquanto não houver alternativa potencialmente viável; reavalie quando houver.
-- hot: score 70+ e pronto para comprar com caminho de pagamento potencialmente viável; qualified: 50-69 e interesse real; follow_up: interessado para retorno posterior; cold: abaixo de 30, sem interesse; in_service: ainda sem sinais suficientes.
+- purchaseReadiness: ready_now somente quando a pessoa demonstra intenção concreta de concluir a compra agora/num prazo próximo, por exemplo escolheu o modelo e pergunta como fechar; considering para pesquisa, comparação ou perguntas de preço/parcelas sem decisão de compra próxima; future quando declara que pretende comprar mais adiante; unknown quando não há evidência suficiente. Perguntar preço, pedir simulação ou dizer genericamente "quero comprar" não comprova prontidão.
+- hot: score 70+ E purchaseReadiness=ready_now E caminho de pagamento potencialmente viável; qualified: 50-69 e interesse real, mas sem prontidão comprovada; follow_up: interessado para retorno posterior; cold: abaixo de 30, sem interesse; in_service: ainda sem sinais suficientes.
+- Sempre preencha purchaseReadiness e mantenha status/score coerentes com esses critérios; não marque como hot se qualquer requisito faltar.
 - score é uma estimativa de 0 a 100; summary resume em 1-2 frases o interesse e a situação atual. Use null nos campos desconhecidos.
 `
 
 const CATALOG_RULES = `CATÁLOGO (ferramentas)
 - Para informações de produtos, modelos, fotos e disponibilidade, use as ferramentas do catálogo; elas são a fonte confiável. Ofereça espontaneamente apenas modelos retornados por listarModelosDisponiveis.
 - Só afirme que há estoque se a ferramenta indicar "disponível". Caso contrário, diga que vai confirmar com a equipe.
-- Só diga que enviou foto se enviarFotoProduto ou enviarCatalogoFiltrado retornar enviadas maior que 0. Se falhar, não diga que enviou; avise que vai pedir para a equipe enviar.
+- ENVIADO significa que todos os lotes foram aceitos pela API da Meta, não que foram entregues ou lidos. Só confirme entrega/leitura quando o status de entrega da Meta indicar isso. ENVIANDO significa que ainda há lotes pendentes; nunca diga que o catálogo completo foi aceito nesse estado.
+- Só diga que enviou uma foto individual se enviarFotoProduto retornar enviadas maior que 0. Se falhar, não diga que enviou; avise que vai pedir para a equipe enviar.
 - Se o cliente pedir um modelo não autorizado ou fora do catálogo, diga que precisa consultar a equipe comercial e marque handoff=true.
 - Não repita fotos já enviadas na conversa sem o cliente pedir.
 `
@@ -506,8 +516,9 @@ export async function autoReply(
       "Não foi possível iniciar a resposta da IA: conversa ocupada",
     )
 
+  let result: boolean | undefined
   try {
-    return await generateReply(
+    result = await generateReply(
       env,
       organizationId,
       conversationId,
@@ -521,6 +532,15 @@ export async function autoReply(
       .bind(conversationId, organizationId, lockId)
       .run()
   }
+
+  await processPendingCatalogDeliveries(
+    env,
+    organizationId,
+    conversationId,
+    1,
+  )
+
+  return result
 }
 
 async function sendInitialWelcomeAndCatalog(
@@ -533,10 +553,56 @@ async function sendInitialWelcomeAndCatalog(
   status: string,
   storedSourceId: string | null,
   firstInboundExternalId: string,
-): Promise<{ status: "ENVIADO" | "FALHOU"; note: string } | null> {
+): Promise<
+  | {
+      status: "ENVIADO" | "ENVIANDO" | "FALHOU"
+      note: string
+      queued?: boolean
+    }
+  | null
+> {
   if (status !== "PENDENTE" && status !== "ENVIANDO") return null
 
   let sourceId = storedSourceId || firstInboundExternalId
+  if (status === "ENVIANDO") {
+    const activeJob = await env.DB.prepare(
+      `SELECT status,delivery_status deliveryStatus FROM catalog_delivery_jobs
+       WHERE organization_id=? AND conversation_id=? AND inbound_external_id=?`,
+    )
+      .bind(organizationId, conversationId, sourceId)
+      .first<{ status: string; deliveryStatus: string }>()
+    if (activeJob) {
+      if (activeJob.status === "completed") {
+        await env.DB.prepare(
+          "UPDATE conversations SET ai_catalog_status='ENVIADO',ai_catalog_updated_at=CURRENT_TIMESTAMP WHERE id=? AND organization_id=? AND ai_catalog_status='ENVIANDO'",
+        )
+          .bind(conversationId, organizationId)
+          .run()
+        return {
+          status: "ENVIADO",
+          note:
+            activeJob.deliveryStatus === "delivered"
+              ? "Todos os lotes foram aceitos pela API e a Meta confirmou a entrega; não repita sem pedido explícito."
+              : activeJob.deliveryStatus === "failed"
+                ? "Todos os lotes foram aceitos pela API, mas a Meta informou falha de entrega; não afirme que o cliente recebeu o catálogo."
+                : "Todos os lotes foram aceitos pela API, mas a entrega ao cliente ainda não foi confirmada pela Meta.",
+        }
+      }
+      if (activeJob.status === "failed" || activeJob.status === "needs_review") {
+        await env.DB.prepare(
+          "UPDATE conversations SET ai_catalog_status='FALHOU',ai_catalog_updated_at=CURRENT_TIMESTAMP WHERE id=? AND organization_id=? AND ai_catalog_status='ENVIANDO'",
+        )
+          .bind(conversationId, organizationId)
+          .run()
+        return {
+          status: "FALHOU",
+          note: "O envio do catálogo falhou ou precisa de revisão. Não afirme que foi enviado; responda à pergunta do cliente normalmente.",
+        }
+      }
+      return null
+    }
+  }
+
   if (status === "PENDENTE") {
     const claimed = await env.DB.prepare(
       `UPDATE conversations SET ai_catalog_status='ENVIANDO',
@@ -565,7 +631,16 @@ async function sendInitialWelcomeAndCatalog(
       .run()
   }
 
-  const greeting = `Oi! Tudo bem? 😊 Eu sou o ${assistantName}, assistente virtual da ${organization}! 🛵\n\nVou te enviar nosso catálogo com os modelos disponíveis para você conhecer.\n\nPode olhar com calma! Se surgir alguma dúvida sobre os modelos ou quiser conhecer nossas formas de pagamento, estou à disposição!`
+  const organizationKey = organization
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase()
+    .replace(/[^a-z0-9]/g, "")
+  const greetingOrganization =
+    organizationKey === "gooeletricos"
+      ? "GoO Elétricos Itajubá"
+      : organization
+  const greeting = `Oi! Tudo bem? 😊 Eu sou o ${assistantName}, assistente virtual da ${greetingOrganization}! 🛵\n\nVou te enviar nosso catálogo com todas as nossas opções de scooters para você conhecer.\n\nPode olhar com calma! Se tiver alguma dúvida sobre os modelos ou quiser conhecer as formas de pagamento, estou à disposição!`
   const welcome = await sendText(
     env,
     { userId: "", organizationId, role: "ai" },
@@ -619,7 +694,32 @@ async function sendInitialWelcomeAndCatalog(
         inboundExternalId: sourceId,
       },
     )
-    const sent = result.enviadas > 0 && !result.erro
+    if (result.status === "ENVIANDO")
+      return {
+        status: "ENVIANDO",
+        queued: true,
+        note: `A saudação foi aceita e o catálogo completo entrou na fila com ${result.totalSelecionados ?? 0} produtos em ${result.totalLotes ?? 0} lotes. Não diga que o envio terminou até todos os lotes serem aceitos pela API.`,
+      }
+
+    if (result.status === "FALHOU") {
+      await finish("FALHOU")
+      console.error("whatsapp_ai_catalog_failed", {
+        organizationId,
+        conversationId,
+        reason: result.erro ?? "catalog_selection_failed",
+        totalApproved: result.totalAprovados ?? null,
+        totalSelected: result.totalSelecionados ?? null,
+        totalIncluded: result.totalIncluidos ?? null,
+        missingIds: result.idsFaltantes ?? [],
+      })
+      return {
+        status: "FALHOU",
+        note: "A saudação foi aceita, mas o catálogo não pôde ser colocado integralmente na fila. Não afirme que foi enviado.",
+      }
+    }
+
+    const sent =
+      result.status === "ENVIADO" || (result.enviadas > 0 && !result.erro)
     const catalogStatus = sent ? "ENVIADO" : "FALHOU"
     await finish(catalogStatus)
     if (!sent)
@@ -640,7 +740,7 @@ async function sendInitialWelcomeAndCatalog(
     return {
       status: catalogStatus,
       note: sent
-        ? "O catálogo foi aceito pela API e enviado após a saudação."
+        ? "Todos os lotes do catálogo foram aceitos pela API após a saudação. Isso não confirma a entrega ao cliente."
         : result.enviadas > 0
           ? "Parte do catálogo foi aceita, mas o envio ficou incompleto. Não afirme que o catálogo completo foi enviado; continue ajudando por texto."
           : "O catálogo não foi aceito para envio. Não afirme que foi enviado; continue ajudando por texto.",
@@ -673,6 +773,7 @@ async function generateReply(
 ) {
   const context = await env.DB.prepare(
     `SELECT l.id leadId,${effectiveLeadStatus("l")} status,o.name organization,ct.name contactName,c.ai_state aiState,c.ai_catalog_status catalogStatus,c.ai_catalog_source_external_id catalogSourceExternalId,c.assignment_revision assignmentRevision,
+      (SELECT j.delivery_status FROM catalog_delivery_jobs j WHERE j.organization_id=c.organization_id AND j.conversation_id=c.id AND j.inbound_external_id=c.ai_catalog_source_external_id ORDER BY j.created_at DESC LIMIT 1) catalogDeliveryStatus,
       (SELECT u.name FROM messages hm JOIN users u ON u.id=hm.sent_by WHERE hm.organization_id=c.organization_id AND hm.conversation_id=c.id AND hm.sent_by IS NOT NULL ORDER BY hm.created_at DESC,hm.rowid DESC LIMIT 1) attendantName,
       (SELECT 1 FROM messages m WHERE m.organization_id=c.organization_id AND m.conversation_id=c.id AND m.direction='outbound' AND m.is_ai=0 AND m.status<>'failed' AND (c.ai_resumed_at IS NULL OR julianday(COALESCE(m.external_created_at,m.created_at)) > julianday(c.ai_resumed_at))) humanActive
      FROM conversations c
@@ -692,6 +793,7 @@ async function generateReply(
       aiState: string
       catalogStatus: string
       catalogSourceExternalId: string | null
+      catalogDeliveryStatus: string | null
       assignmentRevision: number
     }>()
 
@@ -761,8 +863,11 @@ async function generateReply(
       !!message.externalId &&
       isReplyableInbound(message),
   )
-  let catalogOutcome: { status: "ENVIADO" | "FALHOU"; note: string } | null =
-    null
+  let catalogOutcome: {
+    status: "ENVIADO" | "ENVIANDO" | "FALHOU"
+    note: string
+    queued?: boolean
+  } | null = null
   if (firstInbound?.externalId) {
     catalogOutcome = await sendInitialWelcomeAndCatalog(
       env,
@@ -898,10 +1003,16 @@ async function generateReply(
             text: `Dados já coletados do lead: ${JSON.stringify(lead ?? {})}\n\nEstado do primeiro catálogo: ${
               catalogOutcome?.note ??
               (context.catalogStatus === "ENVIADO"
-                ? "O catálogo já foi enviado anteriormente; não o repita sem pedido explícito."
+                ? context.catalogDeliveryStatus === "delivered"
+                  ? "Todos os lotes foram aceitos pela API e a Meta confirmou a entrega; não repita sem pedido explícito."
+                  : context.catalogDeliveryStatus === "failed"
+                    ? "Todos os lotes foram aceitos pela API, mas a Meta informou falha de entrega. Não diga que o cliente recebeu o catálogo."
+                    : "Todos os lotes foram aceitos pela API, mas a entrega ao destinatário ainda não foi confirmada pela Meta."
                 : context.catalogStatus === "FALHOU"
                   ? "O catálogo falhou anteriormente; não afirme que foi enviado. Continue ajudando por texto."
-                  : "Ainda não houve envio inicial do catálogo.")
+                  : context.catalogStatus === "ENVIANDO"
+                    ? "O catálogo ainda está sendo enviado; não afirme que foi enviado. Responda à pergunta atual normalmente."
+                    : "Ainda não houve envio inicial do catálogo.")
             }\n\nConversa (mais antiga primeiro):\n${history
               .map(
                 (m) =>
@@ -941,12 +1052,14 @@ async function generateReply(
     l.status,
     l.score,
     l.paymentViability,
+    l.purchaseReadiness,
     context.status,
   )
   const offerSalesperson =
     decision.offerSalesperson === true &&
     decision.handoff === false &&
     assessment.status === "hot" &&
+    l.purchaseReadiness === "ready_now" &&
     l.paymentViability === "viable" &&
     typeof assessment.score === "number" &&
     Number.isInteger(assessment.score) &&
@@ -1005,25 +1118,6 @@ async function generateReply(
       ? assessment.status
       : null
 
-  for (const [index, part] of replyParts.entries()) {
-    const sent = await sendText(
-      env,
-      { userId: "", organizationId, role: "ai" },
-      conversationId,
-      part,
-      {
-        talkButton:
-          !usedFallbackReply &&
-          offerSalesperson &&
-          index === replyParts.length - 1,
-        assignmentRevision: context.assignmentRevision,
-        aiReplyKey: `ai:${inboundExternalId}:${usedFallbackReply ? "fallback" : "text"}:${index}`,
-      },
-    )
-    if (!sent.ok)
-      throw new Error(`envio da resposta da IA falhou (${sent.status})`)
-  }
-
   const stillAssignedToAi = await env.DB.prepare(
     "SELECT 1 FROM conversations WHERE id=? AND organization_id=? AND ai_state='IA_ATIVA'",
   )
@@ -1062,6 +1156,25 @@ async function generateReply(
       organizationId,
     )
     .run()
+
+  for (const [index, part] of replyParts.entries()) {
+    const sent = await sendText(
+      env,
+      { userId: "", organizationId, role: "ai" },
+      conversationId,
+      part,
+      {
+        talkButton:
+          !usedFallbackReply &&
+          offerSalesperson &&
+          index === replyParts.length - 1,
+        assignmentRevision: context.assignmentRevision,
+        aiReplyKey: `ai:${inboundExternalId}:${usedFallbackReply ? "fallback" : "text"}:${index}`,
+      },
+    )
+    if (!sent.ok)
+      throw new Error(`envio da resposta da IA falhou (${sent.status})`)
+  }
 
   if (decision.handoff)
     await requestHuman(env, organizationId, conversationId, false)
@@ -1142,6 +1255,10 @@ const classifySchema = {
     budgetRange: nullableString,
     paymentMethod: nullableString,
     purchaseTimeline: nullableString,
+    purchaseReadiness: {
+      type: "string",
+      enum: ["ready_now", "considering", "future", "unknown"],
+    },
     paymentViability: {
       type: "string",
       enum: ["blocked", "viable", "unknown"],
@@ -1156,6 +1273,7 @@ const classifySchema = {
     "budgetRange",
     "paymentMethod",
     "purchaseTimeline",
+    "purchaseReadiness",
     "paymentViability",
   ],
 }
@@ -1300,6 +1418,7 @@ ${knowledge || "(vazia)"}`,
     l.status,
     l.score,
     l.paymentViability,
+    l.purchaseReadiness,
     context.status,
   )
   const score =

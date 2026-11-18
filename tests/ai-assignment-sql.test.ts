@@ -10,13 +10,21 @@ vi.mock("../worker/whatsapp", () => ({
   sendText: vi.fn(async () => new Response(null, { status: 200 })),
 }))
 vi.mock("../worker/catalog", () => ({
-  catalogEnabled: vi.fn(async () => false), catalogTools: [], runCatalogTool: vi.fn(),
+  catalogEnabled: vi.fn(async () => false),
+  catalogTools: [],
+  processPendingCatalogDeliveries: vi.fn(async () => {}),
+  runCatalogTool: vi.fn(),
 }))
 vi.mock("../worker/verification", () => ({
   escapeHtml: (text: string) => text, sendNotificationEmail: vi.fn(),
 }))
 
-function setup(paymentViability: "blocked" | "viable" | "unknown" = "unknown", leadStatus = "in_service", score = 35) {
+function setup(
+  paymentViability: "blocked" | "viable" | "unknown" = "unknown",
+  leadStatus = "in_service",
+  score = 35,
+  purchaseReadiness: "ready_now" | "considering" | "future" | "unknown" = "ready_now",
+) {
   const db = new DatabaseSync(":memory:")
   for (const file of readdirSync("migrations").filter((name) => name.endsWith(".sql")).sort())
     db.exec(readFileSync(join("migrations", file), "utf8"))
@@ -47,7 +55,8 @@ function setup(paymentViability: "blocked" | "viable" | "unknown" = "unknown", l
     output: [{ type: "message", content: [{ type: "output_text", text: JSON.stringify({
       reply: "Olá!", handoff: false, offerSalesperson: false,
       lead: { status: leadStatus, score, summary: null, productInterest: null,
-        mainInterest: null, budgetRange: null, paymentMethod: null, purchaseTimeline: null, paymentViability },
+        mainInterest: null, budgetRange: null, paymentMethod: null, purchaseTimeline: null,
+        purchaseReadiness, paymentViability },
     }) }] }],
   }))))
   return { db, env: { DB: adapter, OPENAI_API_KEY: "test" } as unknown as Env }
@@ -122,6 +131,24 @@ describe("atribuição com SQL real", () => {
     db.close()
   })
 
+  it("promove lead qualificado quando prontidão, pontuação e pagamento atendem aos critérios", async () => {
+    const { db, env } = setup("viable", "qualified", 80, "ready_now")
+    await autoReply(env, "org", "conv", "wamid")
+    expect(db.prepare("SELECT status,ai_score FROM leads").get()).toMatchObject({
+      status: "hot", ai_score: 80,
+    })
+    db.close()
+  })
+
+  it("não mantém lead quente sem prontidão concreta, mesmo com pontuação alta", async () => {
+    const { db, env } = setup("viable", "hot", 90, "considering")
+    await autoReply(env, "org", "conv", "wamid")
+    expect(db.prepare("SELECT status,ai_score FROM leads").get()).toMatchObject({
+      status: "qualified", ai_score: 69,
+    })
+    db.close()
+  })
+
   it("mantém pendência se não houver alternativa viável identificada", async () => {
     const { db, env } = setup("unknown", "hot", 90)
     db.exec("UPDATE leads SET status='follow_up',financial_pending=1")
@@ -137,12 +164,29 @@ describe("atribuição com SQL real", () => {
     vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({
       output: [{ type: "message", content: [{ type: "output_text", text: JSON.stringify({
         status: "hot", score: 90, summary: "Sem alternativa viável", productInterest: null,
-        mainInterest: null, budgetRange: null, paymentMethod: null, purchaseTimeline: null, paymentViability: "blocked",
+        mainInterest: null, budgetRange: null, paymentMethod: null, purchaseTimeline: null,
+        purchaseReadiness: "ready_now", paymentViability: "blocked",
       }) }] }],
     }))))
     await classifyLead(env, "org", "conv", "wamid")
     expect(db.prepare("SELECT status,financial_pending,ai_score FROM leads").get()).toMatchObject({
       status: "follow_up", financial_pending: 1, ai_score: 69,
+    })
+    db.close()
+  })
+
+  it("classifica como quente um lead pronto para comprar com pontuação e pagamento viável", async () => {
+    const { db, env } = setup()
+    vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({
+      output: [{ type: "message", content: [{ type: "output_text", text: JSON.stringify({
+        status: "qualified", score: 82, summary: "Pronto para concluir a compra",
+        productInterest: null, mainInterest: null, budgetRange: null, paymentMethod: null,
+        purchaseTimeline: "Esta semana", purchaseReadiness: "ready_now", paymentViability: "viable",
+      }) }] }],
+    }))))
+    await classifyLead(env, "org", "conv", "wamid")
+    expect(db.prepare("SELECT status,ai_score FROM leads").get()).toMatchObject({
+      status: "hot", ai_score: 82,
     })
     db.close()
   })

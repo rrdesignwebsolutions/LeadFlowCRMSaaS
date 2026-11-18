@@ -11,6 +11,7 @@ vi.mock("../worker/whatsapp", () => ({
 vi.mock("../worker/catalog", () => ({
   catalogEnabled: vi.fn(async () => false),
   catalogTools: [],
+  processPendingCatalogDeliveries: vi.fn(async () => {}),
   runCatalogTool: vi.fn(),
 }))
 
@@ -67,7 +68,7 @@ function decision() {
     lead: {
       status: "qualified", score: 55, summary: null, productInterest: null,
       mainInterest: null, budgetRange: null, paymentMethod: null,
-      purchaseTimeline: null, paymentViability: "unknown",
+      purchaseTimeline: null, purchaseReadiness: "unknown", paymentViability: "unknown",
     },
   }
 }

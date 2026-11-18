@@ -1271,6 +1271,48 @@ export async function recoverUnqueuedInboundMessages(env: Env) {
   return recovered
 }
 
+async function updateCatalogDeliveryStatus(
+  env: Env,
+  organizationId: string,
+  messageId: string,
+  status: "accepted" | "sent" | "delivered" | "read" | "failed",
+) {
+  const updated = await env.DB.prepare(
+    `UPDATE catalog_delivery_batches SET delivery_status=?,updated_at=CURRENT_TIMESTAMP
+     WHERE message_id=? AND delivery_job_id IN (
+       SELECT id FROM catalog_delivery_jobs WHERE organization_id=?
+     )`,
+  )
+    .bind(status, messageId, organizationId)
+    .run()
+  if (!updated.meta.changes) return
+
+  await env.DB.prepare(
+    `UPDATE catalog_delivery_jobs SET delivery_status=CASE
+       WHEN EXISTS (
+         SELECT 1 FROM catalog_delivery_batches b
+         WHERE b.delivery_job_id=catalog_delivery_jobs.id AND b.delivery_status='failed'
+       ) THEN 'failed'
+       WHEN NOT EXISTS (
+         SELECT 1 FROM catalog_delivery_batches b
+         WHERE b.delivery_job_id=catalog_delivery_jobs.id
+           AND b.delivery_status NOT IN ('delivered','read')
+       ) THEN 'delivered'
+       ELSE 'pending' END,updated_at=CURRENT_TIMESTAMP
+     WHERE id IN (
+       SELECT delivery_job_id FROM catalog_delivery_batches WHERE message_id=?
+     ) AND organization_id=?`,
+  )
+    .bind(messageId, organizationId)
+    .run()
+
+  if (status === "failed")
+    console.error("whatsapp_catalog_batch_delivery_failed", {
+      organizationId,
+      messageId,
+    })
+}
+
 async function handleStatus(env: Env, integration: Integration, s: WaStatus) {
   const next = s.status
 
@@ -1308,8 +1350,16 @@ async function handleStatus(env: Env, integration: Integration, s: WaStatus) {
       )
       .run()
 
+    await updateCatalogDeliveryStatus(
+      env,
+      integration.organization_id,
+      message.id,
+      "failed",
+    )
     return
   }
+
+  if (message.status === "failed") return
 
   if (
     !(next in STATUS_RANK) ||
@@ -1322,6 +1372,18 @@ async function handleStatus(env: Env, integration: Integration, s: WaStatus) {
   )
     .bind(next, message.id, integration.organization_id)
     .run()
+  if (
+    next === "accepted" ||
+    next === "sent" ||
+    next === "delivered" ||
+    next === "read"
+  )
+    await updateCatalogDeliveryStatus(
+      env,
+      integration.organization_id,
+      message.id,
+      next,
+    )
 }
 
 type WebhookWorkItem = {
@@ -3217,7 +3279,10 @@ export async function whatsappRoutes(
       (SELECT m.body FROM messages m WHERE m.conversation_id=c.id AND m.organization_id=c.organization_id ORDER BY COALESCE(m.external_created_at,strftime('%Y-%m-%dT%H:%M:%fZ',m.created_at)) DESC,m.rowid DESC LIMIT 1) preview,
       (SELECT m.type FROM messages m WHERE m.conversation_id=c.id AND m.organization_id=c.organization_id ORDER BY COALESCE(m.external_created_at,strftime('%Y-%m-%dT%H:%M:%fZ',m.created_at)) DESC,m.rowid DESC LIMIT 1) previewType
       FROM conversations c JOIN contacts ct ON ct.id=c.contact_id AND ct.organization_id=c.organization_id
-      WHERE c.organization_id=? ORDER BY c.last_message_at DESC,(c.human_requested_at IS NOT NULL) DESC LIMIT 200`)
+      WHERE c.organization_id=? ORDER BY
+        (c.human_requested_at IS NOT NULL) DESC,
+        (leadStatus='hot') DESC,
+        c.last_message_at DESC LIMIT 200`)
         .bind(org)
         .all(),
     )

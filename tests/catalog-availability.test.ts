@@ -1,12 +1,16 @@
 import { describe, expect, it, vi } from "vitest"
+import { PDFDocument } from "pdf-lib"
 
 import type { Env } from "../worker/index"
 
-import { runCatalogTool } from "../worker/catalog"
+import { runCatalogTool, sendCatalog } from "../worker/catalog"
 
-import { sendFile } from "../worker/whatsapp"
+import { sendFile, sendText } from "../worker/whatsapp"
 
-vi.mock("../worker/whatsapp", () => ({ sendFile: vi.fn() }))
+vi.mock("../worker/whatsapp", () => ({
+  sendFile: vi.fn(),
+  sendText: vi.fn(),
+}))
 
 function product(
   model: string,
@@ -53,7 +57,13 @@ function product(
 function setup(
   rows: ReturnType<typeof product>[],
 
-  images: Array<{ id: string; key: string; mime: string; productId?: string }> = [],
+  images: Array<{
+    id: string
+    key: string
+    mime: string
+    productId?: string
+    size?: number
+  }> = [],
 ) {
   const env = {
     DB: {
@@ -70,10 +80,13 @@ function setup(
           async all() {
             return {
               results: sql.includes("FROM catalog_images")
-                ? images.filter(
-                    (image) =>
-                      !image.productId || image.productId === params[0],
-                  )
+                ? images
+                    .filter((image) =>
+                      sql.includes("product_id=? AND organization_id=?")
+                        ? image.productId === params[0]
+                        : params.slice(1).includes(image.productId),
+                    )
+                    .map((image) => ({ ...image, size: image.size ?? 3 }))
                 : rows,
             }
           },
@@ -145,104 +158,53 @@ describe("disponibilidade no catálogo da IA", () => {
       })
   })
 
-  it("envia pelo catálogo da IA todos os produtos aprovados, mesmo sem estoque confirmado", async () => {
-    const now = new Date().toISOString()
-    const env = setup([
-      product("TERA", "out_of_stock", now),
-      product("GT1000", "in_stock", now),
-      product("PIX", "unknown", null),
-    ], [
-      { id: "image-tera", productId: "TERA", key: "tera", mime: "image/jpeg" },
-      { id: "image-gt1000", productId: "GT1000", key: "gt1000", mime: "image/jpeg" },
-      { id: "image-pix", productId: "PIX", key: "pix", mime: "image/jpeg" },
-    ])
+  it("envia PDFs em lotes com todos os produtos aprovados, sem filtrar estoque ou fotos", async () => {
+    const products = Array.from({ length: 16 }, (_, index) =>
+      product(
+        `MODEL-${index + 1}`,
+        index === 0 ? "out_of_stock" : index === 1 ? "unknown" : "in_stock",
+        null,
+      ),
+    )
+    const env = setup(
+      products,
+      products.slice(0, 15).map((item) => ({
+        id: `image-${item.id}`,
+        productId: item.id,
+        key: item.id,
+        mime: "image/jpeg",
+        size: 3,
+      })),
+    )
     const sendFileMock = vi.mocked(sendFile)
     sendFileMock.mockReset()
     sendFileMock.mockResolvedValue(new Response(null, { status: 200 }))
+    const sendTextMock = vi.mocked(sendText)
+    sendTextMock.mockReset()
+    sendTextMock.mockResolvedValue(new Response(null, { status: 200 }))
 
     await expect(
-      runCatalogTool(
+      sendCatalog(
         env,
-        "org",
+        { userId: "user", organizationId: "org", role: "admin" },
         "conv",
-        "enviarCatalogoFiltrado",
-        {},
-        toolState(),
+        null,
       ),
     )
       .resolves.toMatchObject({
-        enviadas: 3,
+        enviadas: 4,
         erro: null,
-        modelosEnviados: ["TERA", "GT1000", "PIX"],
+        modelosEnviados: products.map((item) => item.model),
       })
 
-    expect(sendFileMock).toHaveBeenCalledTimes(3)
-  })
-
-  it("não tenta enviar novamente uma foto após erro da API no mesmo turno", async () => {
-    const now = new Date().toISOString()
-
-    const env = setup(
-      [product("TERA", "in_stock", now)],
-
-      [{ id: "image-1", key: "image-key", mime: "image/jpeg" }],
-    )
-
-    const state = toolState()
-
-    const sendFileMock = vi.mocked(sendFile)
-
-    sendFileMock.mockReset()
-
-    sendFileMock.mockResolvedValue(
-      new Response(
-        JSON.stringify({ error: "A Meta recusou o envio: erro de API" }),
-        {
-          status: 502,
-        },
-      ),
-    )
-
-    const first = await runCatalogTool(
-      env,
-
-      "org",
-
-      "conv",
-
-      "enviarCatalogoFiltrado",
-
-      {},
-
-      state,
-    )
-
-    const second = await runCatalogTool(
-      env,
-
-      "org",
-
-      "conv",
-
-      "enviarCatalogoFiltrado",
-
-      {},
-
-      state,
-    )
-
-    expect(first).toMatchObject({
-      enviadas: 0,
-
-      erro: "A Meta recusou o envio: erro de API",
-    })
-
-    expect(second).toMatchObject({
-      enviadas: 0,
-
-      erro: "A Meta recusou o envio: erro de API",
-    })
-
-    expect(sendFileMock).toHaveBeenCalledTimes(1)
+    expect(sendFileMock).toHaveBeenCalledTimes(4)
+    expect(sendTextMock).not.toHaveBeenCalled()
+    const includedIds: string[] = []
+    for (const [file] of sendFileMock.mock.calls.map((call) => [call[3]])) {
+      const pdf = await PDFDocument.load(await file.arrayBuffer())
+      includedIds.push(...(pdf.getSubject() ?? "").split(","))
+      expect(pdf.getPageCount()).toBeGreaterThan(0)
+    }
+    expect(includedIds).toEqual(products.map((item) => item.id))
   })
 })

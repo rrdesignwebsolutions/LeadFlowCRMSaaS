@@ -3,7 +3,11 @@
 import { aiRoutes } from "./ai"
 import { quickReplyRoutes } from "./quick-replies"
 import { effectiveLeadStatus } from "./lead-status"
-import { catalogRoutes } from "./catalog"
+import {
+  catalogRoutes,
+  processPendingCatalogDeliveries,
+  recoverUnqueuedCatalogDeliveries,
+} from "./catalog"
 import { brandingRoutes } from "./branding"
 import {
   confirmOrder,
@@ -1422,6 +1426,8 @@ export default {
       (async () => {
         await recoverUnqueuedInboundMessages(env)
         await processPendingWhatsAppJobs(env)
+        await recoverUnqueuedCatalogDeliveries(env)
+        await processPendingCatalogDeliveries(env)
       })(),
     )
   },
