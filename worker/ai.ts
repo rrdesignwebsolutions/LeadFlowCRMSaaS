@@ -117,8 +117,27 @@ type InboundMessage = {
   body: string
   type: string
   contentAvailable: number
+  errorCode: string | null
   externalId: string | null
   direction: string
+}
+
+const SUPPORTED_INBOUND_TYPES = [
+  "text",
+  "audio",
+  "image",
+  "button",
+  "interactive",
+]
+
+function isReplyableInbound(message: InboundMessage) {
+  return (
+    (message.contentAvailable === 1 &&
+      SUPPORTED_INBOUND_TYPES.includes(message.type)) ||
+    (message.contentAvailable === 0 &&
+      message.type === "unsupported" &&
+      message.errorCode === "131060")
+  )
 }
 
 async function prepareInboundMedia(
@@ -677,12 +696,27 @@ async function generateReply(
       assignmentRevision: number
     }>()
 
-  if (!context || context.aiState === "HUMANO" || context.humanActive) return
+  if (!context) {
+    console.error("whatsapp_ai_reply_skipped", {
+      organizationId,
+      conversationId,
+      reason: "conversation_context_missing",
+    })
+    return
+  }
+  if (context.aiState === "HUMANO" || context.humanActive) {
+    console.info("whatsapp_ai_reply_skipped", {
+      organizationId,
+      conversationId,
+      reason: context.aiState === "HUMANO" ? "human_state" : "human_message",
+    })
+    return
+  }
 
   const loadHistory = async () =>
     (
     await env.DB.prepare(
-      `SELECT direction,body,type,content_available contentAvailable,external_id externalId FROM messages
+      `SELECT direction,body,type,error_code errorCode,content_available contentAvailable,external_id externalId FROM messages
        WHERE organization_id=? AND conversation_id=? AND body IS NOT NULL
        ORDER BY COALESCE(external_created_at,strftime('%Y-%m-%dT%H:%M:%fZ',created_at)) DESC,rowid DESC LIMIT 20`,
     )
@@ -704,20 +738,29 @@ async function generateReply(
   if (
     !last ||
     last.externalId !== inboundExternalId ||
-    last.contentAvailable !== 1 ||
-    !["text", "audio", "image", "button", "interactive"].includes(last.type)
-  )
+    !isReplyableInbound(last)
+  ) {
+    console.info("whatsapp_ai_reply_skipped", {
+      organizationId,
+      conversationId,
+      reason: !last
+        ? "inbound_not_found"
+        : last.externalId !== inboundExternalId
+          ? "newer_inbound_exists"
+          : "unsupported_inbound",
+    })
     return
+  }
+
+  const metaUnavailable =
+    last.type === "unsupported" && last.errorCode === "131060"
 
   const useCatalog = await catalogEnabled(env, organizationId)
   const firstInbound = history.find(
     (message) =>
       message.direction === "inbound" &&
-      message.contentAvailable === 1 &&
       !!message.externalId &&
-      ["text", "audio", "image", "button", "interactive"].includes(
-        message.type,
-      ),
+      isReplyableInbound(message),
   )
   let catalogOutcome: { status: "ENVIADO" | "FALHOU"; note: string } | null =
     null
@@ -740,6 +783,28 @@ async function generateReply(
       ?.externalId !== inboundExternalId
   )
     return false
+
+  if (metaUnavailable) {
+    const catalogFailureNotice =
+      catalogOutcome?.status === "FALHOU" || context.catalogStatus === "FALHOU"
+        ? "Não consegui confirmar o envio completo do catálogo, mas posso ajudar por texto. "
+        : ""
+    const sent = await sendText(
+      env,
+      { userId: "", organizationId, role: "ai" },
+      conversationId,
+      `${catalogFailureNotice}Não consegui visualizar o conteúdo da sua mensagem porque a Meta não o disponibilizou para o AV Flow. Pode me reenviar sua dúvida por texto? Estou por aqui! 😊`,
+      {
+        assignmentRevision: context.assignmentRevision,
+        aiReplyKey: `ai:${inboundExternalId}:meta_unavailable`,
+      },
+    )
+    if (!sent.ok)
+      throw new Error(
+        `envio da resposta para conteúdo indisponível falhou (${sent.status})`,
+      )
+    return true
+  }
 
   const mediaContext = await prepareInboundMedia(
     env,
@@ -889,13 +954,20 @@ async function generateReply(
     assessment.score >= 70 &&
     assessment.score <= 100 &&
     history.filter((message) => message.direction === "inbound").length > 1
-  const reply =
+  const generatedReply =
     typeof decision.reply === "string" ? decision.reply.trim() : ""
+  const usedFallbackReply = !generatedReply
+  const reply = generatedReply ||
+    "Recebi sua mensagem! 😊 Estou aqui para ajudar. Pode me contar um pouco mais sobre o que você precisa?"
   const replyParts = splitReply(
     reply,
-    offerSalesperson ? 1024 : MAX_WHATSAPP_AI_MESSAGE,
+    offerSalesperson && !usedFallbackReply ? 1024 : MAX_WHATSAPP_AI_MESSAGE,
   )
-  if (!replyParts.length) return
+  if (usedFallbackReply)
+    console.warn("whatsapp_ai_empty_reply_fallback", {
+      organizationId,
+      conversationId,
+    })
 
   // Um humano pode ter assumido enquanto a IA gerava a resposta.
   const takenOver = await env.DB.prepare(
@@ -941,9 +1013,12 @@ async function generateReply(
       conversationId,
       part,
       {
-        talkButton: offerSalesperson && index === replyParts.length - 1,
+        talkButton:
+          !usedFallbackReply &&
+          offerSalesperson &&
+          index === replyParts.length - 1,
         assignmentRevision: context.assignmentRevision,
-        aiReplyKey: `ai:${inboundExternalId}:text:${index}`,
+        aiReplyKey: `ai:${inboundExternalId}:${usedFallbackReply ? "fallback" : "text"}:${index}`,
       },
     )
     if (!sent.ok)
@@ -1130,7 +1205,13 @@ export async function classifyLead(
 
   const last = [...history].reverse().find((m) => m.direction === "inbound")
 
-  if (!last || last.externalId !== inboundExternalId) return
+  if (
+    !last ||
+    last.externalId !== inboundExternalId ||
+    last.errorCode === "131060" ||
+    last.type === "unsupported"
+  )
+    return
   const mediaContext = await prepareInboundMedia(
     env,
     organizationId,

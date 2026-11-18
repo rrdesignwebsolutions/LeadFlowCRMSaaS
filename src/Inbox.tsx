@@ -76,6 +76,7 @@ type Conversation = {
 
   humanRequestedAt?: string | null
   assignedTo: string | null
+  aiState: "IA_ATIVA" | "HUMANO"
 }
 
 type Message = {
@@ -870,14 +871,19 @@ export default function Inbox({
                       </option>
                     ))}
                 </select>
-                {!active.assignedTo && (
+                {active.aiState === "HUMANO" && (
+                  <>
+                    <small className="inbox-ai-paused">
+                      IA pausada após intervenção humana
+                    </small>
                     <button
                       type="button"
                       disabled={assigning}
                       onClick={() => void assign(active.id, null)}
                     >
-                    Retomar IA
-                  </button>
+                      Retomar IA
+                    </button>
+                  </>
                 )}
               </label>
               <button

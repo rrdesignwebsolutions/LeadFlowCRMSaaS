@@ -152,7 +152,12 @@ describe("WhatsApp coexistence webhooks", () => {
           ?.args[2],
       ).toBe(1)
 
-    expect(after).not.toHaveBeenCalled()
+    const jobInsert = statements.some((s) =>
+      s.sql.includes("INSERT OR IGNORE INTO whatsapp_processing_jobs"),
+    )
+    expect(jobInsert).toBe(code === 131060)
+    if (code === 131060) expect(after).toHaveBeenCalledOnce()
+    else expect(after).not.toHaveBeenCalled()
     },
   )
 
@@ -250,7 +255,12 @@ describe("WhatsApp coexistence webhooks", () => {
 
     expect(message?.args[11]).toBe("131060")
 
-    expect(after).not.toHaveBeenCalled()
+    expect(
+      statements.some((statement) =>
+        statement.sql.includes("INSERT OR IGNORE INTO whatsapp_processing_jobs"),
+      ),
+    ).toBe(true)
+    expect(after).toHaveBeenCalledOnce()
   })
 
   it("registra a resposta do formulário e agenda o processamento da IA", async () => {

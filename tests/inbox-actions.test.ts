@@ -35,7 +35,10 @@ function setup() {
       return results
     },
   }
-  const env = { DB: adapter } as unknown as Env
+  const env = {
+    DB: adapter,
+    APP_ORIGIN: "https://example.test",
+  } as unknown as Env
   const call = (path: string, method: string, role: Session["role"] = "admin", organizationId = "org") => {
     const url = new URL(`https://example.com${path}`)
     return whatsappRoutes(new Request(url, { method }), env, url, { userId: "user", organizationId, role })
@@ -65,10 +68,51 @@ describe("ações da caixa de entrada", () => {
     expect(await (await call("/api/conversations/conv/messages", "GET"))?.json()).toMatchObject({
       windowOpen: true,
     })
-    expect(after).not.toHaveBeenCalled()
+    expect(after).toHaveBeenCalledOnce()
+    expect(
+      db
+        .prepare("SELECT inbound_external_id FROM whatsapp_processing_jobs")
+        .get(),
+    ).toMatchObject({ inbound_external_id: "wamid.indisponivel" })
     db.exec("UPDATE messages SET body='[Mensagem não suportada]' WHERE external_id='wamid.indisponivel'")
     const list = await call("/api/conversations", "GET")
-    expect(await list?.json()).toMatchObject({ results: [{ preview: "[Mensagem não suportada]", previewType: "unsupported" }] })
+    expect(await list?.json()).toMatchObject({
+      results: [
+        {
+          preview: "[Mensagem não suportada]",
+          previewType: "unsupported",
+          aiState: "IA_ATIVA",
+        },
+      ],
+    })
+    db.close()
+  })
+
+  it("retorna o diagnóstico da integração sem colisão no nome da tabela messages", async () => {
+    const { db, call } = setup()
+
+    const response = await call("/api/integrations/whatsapp", "GET")
+
+    expect(response?.status).toBe(200)
+    expect(await response?.json()).toMatchObject({
+      diagnostics: {
+        unavailableMessages24h: 0,
+        adReferralMessages24h: 0,
+        failedSends24h: 0,
+      },
+    })
+    db.close()
+  })
+
+  it("expõe quando a IA está pausada na lista de conversas", async () => {
+    const { db, call } = setup()
+    db.exec("UPDATE conversations SET ai_state='HUMANO' WHERE id='conv'")
+
+    const response = await call("/api/conversations", "GET")
+
+    expect(await response?.json()).toMatchObject({
+      results: [{ aiState: "HUMANO" }],
+    })
     db.close()
   })
 

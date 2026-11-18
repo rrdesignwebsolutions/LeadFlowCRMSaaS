@@ -643,8 +643,11 @@ async function handleInbound(
 
   const { type, body, errorCode, contentAvailable, referralJson, contextJson } =
     describeMessage(m)
+  const metaUnavailable = type === "unsupported" && errorCode === "131060"
   const jobId =
-    scheduleAi && contentAvailable ? `${integration.id}:${m.id}` : null
+    scheduleAi && (contentAvailable || metaUnavailable)
+      ? `${integration.id}:${m.id}`
+      : null
 
   const duplicate = await env.DB.prepare(
     "SELECT conversation_id FROM messages WHERE organization_id=? AND external_id=?",
@@ -1220,8 +1223,10 @@ export async function recoverUnqueuedInboundMessages(env: Env) {
        AND m.origin='customer'
        AND m.status='received'
        AND m.external_id IS NOT NULL
-       AND m.content_available=1
-       AND m.type IN ('text','audio','image','button','interactive')
+       AND (
+         (m.content_available=1 AND m.type IN ('text','audio','image','button','interactive'))
+         OR (m.content_available=0 AND m.type='unsupported' AND m.error_code='131060')
+       )
        AND m.created_at>=datetime('now','-24 hours')
        AND NOT EXISTS (
          SELECT 1 FROM whatsapp_processing_jobs j
@@ -1427,7 +1432,10 @@ export async function handleMetaPayload(
                   "image",
                   "button",
                   "interactive",
-                ].includes(item.type ?? "")
+                ].includes(item.type ?? "") ||
+                  (item.type === "unsupported" &&
+                    item.errors?.some((error) => error.code === 131060) ===
+                      true)
                 const result = await handleInbound(
                   env,
                   integration!,
@@ -3045,7 +3053,7 @@ export async function whatsappRoutes(
                  SELECT status,error_summary,updated_at
                  FROM whatsapp_processing_jobs WHERE organization_id=?
                ),
-               messages AS (
+               wa_messages AS (
                  SELECT direction,status,error_code,referral_json,external_created_at,created_at
                  FROM messages WHERE organization_id=?
                )
@@ -3059,11 +3067,11 @@ export async function whatsappRoutes(
                  (SELECT COUNT(*) FROM jobs WHERE status='failed') failedAiJobs,
                  (SELECT COUNT(*) FROM jobs WHERE status='needs_review') needsReviewAiJobs,
                  (SELECT error_summary FROM jobs WHERE error_summary IS NOT NULL ORDER BY updated_at DESC LIMIT 1) lastAiError,
-                 (SELECT COUNT(*) FROM messages WHERE direction='inbound' AND error_code='131060'
+                 (SELECT COUNT(*) FROM wa_messages WHERE direction='inbound' AND error_code='131060'
                    AND julianday(COALESCE(external_created_at,created_at))>=julianday('now','-1 day')) unavailableMessages24h,
-                 (SELECT COUNT(*) FROM messages WHERE referral_json IS NOT NULL
+                 (SELECT COUNT(*) FROM wa_messages WHERE referral_json IS NOT NULL
                    AND julianday(COALESCE(external_created_at,created_at))>=julianday('now','-1 day')) adReferralMessages24h,
-                 (SELECT COUNT(*) FROM messages WHERE direction='outbound' AND status='failed'
+                 (SELECT COUNT(*) FROM wa_messages WHERE direction='outbound' AND status='failed'
                    AND julianday(COALESCE(external_created_at,created_at))>=julianday('now','-1 day')) failedSends24h`,
             )
               .bind(org, org, org)
@@ -3204,7 +3212,7 @@ export async function whatsappRoutes(
 
   if (path === "/api/conversations" && request.method === "GET") {
     return json(
-      await env.DB.prepare(`SELECT c.id,c.unread_count unread,c.last_message_at lastMessageAt,c.human_requested_at humanRequestedAt,c.assigned_to assignedTo,ct.name,ct.phone_e164 phone,
+      await env.DB.prepare(`SELECT c.id,c.unread_count unread,c.last_message_at lastMessageAt,c.human_requested_at humanRequestedAt,c.assigned_to assignedTo,c.ai_state aiState,ct.name,ct.phone_e164 phone,
       (SELECT ${effectiveLeadStatus("l")} FROM leads l WHERE l.contact_id=ct.id AND l.organization_id=c.organization_id LIMIT 1) leadStatus,
       (SELECT m.body FROM messages m WHERE m.conversation_id=c.id AND m.organization_id=c.organization_id ORDER BY COALESCE(m.external_created_at,strftime('%Y-%m-%dT%H:%M:%fZ',m.created_at)) DESC,m.rowid DESC LIMIT 1) preview,
       (SELECT m.type FROM messages m WHERE m.conversation_id=c.id AND m.organization_id=c.organization_id ORDER BY COALESCE(m.external_created_at,strftime('%Y-%m-%dT%H:%M:%fZ',m.created_at)) DESC,m.rowid DESC LIMIT 1) previewType

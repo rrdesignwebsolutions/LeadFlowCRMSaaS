@@ -46,20 +46,22 @@ function inbound(
   options: {
     type?: string
     contentAvailable?: number
+    errorCode?: string
     origin?: string
     age?: string
   } = {},
 ) {
   db.prepare(
     `INSERT INTO messages(
-      id,organization_id,conversation_id,external_id,direction,type,body,status,
+      id,organization_id,conversation_id,external_id,direction,type,body,status,error_code,
       external_created_at,content_available,origin,created_at
     ) VALUES(?, 'org','conv',?,'inbound',?,'mensagem recebida','received',
-      datetime('now',?),?,?,datetime('now',?))`,
+      ?,datetime('now',?),?,?,datetime('now',?))`,
   ).run(
     `message-${externalId}`,
     externalId,
     options.type ?? "text",
+    options.errorCode ?? null,
     options.age ?? "0 seconds",
     options.contentAvailable ?? 1,
     options.origin ?? "customer",
@@ -78,6 +80,7 @@ describe("recuperação de mensagens sem job da IA", () => {
 
     expect(await recoverUnqueuedInboundMessages(env)).toBe(1)
     expect(await recoverUnqueuedInboundMessages(env)).toBe(0)
+    expect(await recoverUnqueuedInboundMessages(env)).toBe(0)
     expect(
       db
         .prepare(
@@ -88,11 +91,17 @@ describe("recuperação de mensagens sem job da IA", () => {
     db.close()
   })
 
-  it("não reprocessa conteúdo indisponível, histórico, expirado ou já respondido", async () => {
+  it("recupera somente mensagens indisponíveis com erro 131060", async () => {
     const { db, env } = setup()
-    inbound(db, "unsupported", {
+    inbound(db, "unsupported-131060", {
       type: "unsupported",
       contentAvailable: 0,
+      errorCode: "131060",
+    })
+    inbound(db, "unsupported-131051", {
+      type: "unsupported",
+      contentAvailable: 0,
+      errorCode: "131051",
     })
     inbound(db, "history", { origin: "history" })
     inbound(db, "expired", { age: "-25 hours" })
@@ -105,12 +114,14 @@ describe("recuperação de mensagens sem job da IA", () => {
         'ai:answered:text:0',datetime('now'))`,
     ).run()
 
-    expect(await recoverUnqueuedInboundMessages(env)).toBe(0)
+    expect(await recoverUnqueuedInboundMessages(env)).toBe(1)
     expect(
       db
-        .prepare("SELECT COUNT(*) count FROM whatsapp_processing_jobs")
+        .prepare(
+          "SELECT inbound_external_id FROM whatsapp_processing_jobs",
+        )
         .get(),
-    ).toMatchObject({ count: 0 })
+    ).toMatchObject({ inbound_external_id: "unsupported-131060" })
     db.close()
   })
 })

@@ -50,6 +50,7 @@ function setup(
     catalogStatus?: string
     aiState?: string
     organization?: string
+    assistantName?: string
   } = {},
 ) {
   const statements: string[] = []
@@ -265,17 +266,78 @@ describe("oferta de vendedor pela IA", () => {
     expect(vi.mocked(sendText).mock.calls[0]?.[3]).toBe("Como posso ajudar?")
   })
 
-  it("não aciona a IA quando a Meta não disponibiliza o conteúdo (131060)", async () => {
-    const { env, fetchMock } = setup(decision({ reply: "" }), 1, {
+  it("envia saudação e catálogo uma vez e pede reenvio por texto para erro 131060", async () => {
+    vi.mocked(catalogEnabled).mockResolvedValue(true)
+    const { env, fetchMock } = setup(decision(), 1, {
       messageType: "unsupported",
       messageErrorCode: "131060",
       messageBody: "[Conteúdo da mensagem não fornecido pela Meta.]",
+      contentAvailable: 0,
+      catalogStatus: "PENDENTE",
     })
 
     await autoReply(env, "org", "conversation", "latest")
 
     expect(fetchMock).not.toHaveBeenCalled()
-    expect(sendText).not.toHaveBeenCalled()
+    expect(sendText).toHaveBeenCalledTimes(2)
+    expect(vi.mocked(sendText).mock.calls[0]?.[3]).toContain("Eu sou o Ana")
+    expect(vi.mocked(sendText).mock.calls[1]?.[3]).toContain(
+      "Pode me reenviar sua dúvida por texto?",
+    )
+    expect(sendCatalog).toHaveBeenCalledOnce()
+  })
+
+  it("não repete saudação nem catálogo em um novo erro 131060", async () => {
+    const { env, fetchMock } = setup(decision(), 1, {
+      messageType: "unsupported",
+      messageErrorCode: "131060",
+      messageBody: "[Conteúdo da mensagem não fornecido pela Meta.]",
+      contentAvailable: 0,
+      catalogStatus: "ENVIADO",
+    })
+
+    await autoReply(env, "org", "conversation", "latest")
+
+    expect(fetchMock).not.toHaveBeenCalled()
+    expect(sendCatalog).not.toHaveBeenCalled()
+    expect(sendText).toHaveBeenCalledOnce()
+    expect(vi.mocked(sendText).mock.calls[0]?.[3]).toContain(
+      "Pode me reenviar sua dúvida por texto?",
+    )
+  })
+
+  it("não afirma que o catálogo foi enviado quando a Meta rejeita o envio", async () => {
+    vi.mocked(catalogEnabled).mockResolvedValue(true)
+    vi.mocked(sendCatalog).mockResolvedValue({
+      enviadas: 0,
+      erro: "A Meta recusou o envio.",
+    })
+    const { env } = setup(decision(), 1, {
+      messageType: "unsupported",
+      messageErrorCode: "131060",
+      contentAvailable: 0,
+      catalogStatus: "PENDENTE",
+    })
+
+    await autoReply(env, "org", "conversation", "latest")
+
+    expect(vi.mocked(sendText).mock.calls[1]?.[3]).toContain(
+      "Não consegui confirmar o envio completo do catálogo",
+    )
+  })
+
+  it("envia uma resposta neutra se a IA retornar texto vazio", async () => {
+    const { env } = setup(decision({ reply: "" }))
+
+    await autoReply(env, "org", "conversation", "latest")
+
+    expect(sendText).toHaveBeenCalledOnce()
+    expect(vi.mocked(sendText).mock.calls[0]?.[3]).toContain(
+      "Pode me contar um pouco mais",
+    )
+    expect(vi.mocked(sendText).mock.calls[0]?.[4]).toMatchObject({
+      aiReplyKey: "ai:latest:fallback:0",
+    })
   })
 
   it("não separa um emoji entre duas mensagens", async () => {
