@@ -140,9 +140,9 @@ function previewOutputs(
         id,
         role: "assistant",
         text: String(node.config.text ?? "")
-          .replaceAll("{{contact.name}}", "Cliente de teste")
-          .replaceAll("{{lead.status}}", leadStatuses.find(([value]) => value === leadStatus)?.[1] ?? leadStatus)
-          .replaceAll("{{message.text}}", message),
+          .replace(/\{\{contact\.name\}\}/g, "Cliente de teste")
+          .replace(/\{\{lead\.status\}\}/g, leadStatuses.find(([value]) => value === leadStatus)?.[1] ?? leadStatus)
+          .replace(/\{\{message\.text\}\}/g, message),
       })
     } else if (node.kind === "private_note") {
       outputs.push({ id, role: "note", text: String(node.config.text ?? "Nota privada") })
@@ -160,7 +160,7 @@ function previewOutputs(
   }
   if (!outputs.length)
     outputs.push({
-      id: `result-${Date.now()}`,
+      id: `result-${crypto.randomUUID()}`,
       role: "system",
       text: simulation.matched
         ? "O caminho foi executado sem uma mensagem de saída para o cliente."
@@ -261,10 +261,11 @@ function WorkflowCanvas({
   }, [onMove, zoom])
 
   const nodeWidth = 248
-  const nodeHeight = (node: Node) => node.type === "condition" ? 116 : 104
+  const nodeHeight = (node: Node) => node.type === "condition" ? 116 : node.kind === "reply_with_ai" ? 148 : 104
   const positionOf = (nodeId: string) => positions[nodeId] ?? { x: 100, y: 120 }
   const stageWidth = Math.max(1500, ...nodes.map((node) => positionOf(node.id).x + nodeWidth + 180))
   const stageHeight = Math.max(1000, ...nodes.map((node) => positionOf(node.id).y + nodeHeight(node) + 180))
+  const triggerNode = nodes.find((node) => node.type === "trigger")
 
   function centerMiniMap(event: ReactPointerEvent<HTMLButtonElement>) {
     const bounds = event.currentTarget.getBoundingClientRect()
@@ -318,6 +319,15 @@ function WorkflowCanvas({
               <path d="M 0 0 L 10 5 L 0 10 z" fill="#8fa39a" />
             </marker>
           </defs>
+          {triggerNode && (
+            <path
+              d={`M ${positionOf(triggerNode.id).x + nodeWidth / 2} ${positionOf(triggerNode.id).y - 32} L ${positionOf(triggerNode.id).x + nodeWidth / 2} ${positionOf(triggerNode.id).y}`}
+              stroke="#b3bdc3"
+              strokeWidth="1.5"
+              fill="none"
+              markerEnd="url(#workflow-edge-arrow)"
+            />
+          )}
           {edges.map((edge) => {
             const source = nodes.find((node) => node.id === edge.source)
             const target = nodes.find((node) => node.id === edge.target)
@@ -359,7 +369,7 @@ function WorkflowCanvas({
           return (
             <div key={node.id}>
               {node.type === "trigger" && (
-                <div className="workflow-entry-node" style={{ left: position.x + 19, top: position.y - 85 }}>
+                <div className="workflow-entry-node" style={{ left: position.x + 19, top: position.y - 70 }}>
                   <Download size={15} /><span>Portão de Entrada</span>
                 </div>
               )}
@@ -450,8 +460,17 @@ function WorkflowCanvas({
           })}
           {nodes.map((node) => {
             const position = positionOf(node.id)
-            return <rect key={node.id} x={position.x} y={position.y} width={nodeWidth} height={nodeHeight(node)} rx="8" className={node.type} />
+            return <rect key={node.id} x={position.x} y={position.y} width={nodeWidth} height={nodeHeight(node)} rx="8" className={`${node.type} ${node.kind}`} />
           })}
+          {viewportRef.current && (
+            <rect
+              className="workflow-minimap-viewport"
+              x={-pan.x / zoom}
+              y={-pan.y / zoom}
+              width={viewportRef.current.clientWidth / zoom}
+              height={viewportRef.current.clientHeight / zoom}
+            />
+          )}
         </svg>
       </button>
       <div className="workflow-canvas-navigation">
@@ -760,11 +779,11 @@ export default function Workflows({ canEdit, organizationId }: { canEdit: boolea
       })
       setSimulation(response)
       const output = previewOutputs(detail.definition, response, testMessage, testLeadStatus)
-      setTestConversation((previous) => [
-        ...previous,
-        { id: `user-${Date.now()}`, role: "user", text: testMessage },
+      const newLines: TestLine[] = [
+        { id: `user-${crypto.randomUUID()}`, role: "user", text: testMessage },
         ...output,
-      ].slice(-60))
+      ]
+      setTestConversation((previous) => [...previous, ...newLines].slice(-60))
       setMessage("")
     } catch (e) { setError(errorMessage(e)) } finally { setBusy(false) }
   }
@@ -1080,7 +1099,7 @@ export default function Workflows({ canEdit, organizationId }: { canEdit: boolea
           </main>
         )}
       </div>
-      {testOpen && (
+      {testOpen && detail && (
         <div className="workflow-test-backdrop" role="presentation" onClick={() => setTestOpen(false)}>
           <section className="workflow-test-panel" role="dialog" aria-modal="true" aria-labelledby="workflow-test-title" onClick={(event) => event.stopPropagation()}>
             <header className="workflow-test-header">
