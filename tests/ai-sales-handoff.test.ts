@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest"
 import type { Env } from "../worker/index"
 import { autoReply } from "../worker/ai"
+import { catalogEnabled, sendCatalog } from "../worker/catalog"
 import { sendText } from "../worker/whatsapp"
 
 vi.mock("../worker/whatsapp", () => ({
@@ -11,6 +12,7 @@ vi.mock("../worker/catalog", () => ({
   catalogEnabled: vi.fn(async () => false),
   catalogTools: [],
   runCatalogTool: vi.fn(),
+  sendCatalog: vi.fn(async () => ({ enviadas: 1, erro: null })),
 }))
 
 vi.mock("../worker/verification", () => ({
@@ -45,6 +47,9 @@ function setup(
     messageErrorCode?: string
     messageBody?: string
     contentAvailable?: number
+    catalogStatus?: string
+    aiState?: string
+    organization?: string
   } = {},
 ) {
   const statements: string[] = []
@@ -53,10 +58,12 @@ function setup(
       return {
         bind() { return this },
         async first() {
-          if (sql.includes("FROM ai_settings")) return { enabled: 1, assistant_name: "Ana", instructions: "" }
+          if (sql.includes("FROM ai_settings")) return { enabled: 1, assistant_name: options.assistantName ?? "Ana", instructions: "" }
           if (sql.includes("SELECT l.id leadId")) return {
-            leadId: "lead", status: "in_service", handoffAt: null, organization: "Loja",
-            contactName: null, attendantName: null, humanActive: null, assignedTo: options.assignedTo ?? null, assignmentRevision: 0,
+            leadId: "lead", status: "in_service", handoffAt: null, organization: options.organization ?? "Loja",
+            contactName: null, attendantName: null, humanActive: null, aiState: options.aiState ?? "IA_ATIVA",
+            catalogStatus: options.catalogStatus ?? "ENVIADO", catalogSourceExternalId: null,
+            assignedTo: options.assignedTo ?? null, assignmentRevision: 0,
           }
           if (sql.includes("SELECT 1 x FROM conversations")) return options.takenOver ? { x: 1 } : null
           if (sql.includes("SELECT direction,external_id externalId")) return { direction: "inbound", externalId: "latest" }
@@ -112,9 +119,81 @@ function decision(overrides: Partial<TestDecision> = {}): TestDecision {
 afterEach(() => {
   vi.clearAllMocks()
   vi.unstubAllGlobals()
+  vi.mocked(catalogEnabled).mockResolvedValue(false)
+  vi.mocked(sendCatalog).mockResolvedValue({ enviadas: 1, erro: null })
 })
 
 describe("oferta de vendedor pela IA", () => {
+  it("envia a saudação aceita pela API antes de iniciar o catálogo no primeiro contato", async () => {
+    vi.mocked(catalogEnabled).mockResolvedValue(true)
+    const { env, statements } = setup(decision(), 1, {
+      catalogStatus: "PENDENTE",
+      assistantName: "Theo",
+      organization: "GoO Elétricos Itajubá",
+    })
+
+    await autoReply(env, "org", "conversation", "latest")
+
+    const calls = vi.mocked(sendText).mock.calls
+    expect(calls[0]?.[3]).toBe(
+      "Oi! Tudo bem? 😊 Eu sou o Theo, assistente virtual da GoO Elétricos Itajubá! 🛵\n\nVou te enviar nosso catálogo com os modelos disponíveis para você conhecer.\n\nPode olhar com calma! Se surgir alguma dúvida sobre os modelos ou quiser conhecer nossas formas de pagamento, estou à disposição!",
+    )
+    expect(calls[0]?.[4]).toEqual({ aiReplyKey: "ai:latest:welcome" })
+    expect(sendText.mock.invocationCallOrder[0]).toBeLessThan(
+      sendCatalog.mock.invocationCallOrder[0]!,
+    )
+    expect(sendCatalog).toHaveBeenCalledOnce()
+    expect(calls).toHaveLength(2)
+    expect(statements.some((sql) => sql.includes("ai_state='HUMANO'"))).toBe(false)
+  })
+
+  it("responde sobre financiamento Sicredi depois do catálogo sem reenviar a saudação", async () => {
+    const answer =
+      "Consegue sim! Trabalhamos com financiamento pela Sicredi em até 36 parcelas, sujeito à análise de crédito. Para solicitar, é necessário nome limpo, sem restrições e bom score. Você está com o nome limpo atualmente?"
+    const { env, fetchMock } = setup(
+      decision({ reply: answer }),
+      2,
+      { messageBody: "Eu consigo fazer uma simulação por financiamento?" },
+    )
+
+    await autoReply(env, "org", "conversation", "latest")
+
+    expect(sendText).toHaveBeenCalledOnce()
+    expect(vi.mocked(sendText).mock.calls[0]?.[3]).toBe(answer)
+    const request = JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body))
+    expect(request.instructions).toContain("Sicredi em até 36 parcelas")
+    expect(request.instructions).toContain("nome limpo, sem restrições e bom score")
+  })
+
+  it("continua atendendo por texto quando o envio inicial do catálogo falha", async () => {
+    vi.mocked(catalogEnabled).mockResolvedValue(true)
+    vi.mocked(sendCatalog).mockResolvedValue({
+      enviadas: 0,
+      erro: "A Meta recusou o envio.",
+    })
+    const { env, fetchMock } = setup(decision({ reply: "Como posso ajudar?" }), 1, {
+      catalogStatus: "PENDENTE",
+    })
+
+    expect(await autoReply(env, "org", "conversation", "latest")).toBe(true)
+    expect(fetchMock).toHaveBeenCalledOnce()
+    expect(sendText).toHaveBeenCalledTimes(2)
+    const request = JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body))
+    expect(request.input[0].content[0].text).toContain(
+      "O catálogo não foi aceito para envio",
+    )
+  })
+
+  it("ignora a resposta da mensagem antiga e responde a mensagem mais recente", async () => {
+    const { env } = setup(decision(), 2)
+
+    expect(await autoReply(env, "org", "conversation", "previous-1")).toBeUndefined()
+    expect(sendText).not.toHaveBeenCalled()
+
+    expect(await autoReply(env, "org", "conversation", "latest")).toBe(true)
+    expect(sendText).toHaveBeenCalledOnce()
+  })
+
   it("não oferece o botão na primeira resposta, mesmo se a IA o solicitar", async () => {
     const { env } = setup(decision({ offerSalesperson: true }), 1)
     await autoReply(env, "org", "conversation", "latest")
@@ -229,11 +308,11 @@ describe("oferta de vendedor pela IA", () => {
     expect(statements.some((sql) => sql.includes("UPDATE conversations SET human_requested_at"))).toBe(true)
   })
 
-  it("não gera resposta quando a conversa está atribuída a uma pessoa", async () => {
+  it("continua respondendo enquanto a conversa estiver atribuída mas não houver mensagem humana", async () => {
     const { env, fetchMock } = setup(decision(), 2, { assignedTo: "agent" })
-    await autoReply(env, "org", "conversation", "latest")
-    expect(fetchMock).not.toHaveBeenCalled()
-    expect(sendText).not.toHaveBeenCalled()
+    expect(await autoReply(env, "org", "conversation", "latest")).toBe(true)
+    expect(fetchMock).toHaveBeenCalledOnce()
+    expect(sendText).toHaveBeenCalledOnce()
   })
 
   it("não envia uma resposta que estava sendo preparada quando houve atribuição", async () => {

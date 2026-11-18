@@ -25,6 +25,7 @@ import {
   cleanupPendingWhatsappSignups,
   handleMetaPayload,
   processPendingWhatsAppJobs,
+  recoverUnqueuedInboundMessages,
   whatsappRoutes,
 } from "./whatsapp"
 
@@ -1243,6 +1244,11 @@ export default {
       ctx.waitUntil(sendBillingReminders(env))
       ctx.waitUntil(cleanupPendingWhatsappSignups(env))
     }
-    ctx.waitUntil(processPendingWhatsAppJobs(env))
+    ctx.waitUntil(
+      (async () => {
+        await recoverUnqueuedInboundMessages(env)
+        await processPendingWhatsAppJobs(env)
+      })(),
+    )
   },
 } satisfies ExportedHandler<Env>

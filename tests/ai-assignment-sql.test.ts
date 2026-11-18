@@ -30,6 +30,7 @@ function setup(paymentViability: "blocked" | "viable" | "unknown" = "unknown", l
     INSERT INTO ai_settings(organization_id,enabled) VALUES('org',1);
     INSERT INTO messages(id,organization_id,conversation_id,external_id,direction,type,body,status,external_created_at,content_available)
       VALUES('in','org','conv','wamid','inbound','text','Olá','received',strftime('%Y-%m-%dT%H:%M:%fZ','now'),1);
+    UPDATE conversations SET ai_catalog_status='ENVIADO' WHERE id='conv';
   `)
   const adapter = {
     prepare(sql: string) {
@@ -58,12 +59,13 @@ afterEach(() => {
 })
 
 describe("atribuição com SQL real", () => {
-  it("mantém a IA pausada enquanto uma pessoa estiver responsável", async () => {
+  it("não pausa a IA apenas porque a conversa foi atribuída a uma pessoa", async () => {
     const { db, env } = setup()
     db.exec("UPDATE conversations SET assigned_to='agent' WHERE id='conv'")
-    await autoReply(env, "org", "conv", "wamid")
-    expect(sendText).not.toHaveBeenCalled()
+    expect(await autoReply(env, "org", "conv", "wamid")).toBe(true)
+    expect(sendText).toHaveBeenCalledOnce()
     expect(db.prepare("SELECT ai_reply_lock FROM conversations WHERE id='conv'").get()).toMatchObject({ ai_reply_lock: null })
+    expect(db.prepare("SELECT ai_state FROM conversations WHERE id='conv'").get()).toMatchObject({ ai_state: "IA_ATIVA" })
     db.close()
   })
 
@@ -72,7 +74,7 @@ describe("atribuição com SQL real", () => {
     db.exec(`
       INSERT INTO messages(id,organization_id,conversation_id,direction,type,body,status,is_ai,created_at)
         VALUES('human','org','conv','outbound','text','Resposta','sent',0,datetime('now','-1 minute'));
-      UPDATE conversations SET ai_resumed_at=strftime('%Y-%m-%dT%H:%M:%fZ','now'),assignment_revision=1 WHERE id='conv';
+      UPDATE conversations SET ai_state='IA_ATIVA',ai_resumed_at=strftime('%Y-%m-%dT%H:%M:%fZ','now'),assignment_revision=1 WHERE id='conv';
     `)
     expect(await autoReply(env, "org", "conv", "wamid")).toBe(true)
     expect(sendText).toHaveBeenCalledOnce()
@@ -85,7 +87,7 @@ describe("atribuição com SQL real", () => {
     db.exec(`
       INSERT INTO messages(id,organization_id,conversation_id,direction,type,body,status,is_ai,created_at)
         VALUES('human','org','conv','outbound','text','Resposta','sent',0,datetime('now','-1 hour'));
-      UPDATE conversations SET ai_resumed_at=datetime('now','-2 hours') WHERE id='conv';
+      UPDATE conversations SET ai_state='HUMANO',ai_resumed_at=datetime('now','-2 hours') WHERE id='conv';
     `)
     await autoReply(env, "org", "conv", "wamid")
     expect(sendText).not.toHaveBeenCalled()

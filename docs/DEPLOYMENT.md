@@ -20,6 +20,8 @@ A migração `0021_message_error_detail.sql` adiciona detalhes de erros da API d
 
 A migração aditiva `0022_whatsapp_reliability.sql` registra origem, disponibilidade de conteúdo, referências de anúncios e chaves de idempotência, além de criar a fila D1 de respostas do Theo. Aplique-a antes de publicar o Worker. O cron de um minuto em `wrangler.toml` recupera jobs pendentes; confira os totais e falhas em **Configurações > WhatsApp**.
 
+A migração aditiva `0023_ai_conversation_state.sql` separa o estado da IA (`IA_ATIVA`/`HUMANO`) e do catálogo (`PENDENTE`/`ENVIANDO`/`ENVIADO`/`FALHOU`). Aplique-a antes de publicar o Worker. Mensagens antigas sem job são recuperadas pelo cron somente quando têm conteúdo processável, ainda estão dentro da janela de atendimento e não possuem resposta anterior registrada.
+
 ## Assinaturas recorrentes — InfinitePay
 
 1. No app InfinitePay, habilite as assinaturas/Planos e Recorrências e crie um plano mensal para cada faixa exibida em **Planos** (Essencial R$ 119, Pro R$ 149 e Scale R$ 249).

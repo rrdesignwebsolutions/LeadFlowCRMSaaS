@@ -6,6 +6,7 @@ import {
   catalogEnabled,
   catalogTools,
   runCatalogTool,
+  sendCatalog,
   type CatalogToolState,
 } from "./catalog"
 
@@ -380,6 +381,7 @@ function splitReply(text: string, maxLength: number) {
 
 const QUALIFICATION_RULES = `QUALIFICAÇÃO
 - Avalie interesse E viabilidade de pagamento. Pedir preço, simulação ou querer comprar não basta para ser quente.
+- FINANCIAMENTO: oferecemos financiamento pela Sicredi em até 36 parcelas, sujeito à análise e aprovação do banco. É necessário nome limpo, sem restrições e bom score. Ao perguntarem sobre financiamento, explique essas condições e pergunte se a pessoa está com o nome limpo. Se responder positivamente, continue a qualificação e só depois ofereça encaminhamento ao vendedor para solicitar a simulação oficial. Não prometa aprovação nem classifique como quente enquanto a viabilidade não estiver confirmada.
 - paymentViability: blocked quando o cliente quer comprar mas as opções de pagamento conhecidas estão impedidas ou indisponíveis e nenhuma alternativa viável foi identificada; viable quando há um caminho de pagamento potencialmente viável com base na conversa e nas condições conhecidas; unknown quando faltam informações. Não invente aprovação de crédito nem condições de pagamento.
 - Exemplo: cliente relata restrições no nome, financiamento conhecido exige nome sem restrições e ele não tem cartão ou outra alternativa viável: blocked, mesmo que peça simulação sem entrada.
 - Uma restrição no nome, sozinha, não impede ser quente se houver outra forma de pagamento potencialmente viável. Não trate falta de informação como impedimento confirmado.
@@ -426,6 +428,7 @@ REGRAS
 - Responda somente com base na BASE DE CONHECIMENTO abaixo. Nunca invente preços, prazos, estoque, especificações ou condições. Se a informação não estiver lá, diga que vai confirmar com a equipe e marque handoff=true.
 - Seja cordial, objetivo e curto no atendimento comum. Se o cliente pedir a ficha completa, apresente todas as especificações verificadas disponíveis em tópicos; se necessário, a resposta poderá ser enviada em mais de uma mensagem.
 - Conduza a conversa para qualificar o cliente: descubra o produto de interesse, o que mais importa para ele, faixa de orçamento, forma de pagamento e prazo de compra, uma pergunta por vez, sem parecer um interrogatório.
+- A saudação de apresentação é enviada uma única vez no primeiro contato; não a repita em respostas posteriores.
 - Marque handoff=true quando o cliente pedir um humano, reclamar, ou quando você não souber responder. Nesses casos, encaminhe para a equipe sem esperar o botão.
 - Só marque offerSalesperson=true quando o lead for hot (nota de pelo menos 70), estiver pronto para fechar a compra e precisar de um vendedor para concluir ou negociar. Ofereça a opção na resposta sem afirmar que a equipe já foi avisada; aguarde o cliente escolher. Não marque handoff=true apenas por oferecer essa opção.
 - Não ofereça vendedor na primeira resposta nem para leads ainda em qualificação. Quando offerSalesperson=false, não ofereça espontaneamente falar com vendedor.
@@ -501,6 +504,144 @@ export async function autoReply(
   }
 }
 
+async function sendInitialWelcomeAndCatalog(
+  env: Env,
+  organizationId: string,
+  conversationId: string,
+  organization: string,
+  assistantName: string,
+  catalogAvailable: boolean,
+  status: string,
+  storedSourceId: string | null,
+  firstInboundExternalId: string,
+): Promise<{ status: "ENVIADO" | "FALHOU"; note: string } | null> {
+  if (status !== "PENDENTE" && status !== "ENVIANDO") return null
+
+  let sourceId = storedSourceId || firstInboundExternalId
+  if (status === "PENDENTE") {
+    const claimed = await env.DB.prepare(
+      `UPDATE conversations SET ai_catalog_status='ENVIANDO',
+       ai_catalog_source_external_id=?,ai_catalog_updated_at=CURRENT_TIMESTAMP
+       WHERE id=? AND organization_id=? AND ai_catalog_status='PENDENTE'`,
+    )
+      .bind(sourceId, conversationId, organizationId)
+      .run()
+    if (!claimed.meta.changes) {
+      const current = await env.DB.prepare(
+        "SELECT ai_catalog_status status,ai_catalog_source_external_id sourceId FROM conversations WHERE id=? AND organization_id=?",
+      )
+        .bind(conversationId, organizationId)
+        .first<{ status: string; sourceId: string | null }>()
+      if (!current || (current.status !== "ENVIANDO" && current.status !== "PENDENTE"))
+        return null
+      sourceId = current.sourceId || sourceId
+    }
+  }
+
+  const finish = async (result: "ENVIADO" | "FALHOU") => {
+    await env.DB.prepare(
+      "UPDATE conversations SET ai_catalog_status=?,ai_catalog_updated_at=CURRENT_TIMESTAMP WHERE id=? AND organization_id=?",
+    )
+      .bind(result, conversationId, organizationId)
+      .run()
+  }
+
+  const greeting = `Oi! Tudo bem? 😊 Eu sou o ${assistantName}, assistente virtual da ${organization}! 🛵\n\nVou te enviar nosso catálogo com os modelos disponíveis para você conhecer.\n\nPode olhar com calma! Se surgir alguma dúvida sobre os modelos ou quiser conhecer nossas formas de pagamento, estou à disposição!`
+  const welcome = await sendText(
+    env,
+    { userId: "", organizationId, role: "ai" },
+    conversationId,
+    greeting,
+    { aiReplyKey: `ai:${sourceId}:welcome` },
+  )
+
+  if (!welcome.ok) {
+    await finish("FALHOU")
+    console.error("whatsapp_ai_welcome_failed", {
+      organizationId,
+      conversationId,
+      status: welcome.status,
+    })
+    return {
+      status: "FALHOU",
+      note: "A saudação inicial não foi aceita pela API. Não afirme que o catálogo foi enviado; continue ajudando por texto.",
+    }
+  }
+
+  console.info("whatsapp_ai_welcome_accepted", {
+    organizationId,
+    conversationId,
+  })
+
+  if (!catalogAvailable) {
+    await finish("FALHOU")
+    console.error("whatsapp_ai_catalog_failed", {
+      organizationId,
+      conversationId,
+      reason: "catalog_unavailable",
+      sent: 0,
+    })
+    return {
+      status: "FALHOU",
+      note: "O catálogo está indisponível para envio. Informe isso com transparência e ofereça ajuda por texto.",
+    }
+  }
+
+  try {
+    const result = await sendCatalog(
+      env,
+      { userId: "", organizationId, role: "ai" },
+      conversationId,
+      null,
+      {
+        sentImages: new Set(),
+        attemptedImages: new Set(),
+        imageFailures: new Map(),
+        inboundExternalId: sourceId,
+      },
+      true,
+    )
+    const sent = result.enviadas > 0 && !result.erro
+    const catalogStatus = sent ? "ENVIADO" : "FALHOU"
+    await finish(catalogStatus)
+    if (!sent)
+      console.error("whatsapp_ai_catalog_failed", {
+        organizationId,
+        conversationId,
+        reason: result.erro ? "send_failed" : "no_images_accepted",
+        sent: result.enviadas,
+      })
+    else
+      console.info("whatsapp_ai_catalog_completed", {
+        organizationId,
+        conversationId,
+        status: catalogStatus,
+        sent: result.enviadas,
+      })
+
+    return {
+      status: catalogStatus,
+      note: sent
+        ? "O catálogo foi aceito pela API e enviado após a saudação."
+        : result.enviadas > 0
+          ? "Parte do catálogo foi aceita, mas o envio ficou incompleto. Não afirme que o catálogo completo foi enviado; continue ajudando por texto."
+          : "O catálogo não foi aceito para envio. Não afirme que foi enviado; continue ajudando por texto.",
+    }
+  } catch (error) {
+    await finish("FALHOU")
+    console.error("whatsapp_ai_catalog_failed", {
+      organizationId,
+      conversationId,
+      reason: error instanceof Error ? error.name : "unknown",
+      sent: 0,
+    })
+    return {
+      status: "FALHOU",
+      note: "O envio do catálogo falhou. Não afirme que foi enviado; continue ajudando por texto.",
+    }
+  }
+}
+
 async function generateReply(
   env: Env,
   organizationId: string,
@@ -513,7 +654,7 @@ async function generateReply(
   },
 ) {
   const context = await env.DB.prepare(
-    `SELECT l.id leadId,${effectiveLeadStatus("l")} status,o.name organization,ct.name contactName,c.assigned_to assignedTo,c.assignment_revision assignmentRevision,
+    `SELECT l.id leadId,${effectiveLeadStatus("l")} status,o.name organization,ct.name contactName,c.ai_state aiState,c.ai_catalog_status catalogStatus,c.ai_catalog_source_external_id catalogSourceExternalId,c.assignment_revision assignmentRevision,
       (SELECT u.name FROM messages hm JOIN users u ON u.id=hm.sent_by WHERE hm.organization_id=c.organization_id AND hm.conversation_id=c.id AND hm.sent_by IS NOT NULL ORDER BY hm.created_at DESC,hm.rowid DESC LIMIT 1) attendantName,
       (SELECT 1 FROM messages m WHERE m.organization_id=c.organization_id AND m.conversation_id=c.id AND m.direction='outbound' AND m.is_ai=0 AND m.status<>'failed' AND (c.ai_resumed_at IS NULL OR julianday(COALESCE(m.external_created_at,m.created_at)) > julianday(c.ai_resumed_at))) humanActive
      FROM conversations c
@@ -530,13 +671,16 @@ async function generateReply(
       contactName: string | null
       attendantName: string | null
       humanActive: number | null
-      assignedTo: string | null
+      aiState: string
+      catalogStatus: string
+      catalogSourceExternalId: string | null
       assignmentRevision: number
     }>()
 
-  if (!context || context.humanActive || context.assignedTo) return
+  if (!context || context.aiState === "HUMANO" || context.humanActive) return
 
-  const history = (
+  const loadHistory = async () =>
+    (
     await env.DB.prepare(
       `SELECT direction,body,type,content_available contentAvailable,external_id externalId FROM messages
        WHERE organization_id=? AND conversation_id=? AND body IS NOT NULL
@@ -550,7 +694,9 @@ async function generateReply(
         errorCode: string | null
         externalId: string | null
       }>()
-  ).results.reverse()
+    ).results.reverse()
+
+  let history = await loadHistory()
 
   // Uma mensagem mais nova já disparou (ou disparará) a sua própria resposta.
   const last = [...history].reverse().find((m) => m.direction === "inbound")
@@ -562,6 +708,39 @@ async function generateReply(
     !["text", "audio", "image", "button", "interactive"].includes(last.type)
   )
     return
+
+  const useCatalog = await catalogEnabled(env, organizationId)
+  const firstInbound = history.find(
+    (message) =>
+      message.direction === "inbound" &&
+      message.contentAvailable === 1 &&
+      !!message.externalId &&
+      ["text", "audio", "image", "button", "interactive"].includes(
+        message.type,
+      ),
+  )
+  let catalogOutcome: { status: "ENVIADO" | "FALHOU"; note: string } | null =
+    null
+  if (firstInbound?.externalId) {
+    catalogOutcome = await sendInitialWelcomeAndCatalog(
+      env,
+      organizationId,
+      conversationId,
+      context.organization,
+      settings.assistant_name,
+      useCatalog,
+      context.catalogStatus,
+      context.catalogSourceExternalId,
+      firstInbound.externalId,
+    )
+    if (catalogOutcome) history = await loadHistory()
+  }
+  if (
+    [...history].reverse().find((message) => message.direction === "inbound")
+      ?.externalId !== inboundExternalId
+  )
+    return false
+
   const mediaContext = await prepareInboundMedia(
     env,
     organizationId,
@@ -606,7 +785,6 @@ async function generateReply(
     .bind(context.leadId, organizationId)
     .first()
 
-  const useCatalog = await catalogEnabled(env, organizationId)
   const toolState: CatalogToolState = {
     sentImages: new Set(),
     attemptedImages: new Set(),
@@ -628,16 +806,12 @@ async function generateReply(
       tools: catalogTools,
       runTool: async (name: string, args: Record<string, unknown>) => {
         const current = await env.DB.prepare(
-          "SELECT assignment_revision revision,assigned_to assignedTo FROM conversations WHERE id=? AND organization_id=?",
+          "SELECT ai_state aiState FROM conversations WHERE id=? AND organization_id=?",
         )
           .bind(conversationId, organizationId)
-          .first<{ revision: number; assignedTo: string | null }>()
-        if (
-          !current ||
-          current.assignedTo ||
-          current.revision !== context.assignmentRevision
-        )
-          throw new Error("Atendimento atribuído a outra pessoa")
+          .first<{ aiState: string }>()
+        if (!current || current.aiState === "HUMANO")
+          throw new Error("Um vendedor assumiu o atendimento")
         return runCatalogTool(
           env,
           organizationId,
@@ -657,7 +831,14 @@ async function generateReply(
         content: [
           {
             type: "input_text",
-            text: `Dados já coletados do lead: ${JSON.stringify(lead ?? {})}\n\nConversa (mais antiga primeiro):\n${history
+            text: `Dados já coletados do lead: ${JSON.stringify(lead ?? {})}\n\nEstado do primeiro catálogo: ${
+              catalogOutcome?.note ??
+              (context.catalogStatus === "ENVIADO"
+                ? "O catálogo já foi enviado anteriormente; não o repita sem pedido explícito."
+                : context.catalogStatus === "FALHOU"
+                  ? "O catálogo falhou anteriormente; não afirme que foi enviado. Continue ajudando por texto."
+                  : "Ainda não houve envio inicial do catálogo.")
+            }\n\nConversa (mais antiga primeiro):\n${history
               .map(
                 (m) =>
                   `${
@@ -719,18 +900,18 @@ async function generateReply(
   // Um humano pode ter assumido enquanto a IA gerava a resposta.
   const takenOver = await env.DB.prepare(
     `SELECT 1 x FROM conversations c WHERE c.organization_id=? AND c.id=? AND
-      (c.assigned_to IS NOT NULL OR c.assignment_revision<>? OR EXISTS
+      (c.ai_state='HUMANO' OR EXISTS
         (SELECT 1 FROM messages m WHERE m.organization_id=c.organization_id AND m.conversation_id=c.id AND m.direction='outbound' AND m.is_ai=0 AND m.status<>'failed' AND (c.ai_resumed_at IS NULL OR julianday(COALESCE(m.external_created_at,m.created_at)) > julianday(c.ai_resumed_at))))`,
   )
-    .bind(organizationId, conversationId, context.assignmentRevision)
+    .bind(organizationId, conversationId)
     .first()
 
   if (takenOver) return
 
   const latest = await env.DB.prepare(
     `SELECT direction,external_id externalId FROM messages
-     WHERE organization_id=? AND conversation_id=? AND status<>'failed'
-       AND (direction='inbound' OR is_ai=0 OR type='text')
+     WHERE organization_id=? AND conversation_id=? AND direction='inbound'
+       AND status<>'failed'
      ORDER BY COALESCE(external_created_at,strftime('%Y-%m-%dT%H:%M:%fZ',created_at)) DESC,rowid DESC LIMIT 1`,
   )
     .bind(organizationId, conversationId)
@@ -770,9 +951,9 @@ async function generateReply(
   }
 
   const stillAssignedToAi = await env.DB.prepare(
-    "SELECT 1 FROM conversations WHERE id=? AND organization_id=? AND assigned_to IS NULL AND assignment_revision=?",
+    "SELECT 1 FROM conversations WHERE id=? AND organization_id=? AND ai_state='IA_ATIVA'",
   )
-    .bind(conversationId, organizationId, context.assignmentRevision)
+    .bind(conversationId, organizationId)
     .first()
   if (!stillAssignedToAi) return true
 

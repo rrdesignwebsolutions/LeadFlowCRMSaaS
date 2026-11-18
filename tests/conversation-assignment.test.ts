@@ -48,7 +48,14 @@ describe("atribuição de conversas", () => {
     const { call, statements } = setup({ member: true })
     expect((await call("agent"))?.status).toBe(200)
     const update = statements.find((s) => s.sql.includes("assignment_revision=assignment_revision+1"))
-    expect(update?.args).toEqual(["agent", "agent", "agent", "conv", "org"])
+    expect(update?.args).toEqual([
+      "agent",
+      "agent",
+      "agent",
+      "agent",
+      "conv",
+      "org",
+    ])
     expect(autoReply).not.toHaveBeenCalled()
   })
 

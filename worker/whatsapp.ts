@@ -652,12 +652,33 @@ async function handleInbound(
     .bind(org, m.id)
     .first<{ conversation_id: string }>()
   if (duplicate) {
-    if (jobId)
+    if (direction === "outbound" && origin === "business_app")
+      await env.DB.prepare(
+        "UPDATE conversations SET ai_state='HUMANO',updated_at=CURRENT_TIMESTAMP WHERE id=? AND organization_id=?",
+      )
+        .bind(duplicate.conversation_id, org)
+        .run()
+    if (jobId) {
       await env.DB.prepare(
         "INSERT OR IGNORE INTO whatsapp_processing_jobs(id,organization_id,conversation_id,inbound_external_id) VALUES(?,?,?,?)",
       )
         .bind(jobId, org, duplicate.conversation_id, m.id)
         .run()
+      const queued = await env.DB.prepare(
+        "SELECT 1 FROM whatsapp_processing_jobs WHERE organization_id=? AND inbound_external_id=?",
+      )
+        .bind(org, m.id)
+        .first()
+      if (!queued)
+        throw new Error("A mensagem duplicada não foi colocada na fila da IA")
+    }
+    console.info("whatsapp_message_duplicate", {
+      organizationId: org,
+      integrationId: integration.id,
+      direction,
+      messageType: type,
+      processingJobQueued: !!jobId,
+    })
     return {
       conversationId: duplicate.conversation_id,
       type,
@@ -793,6 +814,29 @@ async function handleInbound(
   if (!persisted)
     throw new Error("A mensagem recebida não foi persistida no D1")
 
+  let processingJobQueued = false
+  if (jobId) {
+    const queued = await env.DB.prepare(
+      "SELECT 1 FROM whatsapp_processing_jobs WHERE organization_id=? AND inbound_external_id=?",
+    )
+      .bind(org, m.id)
+      .first()
+    processingJobQueued = !!queued
+    if (!processingJobQueued)
+      throw new Error("A mensagem recebida não foi colocada na fila da IA")
+  }
+
+  if (
+    direction === "outbound" &&
+    origin === "business_app" &&
+    results[4]?.meta.changes
+  )
+    await env.DB.prepare(
+      "UPDATE conversations SET ai_state='HUMANO',updated_at=CURRENT_TIMESTAMP WHERE id=? AND organization_id=?",
+    )
+      .bind(persisted.conversationId, org)
+      .run()
+
   console.info("whatsapp_message_persisted", {
     organizationId: org,
     integrationId: integration.id,
@@ -804,6 +848,8 @@ async function handleInbound(
     contentAvailable: inbound && contentAvailable,
     metaErrorCode: errorCode,
     referralPresent: !!referralJson,
+    processingJobEligible: !!jobId,
+    processingJobQueued,
   })
 
   return {
@@ -1076,6 +1122,11 @@ export async function processWhatsAppJob(env: Env, jobId: string) {
   if (!job) return
 
   try {
+    console.info("whatsapp_ai_job_started", {
+      organizationId: job.organizationId,
+      conversationId: job.conversationId,
+      attempt: job.attempts,
+    })
     const replied = await autoReply(
       env,
       job.organizationId,
@@ -1097,6 +1148,11 @@ export async function processWhatsAppJob(env: Env, jobId: string) {
     )
       .bind(jobId)
       .run()
+    console.info("whatsapp_ai_job_completed", {
+      organizationId: job.organizationId,
+      conversationId: job.conversationId,
+      replied: !!replied,
+    })
   } catch (error) {
     const emitted = await env.DB.prepare(
       `SELECT 1 FROM messages
@@ -1150,6 +1206,64 @@ export async function processPendingWhatsAppJobs(
     if (!job) return
     await processWhatsAppJob(env, job.id)
   }
+}
+
+export async function recoverUnqueuedInboundMessages(env: Env) {
+  const result = await env.DB.prepare(
+    `INSERT OR IGNORE INTO whatsapp_processing_jobs(
+       id,organization_id,conversation_id,inbound_external_id
+     )
+     SELECT 'recovered:'||m.organization_id||':'||m.external_id,
+       m.organization_id,m.conversation_id,m.external_id
+     FROM messages m
+     WHERE m.direction='inbound'
+       AND m.origin='customer'
+       AND m.status='received'
+       AND m.external_id IS NOT NULL
+       AND m.content_available=1
+       AND m.type IN ('text','audio','image','button','interactive')
+       AND m.created_at>=datetime('now','-24 hours')
+       AND NOT EXISTS (
+         SELECT 1 FROM whatsapp_processing_jobs j
+         WHERE j.organization_id=m.organization_id
+           AND j.inbound_external_id=m.external_id
+       )
+       AND NOT EXISTS (
+         SELECT 1 FROM messages r
+         WHERE r.organization_id=m.organization_id
+           AND r.conversation_id=m.conversation_id
+           AND r.direction='outbound'
+           AND r.is_ai=1
+           AND r.status<>'failed'
+           AND r.ai_reply_key IS NOT NULL
+           AND substr(r.ai_reply_key,1,length('ai:'||m.external_id||':'))
+             ='ai:'||m.external_id||':'
+       )
+       AND NOT EXISTS (
+         SELECT 1 FROM messages r
+         WHERE r.organization_id=m.organization_id
+           AND r.conversation_id=m.conversation_id
+           AND r.direction='outbound'
+           AND r.is_ai=1
+           AND r.status<>'failed'
+           AND julianday(COALESCE(r.external_created_at,r.created_at))
+             > julianday(COALESCE(m.external_created_at,m.created_at))
+           AND NOT EXISTS (
+             SELECT 1 FROM messages n
+             WHERE n.organization_id=m.organization_id
+               AND n.conversation_id=m.conversation_id
+               AND n.direction='inbound'
+               AND julianday(COALESCE(n.external_created_at,n.created_at))
+                 > julianday(COALESCE(m.external_created_at,m.created_at))
+               AND julianday(COALESCE(n.external_created_at,n.created_at))
+                 <= julianday(COALESCE(r.external_created_at,r.created_at))
+           )
+       )`,
+  ).run()
+  const recovered = result.meta.changes ?? 0
+  if (recovered)
+    console.warn("whatsapp_orphaned_inbound_jobs_recovered", { count: recovered })
+  return recovered
 }
 
 async function handleStatus(env: Env, integration: Integration, s: WaStatus) {
@@ -2326,17 +2440,31 @@ function mediaKind(mime: string) {
 
 async function aiAssignmentValid(
   env: Env,
+  role: Session["role"],
   organizationId: string,
   conversationId: string,
-  revision: number | undefined,
 ) {
-  if (revision === undefined) return true
+  if (role !== "ai") return true
   const row = await env.DB.prepare(
-    "SELECT 1 FROM conversations WHERE id=? AND organization_id=? AND assigned_to IS NULL AND assignment_revision=?",
+    `SELECT c.ai_state aiState,
+       EXISTS(
+         SELECT 1 FROM messages m
+         WHERE m.organization_id=c.organization_id
+           AND m.conversation_id=c.id
+           AND m.direction='outbound'
+           AND m.is_ai=0
+           AND m.status<>'failed'
+           AND (
+             c.ai_resumed_at IS NULL
+             OR julianday(COALESCE(m.external_created_at,m.created_at))
+               > julianday(c.ai_resumed_at)
+           )
+       ) humanActive
+     FROM conversations c WHERE c.id=? AND c.organization_id=?`,
   )
-    .bind(conversationId, organizationId, revision)
-    .first()
-  return !!row
+    .bind(conversationId, organizationId)
+    .first<{ aiState: string; humanActive: number }>()
+  return !!row && row.aiState === "IA_ATIVA" && !row.humanActive
 }
 
 async function existingAiReply(
@@ -2388,7 +2516,7 @@ export async function sendFile(
   conversationId: string,
   file: unknown,
   caption: string,
-  assignmentRevision?: number,
+  _assignmentRevision?: number,
   aiReplyKey?: string,
 ) {
   if (aiReplyKey && auth.role !== "ai")
@@ -2396,9 +2524,9 @@ export async function sendFile(
   if (
     !(await aiAssignmentValid(
       env,
+      auth.role,
       auth.organizationId,
       conversationId,
-      assignmentRevision,
     ))
   )
     return json({ error: "A conversa foi atribuída a outra pessoa." }, 409)
@@ -2570,9 +2698,9 @@ export async function sendFile(
     if (
       !(await aiAssignmentValid(
         env,
+        auth.role,
         auth.organizationId,
         conversationId,
-        assignmentRevision,
       ))
     )
       return fail(
@@ -2635,9 +2763,10 @@ export async function sendFile(
     ),
 
     env.DB.prepare(
-      "UPDATE conversations SET last_message_at=?,human_requested_at=CASE WHEN ? THEN NULL ELSE human_requested_at END,updated_at=CURRENT_TIMESTAMP WHERE id=? AND organization_id=?",
+      "UPDATE conversations SET last_message_at=?,human_requested_at=CASE WHEN ? THEN NULL ELSE human_requested_at END,ai_state=CASE WHEN ? THEN 'HUMANO' ELSE ai_state END,updated_at=CURRENT_TIMESTAMP WHERE id=? AND organization_id=?",
     ).bind(
       new Date().toISOString(),
+      auth.role === "ai" ? 0 : 1,
       auth.role === "ai" ? 0 : 1,
       conversationId,
       auth.organizationId,
@@ -2663,9 +2792,9 @@ export async function sendText(
   if (
     !(await aiAssignmentValid(
       env,
+      auth.role,
       auth.organizationId,
       conversationId,
-      options.assignmentRevision,
     ))
   )
     return json({ error: "A conversa foi atribuída a outra pessoa." }, 409)
@@ -2772,9 +2901,9 @@ export async function sendText(
     if (
       !(await aiAssignmentValid(
         env,
+        auth.role,
         auth.organizationId,
         conversationId,
-        options.assignmentRevision,
       ))
     )
       return fail(
@@ -2861,9 +2990,10 @@ export async function sendText(
     ),
 
     env.DB.prepare(
-      "UPDATE conversations SET last_message_at=?,human_requested_at=CASE WHEN ? THEN NULL ELSE human_requested_at END,updated_at=CURRENT_TIMESTAMP WHERE id=? AND organization_id=?",
+      "UPDATE conversations SET last_message_at=?,human_requested_at=CASE WHEN ? THEN NULL ELSE human_requested_at END,ai_state=CASE WHEN ? THEN 'HUMANO' ELSE ai_state END,updated_at=CURRENT_TIMESTAMP WHERE id=? AND organization_id=?",
     ).bind(
       new Date().toISOString(),
+      auth.role === "ai" ? 0 : 1,
       auth.role === "ai" ? 0 : 1,
       conversationId,
       auth.organizationId,
@@ -3244,11 +3374,13 @@ export async function whatsappRoutes(
 
     await env.DB.batch([
       env.DB.prepare(
-        `UPDATE conversations SET assigned_to=?,assignment_revision=assignment_revision+1,
+        `UPDATE conversations SET assigned_to=?,ai_state=CASE WHEN ? IS NULL THEN 'IA_ATIVA' ELSE ai_state END,
+         assignment_revision=assignment_revision+1,
          ai_resumed_at=CASE WHEN ? IS NULL THEN strftime('%Y-%m-%dT%H:%M:%fZ','now') ELSE ai_resumed_at END,
          human_requested_at=CASE WHEN ? IS NULL THEN NULL ELSE human_requested_at END,updated_at=CURRENT_TIMESTAMP
          WHERE id=? AND organization_id=?`,
       ).bind(
+        body.assignedTo,
         body.assignedTo,
         body.assignedTo,
         body.assignedTo,

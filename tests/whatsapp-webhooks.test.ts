@@ -7,7 +7,7 @@ import {
   isWithinCustomerServiceWindow,
 } from "../worker/whatsapp"
 
-function database() {
+function database(duplicateMessage: { conversation_id: string } | null = null) {
   const statements: Array<{ sql: string args: unknown[] }> = []
 
   const db = {
@@ -34,13 +34,22 @@ function database() {
           if (sql.includes("FROM webhook_events")) return { id: "event" }
 
           if (sql.startsWith("SELECT conversation_id FROM messages"))
-            return null
+            return duplicateMessage
 
           if (sql.startsWith("SELECT conversation_id conversationId FROM messages"))
             return { conversationId: "conversation" }
 
           if (sql.includes("SELECT id,status FROM messages"))
             return { id: "stored-message", status: "accepted" }
+
+          if (sql.includes("FROM whatsapp_processing_jobs"))
+            return statements.some((statement) =>
+              statement.sql.includes(
+                "INSERT OR IGNORE INTO whatsapp_processing_jobs",
+              ),
+            )
+              ? { id: "processing-job" }
+              : null
 
           return null
         },
@@ -546,7 +555,53 @@ describe("WhatsApp coexistence webhooks", () => {
         ?.args[2],
     ).toBe(0)
 
+    expect(
+      statements.some((statement) =>
+        statement.sql.includes("SET ai_state='HUMANO'"),
+      ),
+    ).toBe(true)
+
     expect(after).not.toHaveBeenCalled()
+  })
+
+  it("pauses AI when a redelivered app echo matches an existing message", async () => {
+    const { env, statements } = database({ conversation_id: "conversation" })
+
+    await handleMetaPayload(
+      env,
+      {
+        object: "whatsapp_business_account",
+        entry: [
+          {
+            id: "12345",
+            changes: [
+              {
+                field: "smb_message_echoes",
+                value: {
+                  metadata: { phone_number_id: "98765" },
+                  message_echoes: [
+                    {
+                      id: "wamid.duplicate-echo",
+                      to: "15551234567",
+                      type: "text",
+                      text: { body: "Vou assumir o atendimento" },
+                      timestamp: "1700000000",
+                    },
+                  ],
+                },
+              },
+            ],
+          },
+        ],
+      },
+      "duplicate-echo-hash",
+    )
+
+    expect(
+      statements.some((statement) =>
+        statement.sql.includes("SET ai_state='HUMANO'"),
+      ),
+    ).toBe(true)
   })
 
   it("applies edits and revocations from WhatsApp Business echoes to the original outbound message", async () => {

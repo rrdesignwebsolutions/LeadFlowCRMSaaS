@@ -815,7 +815,7 @@ async function findProducts(env: Env, organizationId: string, query: string) {
 }
 
 const FINANCING_NOTE =
-  "Financiamos em até 36x pela Sicredi, com ou sem entrada, somente para pessoas com nome limpo, sem restrições."
+  "Financiamento pela Sicredi em até 36 parcelas, sujeito à análise e aprovação do banco. É necessário nome limpo, sem restrições e bom score."
 
 const cardLine = (p: ProductRow) =>
   p.cardInstallments && p.cardInstallmentText
