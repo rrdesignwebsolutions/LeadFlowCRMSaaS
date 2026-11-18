@@ -1,17 +1,22 @@
-import { useCallback, useEffect, useMemo, useState } from "react"
+import { useCallback, useEffect, useMemo, useState, type FormEvent } from "react"
 import {
   Activity,
+  ArrowRight,
   Ban,
   Bot,
   Code2,
   Copy,
+  Sparkles,
   Crosshair,
   Download,
   Eye,
+  GitBranch,
+  MessageSquareText,
   Play,
   Plus,
   RotateCcw,
   Save,
+  Search,
   Trash2,
   Workflow as WorkflowIcon,
   X,
@@ -138,6 +143,10 @@ export default function Workflows({ canEdit }: { canEdit: boolean }) {
   const [heatmap, setHeatmap] = useState<Array<{ nodeId: string; status: string; count: number }> | null>(null)
   const [apiInfo, setApiInfo] = useState<{ endpoint: string; note: string } | null>(null)
   const [showActiveOnly, setShowActiveOnly] = useState(false)
+  const [search, setSearch] = useState("")
+  const [createOpen, setCreateOpen] = useState(false)
+  const [newName, setNewName] = useState("")
+  const [newDescription, setNewDescription] = useState("")
   const [zoom, setZoom] = useState(1)
   const [history, setHistory] = useState<Definition[]>([])
   const [future, setFuture] = useState<Definition[]>([])
@@ -171,8 +180,12 @@ export default function Workflows({ canEdit }: { canEdit: boolean }) {
   useEffect(() => { void loadDetail(activeId) }, [activeId, loadDetail])
 
   const visibleItems = useMemo(
-    () => showActiveOnly ? items.filter((item) => item.status === "active") : items,
-    [items, showActiveOnly],
+    () => items.filter((item) => {
+      const activeMatches = !showActiveOnly || item.status === "active"
+      const searchMatches = `${item.name} ${item.description}`.toLowerCase().includes(search.trim().toLowerCase())
+      return activeMatches && searchMatches
+    }),
+    [items, search, showActiveOnly],
   )
 
   function changeDefinition(next: Definition) {
@@ -277,15 +290,22 @@ export default function Workflows({ canEdit }: { canEdit: boolean }) {
     setDetail({ ...detail, definition: next })
   }
 
-  async function createWorkflow() {
-    const name = prompt("Nome do novo fluxo:")
-    if (!name?.trim()) return
+  async function createWorkflow(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    if (!newName.trim()) return
     setBusy(true); setError(""); setNotice("")
     try {
       const result = await api<{ id: string }>("/api/workflows", {
         method: "POST",
-        body: { name: name.trim(), description: "", definition: defaultDefinition },
+        body: {
+          name: newName.trim(),
+          description: newDescription.trim(),
+          definition: defaultDefinition,
+        },
       })
+      setCreateOpen(false)
+      setNewName("")
+      setNewDescription("")
       await loadList()
       setActiveId(result.id)
       setNotice("Rascunho criado.")
