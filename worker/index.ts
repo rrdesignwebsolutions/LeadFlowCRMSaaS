@@ -990,6 +990,128 @@ async function api(
     )
   }
 
+  if (url.pathname === "/api/leads/import" && request.method === "POST") {
+    if (auth.role !== "admin" && auth.role !== "manager")
+      return json({ error: "Apenas administradores e gerentes podem importar contatos." }, 403)
+    const body = await request.json<{ contacts?: unknown }>()
+    if (!Array.isArray(body.contacts) || body.contacts.length === 0)
+      return json({ error: "Envie uma lista de contatos para importar." }, 400)
+    if (body.contacts.length > 500)
+      return json({ error: "Importe no máximo 500 contatos por arquivo." }, 413)
+
+    let invalid = 0
+    let duplicates = 0
+    const unique = new Map<
+      string,
+      { phone: string; name: string | null; email: string | null; productInterest: string | null }
+    >()
+    for (const item of body.contacts) {
+      if (!item || typeof item !== "object" || Array.isArray(item)) {
+        invalid++
+        continue
+      }
+      const row = item as Record<string, unknown>
+      const phone = normalizePhone(row.phone)
+      if (!phone) {
+        invalid++
+        continue
+      }
+      if (unique.has(phone)) {
+        duplicates++
+        continue
+      }
+      const email = text(row.email, 160)
+      if (email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+        invalid++
+        continue
+      }
+      unique.set(phone, {
+        phone,
+        name: text(row.name, 120),
+        email,
+        productInterest: text(row.productInterest, 160),
+      })
+    }
+
+    const rows = [...unique.values()]
+    const existingContacts = new Map<string, { id: string; phone: string }>()
+    for (let offset = 0; offset < rows.length; offset += 80) {
+      const batch = rows.slice(offset, offset + 80)
+      const result = await env.DB.prepare(
+        `SELECT id,phone_e164 phone FROM contacts
+         WHERE organization_id=? AND phone_e164 IN (${batch.map(() => "?").join(",")})`,
+      )
+        .bind(auth.organizationId, ...batch.map((row) => row.phone))
+        .all<{ id: string; phone: string }>()
+      for (const contact of result.results)
+        existingContacts.set(contact.phone, contact)
+    }
+
+    const existingLeadContacts = new Set<string>()
+    const contactIds = [...existingContacts.values()].map((contact) => contact.id)
+    for (let offset = 0; offset < contactIds.length; offset += 80) {
+      const batch = contactIds.slice(offset, offset + 80)
+      if (!batch.length) continue
+      const result = await env.DB.prepare(
+        `SELECT contact_id contactId FROM leads
+         WHERE organization_id=? AND contact_id IN (${batch.map(() => "?").join(",")})`,
+      )
+        .bind(auth.organizationId, ...batch)
+        .all<{ contactId: string }>()
+      for (const lead of result.results) existingLeadContacts.add(lead.contactId)
+    }
+
+    const statementBatches: D1PreparedStatement[][] = []
+    let pendingStatements: D1PreparedStatement[] = []
+    let created = 0
+    for (const row of rows) {
+      const existing = existingContacts.get(row.phone)
+      if (existing && existingLeadContacts.has(existing.id)) {
+        duplicates++
+        continue
+      }
+      const contactId = existing?.id ?? id()
+      const leadId = id()
+      const rowStatements: D1PreparedStatement[] = []
+      if (!existing)
+        rowStatements.push(
+          env.DB.prepare(
+            "INSERT INTO contacts(id,organization_id,name,phone_e164,email) VALUES(?,?,?,?,?)",
+          ).bind(
+            contactId,
+            auth.organizationId,
+            row.name,
+            row.phone,
+            row.email,
+          ),
+        )
+      rowStatements.push(
+        env.DB.prepare(
+          "INSERT INTO leads(id,organization_id,contact_id,status,product_interest,owner_id) VALUES(?,?,?,'new',?,?)",
+        ).bind(
+          leadId,
+          auth.organizationId,
+          contactId,
+          row.productInterest,
+          auth.userId,
+        ),
+        env.DB.prepare(
+          "INSERT INTO lead_status_history(id,organization_id,lead_id,from_status,to_status,changed_by) VALUES(?,?,?,NULL,'new',?)",
+        ).bind(id(), auth.organizationId, leadId, auth.userId),
+      )
+      if (pendingStatements.length + rowStatements.length > 90) {
+        statementBatches.push(pendingStatements)
+        pendingStatements = []
+      }
+      pendingStatements.push(...rowStatements)
+      created++
+    }
+    if (pendingStatements.length) statementBatches.push(pendingStatements)
+    for (const batch of statementBatches) await env.DB.batch(batch)
+    await audit(env, auth, "contacts.imported", "contact")
+    return json({ ok: true, created, duplicates, invalid })
+  }
+
   if (url.pathname === "/api/leads" && request.method === "POST") {
     const body = await request.json<Record<string, unknown>>()
 

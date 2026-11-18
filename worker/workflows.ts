@@ -36,6 +36,8 @@ type RuntimeContext = {
   humanRequested: boolean
   hasFollowUp: boolean
   contactName: string | null
+  aiState: string
+  assignedTo: string | null
 }
 
 export type WorkflowHooks = {
@@ -99,7 +101,8 @@ async function loadRuntimeContext(
 ): Promise<RuntimeContext | null> {
   const row = await env.DB.prepare(
     `SELECT m.body message,m.type messageType,l.status leadStatus,c.priority,
-       c.human_requested_at humanRequestedAt,l.follow_up_at followUpAt,ct.name contactName
+       c.human_requested_at humanRequestedAt,l.follow_up_at followUpAt,ct.name contactName,
+       c.ai_state aiState,c.assigned_to assignedTo
      FROM messages m
      JOIN conversations c ON c.id=m.conversation_id AND c.organization_id=m.organization_id
      JOIN contacts ct ON ct.id=c.contact_id AND ct.organization_id=c.organization_id
@@ -116,8 +119,10 @@ async function loadRuntimeContext(
       humanRequestedAt: string | null
       followUpAt: string | null
       contactName: string | null
+      aiState: string
+      assignedTo: string | null
     }>()
-  if (!row) return null
+  if (!row || row.aiState === "HUMANO" || row.assignedTo) return null
   return {
     message: row.message ?? "",
     messageType: row.messageType,
@@ -126,6 +131,8 @@ async function loadRuntimeContext(
     humanRequested: !!row.humanRequestedAt,
     hasFollowUp: !!row.followUpAt,
     contactName: row.contactName,
+    aiState: row.aiState,
+    assignedTo: row.assignedTo,
   }
 }
 
@@ -372,9 +379,10 @@ async function executeWorkflow(
           await env.DB.prepare(
             `UPDATE conversations SET assigned_to=?,ai_state='HUMANO',
              assignment_revision=assignment_revision+1,updated_at=CURRENT_TIMESTAMP
-             WHERE id=? AND organization_id=?`,
+             WHERE id=? AND organization_id=?
+               AND (assigned_to IS NOT ? OR ai_state<>'HUMANO')`,
           )
-            .bind(assigneeId, conversationId, organizationId)
+            .bind(assigneeId, conversationId, organizationId, assigneeId)
             .run()
           assignedHuman = true
         } else {
@@ -388,6 +396,7 @@ async function executeWorkflow(
         await writeStep(env, organizationId, runId, node, "completed", {
           assigned: !!assigneeId,
         })
+        if (assignedHuman) break
       } else if (node.kind === "reply_with_ai") {
         reachedAI = true
         await writeStep(env, organizationId, runId, node, "completed", {
@@ -484,6 +493,7 @@ export async function executeInboundWorkflows(
     matched = true
     sentMessage ||= result.sentMessage
     assignedHuman ||= result.assignedHuman
+    if (assignedHuman) break
   }
   return { matched, sentMessage, assignedHuman }
 }
@@ -501,6 +511,8 @@ function simulate(
     humanRequested: false,
     hasFollowUp: false,
     contactName: "Cliente de teste",
+    aiState: "IA",
+    assignedTo: null,
   }
   const root = definition.nodes.find((node) => node.type === "trigger")
   const nodes = new Map(definition.nodes.map((node) => [node.id, node]))
@@ -662,7 +674,7 @@ export async function workflowRoutes(
     return json({
       workflowId,
       endpoint: `/api/workflows/${workflowId}`,
-      note: "Este endpoint exige uma sessão autenticada da empresa. Para disparos de sistemas externos, use o webhook de integração configurado em Canais.",
+      note: "Este endpoint exige uma sessão autenticada da empresa. Disparos públicos por webhook ainda não estão habilitados.",
     })
 
   if (!action && request.method === "PATCH") {

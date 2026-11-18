@@ -9,7 +9,11 @@ function setup() {
   const db = new DatabaseSync(":memory:")
   for (const file of readdirSync("migrations").filter((name) => name.endsWith(".sql")).sort())
     db.exec(readFileSync(join("migrations", file), "utf8"))
-  db.exec("INSERT INTO organizations(id,name,slug) VALUES('org','GoO','goo')")
+  db.exec(`
+    INSERT INTO organizations(id,name,slug) VALUES('org','GoO','goo');
+    INSERT INTO users(id,email,name,password_hash,password_salt)
+      VALUES('admin','admin@example.com','Admin','hash','salt');
+  `)
   const env = {
     DB: {
       prepare(sql: string) {
@@ -24,8 +28,8 @@ function setup() {
     },
   } as unknown as Env
   const auth: Session = { userId: "admin", organizationId: "org", role: "admin" }
-  const call = (method: string, body?: unknown) => {
-    const url = new URL("https://example.com/api/ai/settings")
+  const call = (method: string, body?: unknown, path = "/api/ai/settings") => {
+    const url = new URL(`https://example.com${path}`)
     const request = new Request(url, {
       method,
       ...(body === undefined ? {} : {
@@ -63,6 +67,52 @@ describe("consentimento de processamento de mídia", () => {
     })
     expect(db.prepare("SELECT media_processing_enabled FROM ai_settings WHERE organization_id='org'").get())
       .toMatchObject({ media_processing_enabled: 0 })
+    db.close()
+  })
+
+  it("salva o perfil do agente e registra FAQs como fonte de conhecimento", async () => {
+    const { db, call } = setup()
+    await call("PUT", {
+      enabled: true,
+      assistantName: "Theo",
+      instructions: "Ser cordial.",
+      responseStyle: "creative",
+      businessDescription: "Loja de scooters elétricas.",
+      language: "pt-BR",
+    })
+    expect(await (await call("GET"))?.json()).toMatchObject({
+      settings: {
+        responseStyle: "creative",
+        businessDescription: "Loja de scooters elétricas.",
+        language: "pt-BR",
+      },
+    })
+
+    const created = await call(
+      "POST",
+      { question: "Qual o prazo?", answer: "Consulte nossa equipe." },
+      "/api/ai/knowledge/faq",
+    )
+    expect(created?.status).toBe(201)
+    expect(
+      db.prepare("SELECT source_type,question,answer FROM ai_knowledge").get(),
+    ).toMatchObject({
+      source_type: "faq",
+      question: "Qual o prazo?",
+      answer: "Consulte nossa equipe.",
+    })
+    db.close()
+  })
+
+  it("recusa importação de página não segura sem fazer requisição externa", async () => {
+    const { db, call } = setup()
+    const response = await call(
+      "POST",
+      { url: "http://localhost/private" },
+      "/api/ai/knowledge/website",
+    )
+    expect(response?.status).toBe(400)
+    expect(db.prepare("SELECT COUNT(*) count FROM ai_knowledge").get()).toMatchObject({ count: 0 })
     db.close()
   })
 })

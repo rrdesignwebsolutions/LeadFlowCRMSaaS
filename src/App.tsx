@@ -713,7 +713,12 @@ function Shell({
           )}
 
           {view === "leads" && (
-            <Leads leads={leads} loadError={loadError} onChanged={reload} />
+            <Leads
+              leads={leads}
+              loadError={loadError}
+              onChanged={reload}
+              canImport={me.role === "admin" || me.role === "manager"}
+            />
           )}
           {view === "catalog" && <Catalog />}
           {view === "quick-replies" && <QuickReplies />}

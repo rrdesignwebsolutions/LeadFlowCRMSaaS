@@ -1,5 +1,5 @@
-import { useMemo, useState, type FormEvent } from "react";
-import { Plus, Search, X } from "lucide-react";
+import { useMemo, useRef, useState, type ChangeEvent, type FormEvent } from "react";
+import { Plus, Search, Upload, X } from "lucide-react";
 import { api, editableStatuses, errorMessage, money, statusLabels, toLocalInput, type Lead } from "./api";
 
 function Modal({ title, onClose, children }: { title: string; onClose: () => void; children: React.ReactNode }) {
@@ -122,13 +122,92 @@ function ScoreBadge({ score }: { score: number | null }) {
   return <span className={`score-badge ${tone}`} title="Probabilidade de compra estimada pela IA (0 a 100)">{score} · {label}</span>;
 }
 
-export default function Leads({ leads, loadError, onChanged }: { leads: Lead[]; loadError: string; onChanged: () => void }) {
+export default function Leads({ leads, loadError, onChanged, canImport }: { leads: Lead[]; loadError: string; onChanged: () => void; canImport: boolean }) {
   const [query, setQuery] = useState("");
   const [filter, setFilter] = useState("all");
   const priority: Record<string, number> = { hot: 0, negotiating: 1, qualified: 2, follow_up: 3, financial_pending: 4, in_service: 5, new: 6, not_contacted: 7, cold: 8, sold: 9, lost: 10 };
   const [creating, setCreating] = useState(false);
   const [openId, setOpenId] = useState<string | null>(null);
+  const [importing, setImporting] = useState(false);
+  const [importMessage, setImportMessage] = useState("");
+  const [importError, setImportError] = useState("");
+  const importInput = useRef<HTMLInputElement>(null);
   const open = leads.find((l) => l.id === openId) ?? null;
+
+  async function importCsv(event: ChangeEvent<HTMLInputElement>) {
+    const input = event.currentTarget;
+    const file = input.files?.[0];
+    input.value = "";
+    if (!file) return;
+    setImportMessage("");
+    setImportError("");
+    if (file.size > 2_000_000) {
+      setImportError("O arquivo CSV deve ter no máximo 2 MB.");
+      return;
+    }
+    setImporting(true);
+    try {
+      const csv = await file.text();
+      const firstLine = csv.split(/\r?\n/, 1)[0] ?? "";
+      const delimiter = (firstLine.match(/;/g)?.length ?? 0) > (firstLine.match(/,/g)?.length ?? 0) ? ";" : ",";
+      const rows: string[][] = [];
+      let row: string[] = [];
+      let field = "";
+      let quoted = false;
+      for (let index = 0; index < csv.length; index++) {
+        const character = csv[index]!;
+        if (quoted) {
+          if (character === '"' && csv[index + 1] === '"') {
+            field += '"';
+            index++;
+          } else if (character === '"') quoted = false;
+          else field += character;
+        } else if (character === '"' && field.length === 0) quoted = true;
+        else if (character === delimiter) {
+          row.push(field.trim());
+          field = "";
+        } else if (character === "\n" || character === "\r") {
+          if (character === "\r" && csv[index + 1] === "\n") index++;
+          row.push(field.trim());
+          if (row.some(Boolean)) rows.push(row);
+          row = [];
+          field = "";
+        } else field += character;
+      }
+      row.push(field.trim());
+      if (row.some(Boolean)) rows.push(row);
+      const normalizeHeader = (value: string) => value
+        .normalize("NFD")
+        .replace(/\p{Diacritic}/gu, "")
+        .toLowerCase()
+        .replace(/[^a-z0-9]/g, "");
+      const headers = (rows.shift() ?? []).map(normalizeHeader);
+      const column = (...names: string[]) => headers.findIndex((value) => names.includes(value));
+      const phoneColumn = column("telefone", "phone", "whatsapp", "celular");
+      if (phoneColumn < 0) throw new Error("O CSV precisa ter uma coluna Telefone, Phone, WhatsApp ou Celular.");
+      const nameColumn = column("nome", "name", "contato", "contact");
+      const emailColumn = column("email", "mail", "emailaddress");
+      const interestColumn = column("interesse", "produto", "product", "productinterest", "interesseproduto");
+      const contacts = rows.map((values) => ({
+        phone: values[phoneColumn] ?? "",
+        name: nameColumn >= 0 ? values[nameColumn] ?? "" : "",
+        email: emailColumn >= 0 ? values[emailColumn] ?? "" : "",
+        productInterest: interestColumn >= 0 ? values[interestColumn] ?? "" : "",
+      })).filter((contact) => contact.phone);
+      if (contacts.length === 0) throw new Error("O arquivo não contém contatos com telefone.");
+      if (contacts.length > 500) throw new Error("Importe no máximo 500 contatos por arquivo.");
+      const result = await api<{ created: number; duplicates: number; invalid: number }>("/api/leads/import", {
+        method: "POST",
+        body: { contacts },
+      });
+      setImportMessage(`${result.created} importados · ${result.duplicates} duplicados · ${result.invalid} inválidos.`);
+      onChanged();
+    } catch (e) {
+      setImportError(errorMessage(e));
+    } finally {
+      setImporting(false);
+    }
+  }
 
   const visible = useMemo(() => {
     const q = query.trim().toLowerCase();
@@ -141,8 +220,16 @@ export default function Leads({ leads, loadError, onChanged }: { leads: Lead[]; 
     <>
       <div className="page-heading">
         <div><h1>Leads</h1><p>{leads.length} no total</p></div>
-        <button className="button" onClick={() => setCreating(true)}><Plus size={18} /> Novo lead</button>
+        <div className="flex flex-wrap gap-2">
+          <button className="button" onClick={() => setCreating(true)}><Plus size={18} /> Novo lead</button>
+          {canImport && <>
+            <button className="button secondary" onClick={() => importInput.current?.click()} disabled={importing}><Upload size={16} /> {importing ? "Importando..." : "Importar CSV"}</button>
+            <input ref={importInput} type="file" accept=".csv,text/csv" hidden onChange={(event) => void importCsv(event)} />
+          </>}
+        </div>
       </div>
+      {importMessage && <p className="muted" role="status">{importMessage}</p>}
+      {importError && <p className="auth-error" role="alert">{importError}</p>}
       <section className="panel">
         <div className="toolbar">
           <div className="search small"><Search size={16} /><input placeholder="Buscar por nome, telefone ou interesse" value={query} onChange={(e) => setQuery(e.target.value)} aria-label="Buscar leads" /></div>

@@ -4,6 +4,8 @@ import { autoReply, classifyLead, requestHuman, TALK_TO_HUMAN_ID } from "./ai"
 
 import { effectiveLeadStatus } from "./lead-status"
 
+import { executeInboundWorkflows } from "./workflows"
+
 const DEFAULT_GRAPH_VERSION = "v26.0"
 
 const WINDOW_MS = 24 * 60 * 60 * 1000
@@ -1551,7 +1553,7 @@ export async function processWhatsAppJob(env: Env, jobId: string) {
       attempt: job.attempts,
     })
 
-    const replied = await autoReply(
+    let replied = await autoReply(
       env,
 
       job.organizationId,
@@ -1560,6 +1562,35 @@ export async function processWhatsAppJob(env: Env, jobId: string) {
 
       job.inboundExternalId,
     )
+
+    if (!replied) {
+      const workflowOutcome = await executeInboundWorkflows(
+        env,
+        job.organizationId,
+        job.conversationId,
+        job.inboundExternalId,
+        {
+          sendMessage: async (text, idempotencyKey) => {
+            const sent = await sendText(
+              env,
+              {
+                userId: "",
+                organizationId: job.organizationId,
+                role: "ai",
+              },
+              job.conversationId,
+              text,
+              { aiReplyKey: idempotencyKey },
+            )
+            if (!sent.ok)
+              throw new Error(
+                `envio da mensagem do fluxo falhou (${sent.status})`,
+              )
+          },
+        },
+      )
+      replied = workflowOutcome.sentMessage || workflowOutcome.assignedHuman
+    }
 
     if (!replied)
       await classifyLead(
