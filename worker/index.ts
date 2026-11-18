@@ -38,6 +38,17 @@ import {
   recoverUnqueuedInboundMessages,
   whatsappRoutes,
 } from "./whatsapp"
+import {
+  gmailOAuthCallback,
+  gmailRoutes,
+  syncAllGmailAccounts,
+} from "./gmail"
+import {
+  processPendingWebchatJobs,
+  webchatAssetRoutes,
+  webchatPublicRoutes,
+  webchatRoutes,
+} from "./webchat"
 
 export interface Env {
   DB: D1Database
@@ -88,6 +99,12 @@ export interface Env {
   RESEND_API_KEY?: string
   /** Remetente verificado, ex.: "AV Flow CRM <no-reply@seudominio.com>". */
   EMAIL_FROM?: string
+
+  GOOGLE_CLIENT_ID?: string
+
+  GOOGLE_CLIENT_SECRET?: string
+
+  GOOGLE_REDIRECT_URI?: string
 
   /** E-mail destinatário das solicitações enviadas pela tela de suporte. */
   SUPPORT_EMAIL?: string
@@ -662,6 +679,17 @@ async function api(
   url: URL,
   ctx: ExecutionContext,
 ) {
+  const gmailCallback = await gmailOAuthCallback(request, env, url)
+  if (gmailCallback) return gmailCallback
+
+  const widgetPublic = await webchatPublicRoutes(
+    request,
+    env,
+    url,
+    (task) => ctx.waitUntil(task),
+  )
+  if (widgetPublic) return widgetPublic
+
   const authResult = await authRoutes(request, env, url.pathname)
 
   if (authResult) return authResult
@@ -779,6 +807,86 @@ async function api(
   const auth = await session(request, env)
 
   if (!auth) return json({ error: "Não autenticado." }, 401)
+
+  if (url.pathname === "/api/onboarding" && request.method === "GET") {
+    const org = auth.organizationId
+    const [
+      branding,
+      assistant,
+      knowledge,
+      whatsapp,
+      gmail,
+      members,
+      widget,
+      shortcuts,
+      contacts,
+      workflows,
+    ] = await Promise.all([
+      env.DB.prepare(
+        "SELECT 1 FROM organization_branding WHERE organization_id=? AND (display_name IS NOT NULL OR logo_data IS NOT NULL)",
+      ).bind(org).first(),
+      env.DB.prepare(
+        "SELECT enabled FROM ai_settings WHERE organization_id=?",
+      ).bind(org).first<{ enabled: number }>(),
+      env.DB.prepare(
+        "SELECT COUNT(*) count FROM ai_knowledge WHERE organization_id=?",
+      ).bind(org).first<{ count: number }>(),
+      env.DB.prepare(
+        "SELECT status FROM integrations WHERE organization_id=? AND provider='meta_whatsapp' ORDER BY updated_at DESC LIMIT 1",
+      ).bind(org).first<{ status: string }>(),
+      env.DB.prepare(
+        "SELECT status FROM gmail_accounts WHERE organization_id=?",
+      ).bind(org).first<{ status: string }>(),
+      env.DB.prepare(
+        "SELECT COUNT(*) count FROM organization_members WHERE organization_id=? AND status='active'",
+      ).bind(org).first<{ count: number }>(),
+      env.DB.prepare(
+        `SELECT enabled,allowed_domains_json allowedDomains,
+           EXISTS(SELECT 1 FROM webchat_sessions WHERE organization_id=?) installConfirmed
+         FROM webchat_settings WHERE organization_id=?`,
+      ).bind(org, org).first<{
+        enabled: number
+        allowedDomains: string
+        installConfirmed: number
+      }>(),
+      env.DB.prepare(
+        "SELECT COUNT(*) count FROM quick_replies WHERE organization_id=?",
+      ).bind(org).first<{ count: number }>(),
+      env.DB.prepare(
+        "SELECT COUNT(*) count FROM contacts WHERE organization_id=?",
+      ).bind(org).first<{ count: number }>(),
+      env.DB.prepare(
+        "SELECT COUNT(*) count FROM workflows WHERE organization_id=? AND status='active'",
+      ).bind(org).first<{ count: number }>(),
+    ])
+    let hasWidgetDomain = false
+    try {
+      const domains: unknown = JSON.parse(widget?.allowedDomains ?? "[]")
+      hasWidgetDomain = Array.isArray(domains) && domains.length > 0
+    } catch (error) {
+      console.error("onboarding_widget_domains_invalid", {
+        organizationId: org,
+        error: error instanceof Error ? error.message : "unknown",
+      })
+    }
+    const items = [
+      { id: "profile", label: "Personalize o perfil da empresa", done: !!branding, view: "settings" },
+      { id: "assistant", label: "Configure o agente de IA", done: assistant?.enabled === 1 && !!env.OPENAI_API_KEY, view: "agent" },
+      { id: "knowledge", label: "Adicione conteúdo à base de conhecimento", done: (knowledge?.count ?? 0) > 0, view: "agent" },
+      { id: "whatsapp", label: "Conecte o WhatsApp", done: whatsapp?.status === "connected", view: "settings" },
+      { id: "gmail", label: "Conecte o Gmail", done: gmail?.status === "connected", view: "email" },
+      { id: "team", label: "Convide sua equipe", done: (members?.count ?? 0) > 1, view: "team" },
+      { id: "widget", label: "Configure o chat no seu site", done: !!widget?.enabled && hasWidgetDomain && !!widget?.installConfirmed, view: "webchat" },
+      { id: "shortcuts", label: "Crie uma resposta rápida", done: (shortcuts?.count ?? 0) > 0, view: "quick-replies" },
+      { id: "contacts", label: "Adicione ou importe contatos", done: (contacts?.count ?? 0) > 0, view: "leads" },
+      { id: "workflow", label: "Publique seu primeiro fluxo", done: (workflows?.count ?? 0) > 0, view: "workflows" },
+    ]
+    return json({
+      items,
+      completed: items.filter((item) => item.done).length,
+      total: items.length,
+    })
+  }
 
   if (url.pathname === "/api/support")
     return (await supportRoutes(request, env, auth)) ?? json({ error: "Rota não encontrada." }, 404)
@@ -1503,6 +1611,12 @@ async function api(
 
   if (whatsapp) return whatsapp
 
+  const webchat = await webchatRoutes(request, env, url, auth)
+  if (webchat) return webchat
+
+  const gmail = await gmailRoutes(request, env, url, auth)
+  if (gmail) return gmail
+
   return json({ error: "Rota não encontrada." }, 404)
 }
 
@@ -1510,15 +1624,25 @@ export default {
   async fetch(request: Request, env: Env, ctx: ExecutionContext) {
     const url = new URL(request.url)
 
+    const widgetAsset = await webchatAssetRoutes(request, env, url)
+    if (widgetAsset) return widgetAsset
+
     if (url.pathname.startsWith("/api/")) {
       try {
         const isMutation = !["GET", "HEAD", "OPTIONS"].includes(request.method)
 
         const isWebhook = url.pathname === "/api/webhooks/meta"
+        const isPublicWidget = url.pathname.startsWith("/api/widget/public/")
 
         const origin = request.headers.get("origin")
 
-        if (isMutation && !isWebhook && origin && origin !== env.APP_ORIGIN)
+        if (
+          isMutation &&
+          !isWebhook &&
+          !isPublicWidget &&
+          origin &&
+          origin !== env.APP_ORIGIN
+        )
           return json({ error: "Origem não permitida." }, 403)
 
         const response = await api(request, env, url, ctx)
@@ -1563,5 +1687,8 @@ export default {
         await processPendingCatalogDeliveries(env)
       })(),
     )
+    ctx.waitUntil(processPendingWebchatJobs(env))
+    if (new Date(event.scheduledTime).getUTCMinutes() % 5 === 0)
+      ctx.waitUntil(syncAllGmailAccounts(env))
   },
 } satisfies ExportedHandler<Env>

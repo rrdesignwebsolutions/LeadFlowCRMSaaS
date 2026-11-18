@@ -10,10 +10,13 @@ import {
   Inbox,
   LayoutDashboard,
   LifeBuoy,
+  ListChecks,
   LogOut,
+  Mail,
   Megaphone,
   Menu,
   MessageCircleMore,
+  Globe,
   Settings,
   ShieldCheck,
   UsersRound,
@@ -39,6 +42,7 @@ import Support from "./Support"
 
 import WhatsAppSettings from "./WhatsAppSettings"
 import Workflows from "./Workflows"
+import { GmailWorkspace, Onboarding, WebchatWorkspace } from "./Channels"
 
 import { applyBranding, BrandingSettings, type Branding } from "./Branding"
 
@@ -56,12 +60,16 @@ import {
   type Metrics,
 } from "./api"
 
-type View = "overview" | "inbox" | "leads" | "catalog" | "quick-replies" | "campaigns" | "reports" | "agent" | "workflows" | "team" | "plans" | "settings" | "support"
+type View = "overview" | "inbox" | "webchat" | "email" | "onboarding" | "leads" | "catalog" | "quick-replies" | "campaigns" | "reports" | "agent" | "workflows" | "team" | "plans" | "settings" | "support"
 
 const work: Array<{ id: View; label: string; icon: typeof Inbox }> = [
   { id: "overview", label: "Visão geral", icon: LayoutDashboard },
 
   { id: "inbox", label: "Caixa de entrada", icon: Inbox },
+
+  { id: "webchat", label: "Chat do site", icon: Globe },
+
+  { id: "email", label: "E-mail", icon: Mail },
 
   { id: "leads", label: "Leads", icon: ContactRound },
 
@@ -508,6 +516,13 @@ function Shell({
             <span>Equipe</span>
           </button>
           <button
+            className={view === "onboarding" ? "nav-item active" : "nav-item"}
+            onClick={() => go("onboarding")}
+          >
+            <ListChecks size={19} />
+            <span>Configuração inicial</span>
+          </button>
+          <button
             className={view === "plans" ? "nav-item active" : "nav-item"}
             onClick={() => go("plans")}
           >
@@ -720,6 +735,13 @@ function Shell({
               canImport={me.role === "admin" || me.role === "manager"}
             />
           )}
+          {view === "webchat" && (
+            <WebchatWorkspace canEdit={me.role === "admin" || me.role === "manager"} />
+          )}
+          {view === "email" && (
+            <GmailWorkspace canEdit={me.role === "admin" || me.role === "manager"} />
+          )}
+          {view === "onboarding" && <Onboarding onNavigate={(next) => go(next)} />}
           {view === "catalog" && <Catalog />}
           {view === "quick-replies" && <QuickReplies />}
           {view === "team" && <TeamView meRole={me.role} onChanged={reload} />}

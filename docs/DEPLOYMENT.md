@@ -12,6 +12,14 @@
 
 Para desenvolvimento, copie `.dev.vars.example` para `.dev.vars` (arquivo ignorado) e use valores locais. Nunca commite segredos.
 
+## Gmail e chat do site
+
+1. Aplique as migrações `0029_webchat.sql` e `0030_gmail.sql` antes de publicar o Worker atualizado.
+2. No Google Cloud, habilite a Gmail API, configure a tela de consentimento OAuth e cadastre `https://avflowcrm.com.br/api/gmail/callback` como URI de redirecionamento autorizada. Os escopos usados são `gmail.readonly` e `gmail.send`; contas de produção podem exigir verificação do app OAuth pelo Google.
+3. Configure `GOOGLE_CLIENT_ID` e `GOOGLE_CLIENT_SECRET` como secrets do Worker e mantenha `GOOGLE_REDIRECT_URI` alinhada à URI cadastrada no Google Cloud. `ENCRYPTION_KEY` é obrigatória para criptografar access/refresh tokens. Não há validação de envio nem conexão real até concluir OAuth com uma conta configurada.
+4. Administradores/gerentes conectam uma conta Gmail por empresa. A sincronização inicial importa a caixa de entrada paginada; novas mensagens são consultadas pelo Gmail History a cada cinco minutos. Respostas são enviadas pela Gmail API. O status aceito pela API não equivale a confirmação de entrega ao destinatário.
+5. Para o chat do site, ative o widget, adicione os domínios HTTPS autorizados e instale o script gerado no site. A allowlist é verificada no servidor e no CORS; não use curingas. O código de instalação só fica validado após uma conversa de teste chegar ao AV Flow.
+
 Mensagens rápidas compartilhadas exigem a migração `0019_quick_replies.sql` antes do deploy. Todos os membros ativos da empresa podem criar, editar, excluir e inserir essas mensagens no campo de texto das conversas; a seleção não envia automaticamente.
 
 O processamento de áudio e imagem pela IA exige `0020_ai_media_processing.sql`. Ele fica desativado por padrão em cada organização e só transmite mídias recebidas à OpenAI quando um administrador ou gerente ativa a opção nas configurações do assistente. Áudios usam `OPENAI_TRANSCRIPTION_MODEL` (padrão `gpt-4o-mini-transcribe`); imagens usam `OPENAI_VISION_MODEL`, depois `OPENAI_MODEL` ou o modelo padrão, que precisa aceitar imagens. O processamento pode gerar custos de API.

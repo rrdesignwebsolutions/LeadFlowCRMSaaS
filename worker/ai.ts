@@ -446,6 +446,7 @@ function systemPrompt(
   clientName: string | null = null,
   attendantName: string | null = null,
   catalog = false,
+  channel = "WhatsApp",
 ) {
   const people = JSON.stringify({
     cliente: { nome: clientName },
@@ -467,7 +468,7 @@ function systemPrompt(
     es: "espanhol",
   }
 
-  return `Você é ${settings.assistant_name}, atendente virtual de vendas da empresa "${organization}", conversando por WhatsApp em ${languages[settings.language ?? "pt-BR"] ?? "português do Brasil"}.
+  return `Você é ${settings.assistant_name}, atendente virtual de vendas da empresa "${organization}", conversando por ${channel} em ${languages[settings.language ?? "pt-BR"] ?? "português do Brasil"}.
 
 ESTILO
 ${styles[settings.responseStyle ?? "balanced"] ?? styles.balanced}
@@ -1533,6 +1534,134 @@ ${knowledge || "(vazia)"}`,
       organizationId,
     )
     .run()
+}
+
+export async function replyToWebchat(
+  env: Env,
+  organizationId: string,
+  sessionId: string,
+  inboundMessageId: string,
+) {
+  const [settings, session] = await Promise.all([
+    env.DB.prepare(
+      `SELECT enabled,assistant_name assistantName,instructions,
+         response_style responseStyle,business_description businessDescription,language
+       FROM ai_settings WHERE organization_id=?`,
+    )
+      .bind(organizationId)
+      .first<{
+        enabled: number
+        assistantName: string
+        instructions: string
+        responseStyle: string
+        businessDescription: string
+        language: string
+      }>(),
+    env.DB.prepare(
+      `SELECT s.ai_state aiState,s.status,o.name organization,s.visitor_name visitorName
+       FROM webchat_sessions s
+       JOIN organizations o ON o.id=s.organization_id
+       JOIN webchat_messages m ON m.session_id=s.id AND m.organization_id=s.organization_id
+       WHERE s.id=? AND s.organization_id=? AND m.id=?
+         AND m.direction='customer'`,
+    )
+      .bind(sessionId, organizationId, inboundMessageId)
+      .first<{
+        aiState: string
+        status: string
+        organization: string
+        visitorName: string | null
+      }>(),
+  ])
+  if (
+    !settings?.enabled ||
+    !session ||
+    session.aiState === "HUMANO" ||
+    session.status === "resolved"
+  )
+    return false
+
+  if (!env.OPENAI_API_KEY)
+    throw new Error("OPENAI_API_KEY não está configurada para responder ao chat do site.")
+
+  const existing = await env.DB.prepare(
+    `SELECT id FROM webchat_messages
+     WHERE organization_id=? AND session_id=? AND reply_to_message_id=?`,
+  )
+    .bind(organizationId, sessionId, inboundMessageId)
+    .first()
+  if (existing) return true
+
+  const latestInbound = await env.DB.prepare(
+    `SELECT id FROM webchat_messages WHERE organization_id=? AND session_id=?
+       AND direction='customer' ORDER BY created_at DESC,rowid DESC LIMIT 1`,
+  )
+    .bind(organizationId, sessionId)
+    .first<{ id: string }>()
+  if (latestInbound?.id !== inboundMessageId) return false
+
+  const knowledge = (
+    await env.DB.prepare(
+      `SELECT name,content FROM ai_knowledge
+       WHERE organization_id=? ORDER BY created_at`,
+    )
+      .bind(organizationId)
+      .all<{ name: string; content: string }>()
+  ).results
+    .map((item) => `### ${item.name}\n${item.content}`)
+    .join("\n\n")
+    .slice(0, MAX_KNOWLEDGE_CHARS)
+  const history = (
+    await env.DB.prepare(
+      `SELECT direction,body FROM webchat_messages
+       WHERE organization_id=? AND session_id=?
+       ORDER BY created_at DESC,rowid DESC LIMIT 20`,
+    )
+      .bind(organizationId, sessionId)
+      .all<{ direction: string; body: string }>()
+  ).results.reverse()
+
+  const reply = (
+    await llm(env, {
+      instructions: systemPrompt(
+        {
+          assistant_name: settings.assistantName,
+          instructions: settings.instructions,
+          responseStyle: settings.responseStyle,
+          businessDescription: settings.businessDescription,
+          language: settings.language,
+        },
+        session.organization,
+        knowledge,
+        session.visitorName,
+        null,
+        false,
+        "chat do site",
+      ),
+      input: history.map((message) => ({
+        role: message.direction === "customer" ? "user" : "assistant",
+        content: [{ type: "input_text", text: message.body }],
+      })),
+    })
+  ).trim().slice(0, 4000)
+  if (!reply) throw new Error("A IA não retornou uma resposta para o chat do site.")
+
+  const messageId = uid()
+  const inserted = await env.DB.prepare(
+    `INSERT OR IGNORE INTO webchat_messages(
+       id,organization_id,session_id,direction,body,status,reply_to_message_id
+     ) VALUES(?,?,?,'ai',?,'accepted',?)`,
+  )
+    .bind(messageId, organizationId, sessionId, reply, inboundMessageId)
+    .run()
+  if (inserted.meta.changes)
+    await env.DB.prepare(
+      `UPDATE webchat_sessions SET last_message_at=CURRENT_TIMESTAMP,
+       updated_at=CURRENT_TIMESTAMP WHERE id=? AND organization_id=?`,
+    )
+      .bind(sessionId, organizationId)
+      .run()
+  return true
 }
 
 export async function aiRoutes(

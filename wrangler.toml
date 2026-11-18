@@ -22,6 +22,7 @@ crons = ["0 6 * * *", "* * * * *"]
 
 [vars]
 APP_ORIGIN = "https://avflowcrm.com.br"
+GOOGLE_REDIRECT_URI = "https://avflowcrm.com.br/api/gmail/callback"
 META_GRAPH_API_VERSION = "v27.0"
 META_APP_ID = "2102727550349167"
 META_CONFIG_ID = "1746703063104476"
@@ -34,4 +35,5 @@ SUPPORT_EMAIL = "contato@rrdesignwebsolutions.com.br"
 
 # Segredos devem ser configurados com `wrangler secret put`:
 # SESSION_SECRET, META_APP_SECRET, META_VERIFY_TOKEN, ENCRYPTION_KEY,
+# GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET (Gmail OAuth; redirect URI above),
 # INFINITEPAY_API_KEY (ativa a liberação automática após o pagamento)
