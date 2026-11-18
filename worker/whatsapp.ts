@@ -200,16 +200,16 @@ type WaMessage = {
 
   reaction?: { message_id?: string; emoji?: string }
 
-  image?: { id?: string caption?: string mime_type?: string }
-  video?: { id?: string caption?: string mime_type?: string }
+  image?: { id?: string; caption?: string; mime_type?: string }
+  video?: { id?: string; caption?: string; mime_type?: string }
   document?: {
     id?: string
     caption?: string
     filename?: string
     mime_type?: string
   }
-  audio?: { id?: string mime_type?: string }
-  sticker?: { id?: string mime_type?: string }
+  audio?: { id?: string; mime_type?: string }
+  sticker?: { id?: string; mime_type?: string }
   location?: {
     latitude?: number
     longitude?: number
@@ -218,22 +218,22 @@ type WaMessage = {
   }
   contacts?: Array<{ name?: { formatted_name?: string } }>
 
-  button?: { text?: string payload?: string }
+  button?: { text?: string; payload?: string }
 
   interactive?: {
     type?: string
     body?: { text?: string }
     action?: {
       button?: string
-      buttons?: Array<{ reply?: { id?: string title?: string } }>
+      buttons?: Array<{ reply?: { id?: string; title?: string } }>
       sections?: Array<{
         title?: string
-        rows?: Array<{ id?: string title?: string description?: string }>
+        rows?: Array<{ id?: string; title?: string; description?: string }>
       }>
     }
-    button_reply?: { id?: string title?: string }
-    list_reply?: { id?: string title?: string description?: string }
-    nfm_reply?: { body?: string name?: string response_json?: string }
+    button_reply?: { id?: string; title?: string }
+    list_reply?: { id?: string; title?: string; description?: string }
+    nfm_reply?: { body?: string; name?: string; response_json?: string }
   }
 }
 
@@ -244,9 +244,9 @@ type WaStatus = {
 }
 
 type WaValue = {
-  metadata?: { phone_number_id?: string display_phone_number?: string }
+  metadata?: { phone_number_id?: string; display_phone_number?: string }
 
-  contacts?: Array<{ wa_id?: string profile?: { name?: string } }>
+  contacts?: Array<{ wa_id?: string; profile?: { name?: string } }>
 
   messages?: WaMessage[]
 
@@ -255,10 +255,10 @@ type WaValue = {
   statuses?: WaStatus[]
 
   history?: Array<{
-    metadata?: { phase?: number chunk_order?: number progress?: number }
+    metadata?: { phase?: number; chunk_order?: number; progress?: number }
     threads?: Array<{
       id?: string
-      context?: { wa_id?: string user_id?: string }
+      context?: { wa_id?: string; user_id?: string }
       messages?: WaMessage[]
     }>
     errors?: MetaApiError[]
@@ -1162,7 +1162,7 @@ async function handleStatus(env: Env, integration: Integration, s: WaStatus) {
   )
 
     .bind(integration.organization_id, s.id)
-    .first<{ id: string status: string }>()
+    .first<{ id: string; status: string }>()
 
   if (!message) return
 
@@ -1628,7 +1628,7 @@ async function connect(
   )
 
     .bind(phoneNumberId)
-    .first<{ id: string organization_id: string }>()
+    .first<{ id: string; organization_id: string }>()
 
   if (sameNumber && sameNumber.organization_id !== auth.organizationId)
     return json(
@@ -1818,7 +1818,7 @@ async function connectWithEmbeddedSignup(
   const result = (await response.json().catch(() => ({}))) as {
     access_token?: string
 
-    error?: { message?: string error_user_msg?: string }
+    error?: { message?: string; error_user_msg?: string }
   }
 
   if (!response.ok || !result.access_token) {
@@ -1948,7 +1948,7 @@ async function connectWithEmbeddedSignup(
 async function selectSignupNumber(
   env: Env,
   auth: Session,
-  body: { pendingId?: string phoneNumberId?: string },
+  body: { pendingId?: string; phoneNumberId?: string },
 ) {
   if (
     !body.pendingId ||
@@ -1962,7 +1962,7 @@ async function selectSignupNumber(
     "SELECT waba_id,access_token_enc FROM whatsapp_pending_signups WHERE id=? AND organization_id=? AND user_id=? AND expires_at>CURRENT_TIMESTAMP",
   )
     .bind(body.pendingId, auth.organizationId, auth.userId)
-    .first<{ waba_id: string access_token_enc: string }>()
+    .first<{ waba_id: string; access_token_enc: string }>()
   if (!pending)
     return json(
       {
@@ -3107,7 +3107,7 @@ export async function whatsappRoutes(
       "SELECT conversation_id conversationId,status FROM messages WHERE id=? AND organization_id=?",
     )
       .bind(messageDelete[1], org)
-      .first<{ conversationId: string status: string }>()
+      .first<{ conversationId: string; status: string }>()
     if (!message) return json({ error: "Mensagem não encontrada." }, 404)
     if (message.status === "queued")
       return json(
@@ -3154,7 +3154,7 @@ export async function whatsappRoutes(
        FROM conversations c WHERE c.id=? AND c.organization_id=?`,
     )
       .bind(conversationDelete[1], org)
-      .first<{ id: string queued: number aiBusy: number }>()
+      .first<{ id: string; queued: number; aiBusy: number }>()
     if (!conversation) return json({ error: "Conversa não encontrada." }, 404)
     if (conversation.queued || conversation.aiBusy)
       return json(

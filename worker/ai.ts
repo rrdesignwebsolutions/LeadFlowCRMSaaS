@@ -59,7 +59,7 @@ type LlmItem = {
 type LlmBody = {
   instructions?: string
   input: unknown
-  schema?: { name: string schema: unknown }
+  schema?: { name: string; schema: unknown }
   tools?: unknown[]
   model?: string
 }
@@ -398,7 +398,7 @@ const CATALOG_RULES = `CATÁLOGO (ferramentas)
 `
 
 function systemPrompt(
-  settings: { assistant_name: string instructions: string },
+  settings: { assistant_name: string; instructions: string },
   organization: string,
   knowledge: string,
   clientName: string | null = null,
@@ -594,7 +594,7 @@ async function generateReply(
       "SELECT name,content FROM ai_knowledge WHERE organization_id=? ORDER BY created_at",
     )
       .bind(organizationId)
-      .all<{ name: string content: string }>()
+      .all<{ name: string; content: string }>()
   ).results
     .map((k) => `### ${k.name}\n${k.content}`)
     .join("\n\n")
@@ -631,7 +631,7 @@ async function generateReply(
           "SELECT assignment_revision revision,assigned_to assignedTo FROM conversations WHERE id=? AND organization_id=?",
         )
           .bind(conversationId, organizationId)
-          .first<{ revision: number assignedTo: string | null }>()
+          .first<{ revision: number; assignedTo: string | null }>()
         if (
           !current ||
           current.assignedTo ||
@@ -734,7 +734,7 @@ async function generateReply(
      ORDER BY COALESCE(external_created_at,strftime('%Y-%m-%dT%H:%M:%fZ',created_at)) DESC,rowid DESC LIMIT 1`,
   )
     .bind(organizationId, conversationId)
-    .first<{ direction: string externalId: string | null }>()
+    .first<{ direction: string; externalId: string | null }>()
   if (
     !latest ||
     latest.direction !== "inbound" ||
@@ -921,7 +921,7 @@ export async function classifyLead(
      WHERE c.id=? AND c.organization_id=?`,
   )
     .bind(conversationId, organizationId)
-    .first<{ leadId: string status: string }>()
+    .first<{ leadId: string; status: string }>()
 
   if (!context || !OVERRIDABLE.includes(context.status)) return
 
@@ -929,7 +929,7 @@ export async function classifyLead(
     "SELECT instructions,media_processing_enabled mediaProcessingEnabled FROM ai_settings WHERE organization_id=?",
   )
     .bind(organizationId)
-    .first<{ instructions: string mediaProcessingEnabled: number }>()
+    .first<{ instructions: string; mediaProcessingEnabled: number }>()
 
   const history = (
     await env.DB.prepare(
@@ -970,7 +970,7 @@ export async function classifyLead(
     "SELECT name,content FROM ai_knowledge WHERE organization_id=? ORDER BY created_at",
     )
       .bind(organizationId)
-      .all<{ name: string content: string }>()
+      .all<{ name: string; content: string }>()
   ).results
     .map((item) => `### ${item.name}\n${item.content}`)
     .join("\n\n")
