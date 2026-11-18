@@ -76,8 +76,9 @@ export async function sendNotificationEmail(
   to: string[],
   subject: string,
   html: string,
+  options: { text?: string; replyTo?: string } = {},
 ) {
-  if (!emailVerificationEnabled(env) || !to.length) return
+  if (!emailVerificationEnabled(env) || !to.length) return false
 
   const response = await fetch(RESEND_URL, {
     method: "POST",
@@ -85,10 +86,19 @@ export async function sendNotificationEmail(
       authorization: "Bearer " + env.RESEND_API_KEY,
       "content-type": "application/json",
     },
-    body: JSON.stringify({ from: env.EMAIL_FROM, to, subject, html }),
+    body: JSON.stringify({
+      from: env.EMAIL_FROM,
+      to,
+      subject,
+      html,
+      ...(options.text ? { text: options.text } : {}),
+      ...(options.replyTo ? { reply_to: options.replyTo } : {}),
+    }),
   })
 
   if (!response.ok) console.error("notification_email_failed", response.status)
+
+  return response.ok
 }
 
 export { escapeHtml }

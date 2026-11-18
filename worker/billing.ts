@@ -74,12 +74,13 @@ export async function subscriptionFor(
 export const hasAccess = async (env: Env, organizationId: string) =>
   (await subscriptionFor(env, organizationId)).status !== "expired"
 
-export async function createCheckout(
+async function createInfinitePayLink(
   env: Env,
-  organizationId: string,
+  orderNsu: string,
   planId: string,
   customerEmail?: string,
   cycle: Cycle = "monthly",
+  redirectUrl?: string,
 ) {
   const plan = PLAN_PRICES[planId]
 
@@ -88,8 +89,6 @@ export async function createCheckout(
   const annual = cycle === "annual"
   const cents = annual ? plan.cents * ANNUAL_MONTHS_CHARGED : plan.cents
   const days = annual ? ANNUAL_DAYS : PERIOD_DAYS
-
-  const orderNsu = `${organizationId}_${crypto.randomUUID().slice(0, 8)}`
 
   const response = await fetch(`${INFINITEPAY_API}/links`, {
     method: "POST",
@@ -100,7 +99,7 @@ export async function createCheckout(
     body: JSON.stringify({
       handle: env.INFINITEPAY_HANDLE,
       order_nsu: orderNsu,
-      redirect_url: `${env.APP_ORIGIN}/`,
+      redirect_url: redirectUrl ?? `${env.APP_ORIGIN}/`,
       items: [
         {
           quantity: 1,
@@ -135,42 +134,81 @@ export async function createCheckout(
     return null
   }
 
+  return { url, cents, days }
+}
+
+export async function createCheckout(
+  env: Env,
+  organizationId: string,
+  planId: string,
+  customerEmail?: string,
+  cycle: Cycle = "monthly",
+) {
+  const orderNsu = `${organizationId}_${crypto.randomUUID().slice(0, 8)}`
+  const checkout = await createInfinitePayLink(
+    env,
+    orderNsu,
+    planId,
+    customerEmail,
+    cycle,
+  )
+
+  if (!checkout) return null
+
   await env.DB.prepare(
     "INSERT INTO billing_orders(order_nsu,organization_id,plan,amount_cents,period_days) VALUES(?,?,?,?,?)",
   )
-    .bind(orderNsu, organizationId, planId, cents, days)
+    .bind(orderNsu, organizationId, planId, checkout.cents, checkout.days)
     .run()
 
-  return url
+  return checkout.url
 }
 
-// Confirma o pagamento direto na InfinitePay (nunca confia no payload recebido)
-// e estende o acesso. Idempotente: cada pedido só é creditado uma vez.
-export async function confirmOrder(
+export async function createPublicCheckout(
   env: Env,
-  input: {
-    orderNsu?: unknown
-    transactionNsu?: unknown
-    slug?: unknown
-    organizationId?: string
-  },
-): Promise<"activated" | "ignored" | "error"> {
-  const { orderNsu, transactionNsu, slug } = input
+  planId: string,
+  cycle: Cycle = "monthly",
+) {
+  const orderNsu = `public_${crypto.randomUUID()}`
+  const checkout = await createInfinitePayLink(
+    env,
+    orderNsu,
+    planId,
+    undefined,
+    cycle,
+    `${env.APP_ORIGIN}/vendas?order_nsu=${encodeURIComponent(orderNsu)}`,
+  )
 
-  if (typeof orderNsu !== "string" || !env.INFINITEPAY_API_KEY) return "ignored"
+  if (!checkout) return null
 
-  const order = await env.DB.prepare(
-    "SELECT organization_id organizationId,     plan, amount_cents amount, period_days days FROM billing_orders WHERE order_nsu=? AND status='pending'",
+  await env.DB.prepare(
+    `INSERT INTO public_checkout_orders(order_nsu,plan,amount_cents,period_days)
+     VALUES(?,?,?,?)`,
+  )
+    .bind(orderNsu, planId, checkout.cents, checkout.days)
+    .run()
+
+  return { checkoutUrl: checkout.url, orderNsu }
+}
+
+export async function publicCheckoutStatus(env: Env, orderNsu: string) {
+  return env.DB.prepare(
+    `SELECT CASE WHEN claimed_organization_id IS NOT NULL THEN 'claimed' ELSE status END status,
+       plan
+     FROM public_checkout_orders WHERE order_nsu=?`,
   )
     .bind(orderNsu)
-        .first<{ organizationId: string; plan: string; amount: number; days: number }>()
+    .first<{ status: "pending" | "paid" | "claimed"; plan: string }>()
+}
 
-  if (!order) return "ignored"
-
-  if (input.organizationId && order.organizationId !== input.organizationId)
-    return "ignored"
-
-  let check: Record<string, unknown>
+async function verifyInfinitePayPayment(
+  env: Env,
+  orderNsu: string,
+  transactionNsu: unknown,
+  slug: unknown,
+  amount: number,
+): Promise<"paid" | "ignored" | "error"> {
+  if (!env.INFINITEPAY_API_KEY) return "ignored"
 
   try {
     const response = await fetch(`${INFINITEPAY_API}/payment_check`, {
@@ -189,14 +227,50 @@ export async function confirmOrder(
 
     if (!response.ok) return "error"
 
-    check = await response.json<Record<string, unknown>>()
+    const check = await response.json<Record<string, unknown>>()
+    const paidAmount = Number(check.paid_amount ?? check.amount ?? 0)
+
+    return check.paid === true && paidAmount >= amount ? "paid" : "ignored"
   } catch {
     return "error"
   }
+}
 
-  const paidAmount = Number(check.paid_amount ?? check.amount ?? 0)
+// Confirma o pagamento direto na InfinitePay (nunca confia no payload recebido)
+// e estende o acesso. Idempotente: cada pedido só é creditado uma vez.
+export async function confirmOrder(
+  env: Env,
+  input: {
+    orderNsu?: unknown
+    transactionNsu?: unknown
+    slug?: unknown
+    organizationId?: string
+  },
+): Promise<"activated" | "ignored" | "error"> {
+  const { orderNsu, transactionNsu, slug } = input
 
-  if (check.paid !== true || paidAmount < order.amount) return "ignored"
+  if (typeof orderNsu !== "string" || !env.INFINITEPAY_API_KEY) return "ignored"
+
+  const order = await env.DB.prepare(
+    `SELECT organization_id organizationId,plan,amount_cents amount,period_days days
+     FROM billing_orders WHERE order_nsu=? AND status='pending'`,
+  )
+    .bind(orderNsu)
+    .first<{ organizationId: string; plan: string; amount: number; days: number }>()
+
+  if (!order) return "ignored"
+
+  if (input.organizationId && order.organizationId !== input.organizationId)
+    return "ignored"
+
+  const payment = await verifyInfinitePayPayment(
+    env,
+    orderNsu,
+    transactionNsu,
+    slug,
+    order.amount,
+  )
+  if (payment !== "paid") return payment
 
   const claimed = await env.DB.prepare(
     "UPDATE billing_orders SET status='paid', paid_at=CURRENT_TIMESTAMP, transaction_nsu=? WHERE order_nsu=? AND status='pending'",
@@ -215,6 +289,125 @@ export async function confirmOrder(
     .run()
 
   return "activated"
+}
+
+export async function confirmPublicCheckout(
+  env: Env,
+  input: {
+    orderNsu?: unknown
+    transactionNsu?: unknown
+    slug?: unknown
+  },
+): Promise<"activated" | "ignored" | "error"> {
+  const { orderNsu, transactionNsu, slug } = input
+
+  if (typeof orderNsu !== "string" || !env.INFINITEPAY_API_KEY)
+    return "ignored"
+
+  const order = await env.DB.prepare(
+    `SELECT amount_cents amount FROM public_checkout_orders
+     WHERE order_nsu=? AND status='pending' AND claimed_organization_id IS NULL`,
+  )
+    .bind(orderNsu)
+    .first<{ amount: number }>()
+
+  if (!order) return "ignored"
+
+  const payment = await verifyInfinitePayPayment(
+    env,
+    orderNsu,
+    transactionNsu,
+    slug,
+    order.amount,
+  )
+  if (payment !== "paid") return payment
+
+  const claimed = await env.DB.prepare(
+    `UPDATE public_checkout_orders
+     SET status='paid',paid_at=CURRENT_TIMESTAMP,transaction_nsu=?
+     WHERE order_nsu=? AND status='pending' AND claimed_organization_id IS NULL`,
+  )
+    .bind(
+      typeof transactionNsu === "string" ? transactionNsu : null,
+      orderNsu,
+    )
+    .run()
+
+  return claimed.meta.changes ? "activated" : "ignored"
+}
+
+export async function claimPublicCheckout(
+  env: Env,
+  orderNsu: string,
+  organizationId: string,
+) {
+  const existing = await env.DB.prepare(
+    `SELECT claimed_organization_id claimedOrganizationId
+     FROM public_checkout_orders WHERE order_nsu=? AND status='paid'`,
+  )
+    .bind(orderNsu)
+    .first<{ claimedOrganizationId: string | null }>()
+
+  if (existing?.claimedOrganizationId === organizationId) return true
+  if (!existing || existing.claimedOrganizationId) return false
+
+  const results = await env.DB.batch([
+    env.DB.prepare(
+      `UPDATE public_checkout_orders SET claimed_organization_id=?,claimed_at=CURRENT_TIMESTAMP
+       WHERE order_nsu=? AND status='paid' AND claimed_organization_id IS NULL`,
+    ).bind(organizationId, orderNsu),
+    env.DB.prepare(
+      `UPDATE subscriptions SET status='active',
+         plan=(SELECT plan FROM public_checkout_orders WHERE order_nsu=? AND claimed_organization_id=?),
+         reminder_stage=0,updated_at=CURRENT_TIMESTAMP,
+         period_ends_at=datetime(
+           MAX(COALESCE(period_ends_at,CURRENT_TIMESTAMP),CURRENT_TIMESTAMP),
+           '+'||(SELECT period_days FROM public_checkout_orders WHERE order_nsu=? AND claimed_organization_id=?)||' days'
+         )
+       WHERE organization_id=? AND EXISTS (
+         SELECT 1 FROM public_checkout_orders
+         WHERE order_nsu=? AND claimed_organization_id=?
+       ) AND NOT EXISTS (
+         SELECT 1 FROM billing_orders WHERE order_nsu=?
+       )`,
+    ).bind(
+      orderNsu,
+      organizationId,
+      orderNsu,
+      organizationId,
+      organizationId,
+      orderNsu,
+      organizationId,
+      orderNsu,
+    ),
+    env.DB.prepare(
+      `INSERT INTO subscriptions(
+         id,organization_id,status,plan,period_ends_at,reminder_stage
+       )
+       SELECT ?,?,'active',plan,datetime(CURRENT_TIMESTAMP,'+'||period_days||' days'),0
+       FROM public_checkout_orders
+       WHERE order_nsu=? AND claimed_organization_id=?
+         AND NOT EXISTS (SELECT 1 FROM billing_orders WHERE order_nsu=?)
+         AND NOT EXISTS (SELECT 1 FROM subscriptions WHERE organization_id=?)`,
+    ).bind(
+      crypto.randomUUID(),
+      organizationId,
+      orderNsu,
+      organizationId,
+      orderNsu,
+      organizationId,
+    ),
+    env.DB.prepare(
+      `INSERT OR IGNORE INTO billing_orders(
+        order_nsu,organization_id,plan,amount_cents,status,transaction_nsu,created_at,paid_at,period_days
+      )
+      SELECT order_nsu,?,plan,amount_cents,'paid',transaction_nsu,created_at,paid_at,period_days
+      FROM public_checkout_orders
+      WHERE order_nsu=? AND claimed_organization_id=?`,
+    ).bind(organizationId, orderNsu, organizationId),
+  ])
+
+  return Boolean(results[0]?.meta.changes)
 }
 
 async function sendEmail(env: Env, to: string, subject: string, html: string, text: string) {

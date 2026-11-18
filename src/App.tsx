@@ -8,6 +8,7 @@ import {
   CreditCard,
   Inbox,
   LayoutDashboard,
+  LifeBuoy,
   LogOut,
   Megaphone,
   Menu,
@@ -31,6 +32,8 @@ import InboxView from "./Inbox"
 import Leads from "./Leads"
 
 import Plans from "./Plans"
+import SalesPage from "./SalesPage"
+import Support from "./Support"
 
 import WhatsAppSettings from "./WhatsAppSettings"
 
@@ -50,7 +53,7 @@ import {
   type Metrics,
 } from "./api"
 
-type View = "overview" | "inbox" | "leads" | "catalog" | "quick-replies" | "campaigns" | "reports" | "team" | "plans" | "settings"
+type View = "overview" | "inbox" | "leads" | "catalog" | "quick-replies" | "campaigns" | "reports" | "team" | "plans" | "settings" | "support"
 
 const work: Array<{ id: View; label: string; icon: typeof Inbox }> = [
   { id: "overview", label: "Visão geral", icon: LayoutDashboard },
@@ -146,6 +149,11 @@ function Empty({
 }
 
 export default function App() {
+  if (window.location.pathname === "/vendas") return <SalesPage />
+  return <WorkspaceApp />
+}
+
+function WorkspaceApp() {
   const [me, setMe] = useState<Me | null | undefined>(undefined)
 
   const [metrics, setMetrics] = useState<Metrics | null>(null)
@@ -506,6 +514,13 @@ function Shell({
             <Settings size={19} />
             <span>Configurações</span>
           </button>
+          <button
+            className={view === "support" ? "nav-item active" : "nav-item"}
+            onClick={() => go("support")}
+          >
+            <LifeBuoy size={19} />
+            <span>Suporte</span>
+          </button>
         </nav>
         <div className="sidebar-foot">
           <div className="plan-line">
@@ -770,6 +785,7 @@ function Shell({
               />
             </>
           )}
+          {view === "support" && <Support email={me.email} />}
           {view !== "inbox" && (
             <footer className="mt-8 border-t border-line pt-5 text-xs text-muted">
               <a

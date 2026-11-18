@@ -2,10 +2,10 @@ import { useEffect, useState } from "react";
 import { ArrowUpRight, Check, CreditCard, ShieldCheck, Sparkles } from "lucide-react";
 import { api, errorMessage, money } from "./api";
 
-type PlanId = "essencial" | "pro" | "scale";
+export type PlanId = "essencial" | "pro" | "scale";
 type BillingPlans = { available: PlanId[] };
 
-const plans: Array<{
+export const plans: Array<{
   id: PlanId;
   name: string;
   price: number;

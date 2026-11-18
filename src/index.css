@@ -224,6 +224,13 @@ h3 { font: 700 14px var(--font-display); }
 .billing-icon { width: 36px; height: 36px; flex: 0 0 auto; display: inline-flex; align-items: center; justify-content: center; border-radius: 10px; color: var(--color-brand-600); background: var(--color-brand-50); }
 .billing-note h3 { font-size: 12px; }
 .billing-note p { margin-top: 4px; color: var(--color-muted); font-size: 11px; line-height: 1.6; }
+.support-panel { max-width: 760px; padding: 24px; }
+.support-panel .panel-title { display: flex; align-items: flex-start; gap: 12px; }
+.support-icon { width: 40px; height: 40px; flex: 0 0 auto; display: inline-flex; align-items: center; justify-content: center; border-radius: 12px; color: var(--color-brand-600); background: var(--color-brand-50); }
+.support-form { max-width: 620px; }
+.support-form textarea { min-height: 150px; resize: vertical; font: inherit; line-height: 1.5; }
+.support-form small { color: var(--color-muted); font-size: 11px; font-weight: 400; text-align: right; }
+.support-success { color: #08784b; font-size: 13px; }
 .inbox-page-heading { margin-bottom: 18px; }
 .app-shell.inbox-mode { position: fixed; inset: 0; width: 100%; height: 100%; min-height: 0; overflow: hidden; }
 .app-shell.inbox-mode > .sidebar { display: none; }

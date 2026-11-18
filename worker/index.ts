@@ -7,10 +7,14 @@ import { catalogRoutes } from "./catalog"
 import { brandingRoutes } from "./branding"
 import {
   confirmOrder,
+  confirmPublicCheckout,
+  claimPublicCheckout,
   createCheckout,
+  createPublicCheckout,
   dynamicBillingEnabled,
   hasAccess,
   PLAN_PRICES,
+  publicCheckoutStatus,
   sendBillingReminders,
   subscriptionFor,
 } from "./billing"
@@ -21,6 +25,7 @@ import {
   emailVerificationEnabled,
   sendVerificationEmail,
 } from "./verification"
+import { supportRoutes } from "./support"
 import {
   cleanupPendingWhatsappSignups,
   handleMetaPayload,
@@ -78,6 +83,9 @@ export interface Env {
   RESEND_API_KEY?: string
   /** Remetente verificado, ex.: "AV Flow CRM <no-reply@seudominio.com>". */
   EMAIL_FROM?: string
+
+  /** E-mail destinatário das solicitações enviadas pela tela de suporte. */
+  SUPPORT_EMAIL?: string
 }
 
 export type Session = { userId: string; organizationId: string; role: string }
@@ -203,6 +211,7 @@ async function authRoutes(request: Request, env: Env, path: string) {
       email?: string
       password?: string
       inviteToken?: string
+      order_nsu?: string
     }>()
 
     if (body.inviteToken) return acceptInvite(env, body)
@@ -220,39 +229,92 @@ async function authRoutes(request: Request, env: Env, path: string) {
         400,
       )
 
+    const orderNsu = body.order_nsu?.trim() ?? ""
+    const order = await env.DB.prepare(
+      `SELECT status,claimed_organization_id claimedOrganizationId
+       FROM public_checkout_orders WHERE order_nsu=?`,
+    )
+      .bind(orderNsu)
+      .first<{ status: string; claimedOrganizationId: string | null }>()
+
+    if (!order || order.status !== "paid")
+      return json(
+        {
+          error: "O cadastro só é liberado após a confirmação do pagamento de um plano.",
+          code: "payment_required",
+        },
+        402,
+      )
+    if (order.claimedOrganizationId)
+      return json(
+        { error: "Este pagamento já foi vinculado a uma conta.", code: "payment_used" },
+        409,
+      )
+
     const userId = id(),
       orgId = id(),
       salt = id(),
       email = body.email.toLowerCase().trim()
 
     try {
-      await env.DB.batch([
+      const password = await passwordHash(body.password!, salt)
+      const company = body.company.trim()
+      const companySlug = `${company.toLowerCase().replace(/[^a-z0-9]+/g, "-")}-${orgId.slice(0, 6)}`
+      const results = await env.DB.batch([
         env.DB.prepare(
-          "INSERT INTO organizations(id,name,slug) VALUES(?,?,?)",
-        ).bind(
-          orgId,
-          body.company.trim(),
-          `${body.company.toLowerCase().replace(/[^a-z0-9]+/g, "-")}-${orgId.slice(0, 6)}`,
-        ),
+          `UPDATE public_checkout_orders
+           SET claimed_organization_id=?,claimed_at=CURRENT_TIMESTAMP
+           WHERE order_nsu=? AND status='paid' AND claimed_organization_id IS NULL`,
+        ).bind(orgId, orderNsu),
 
         env.DB.prepare(
-          "INSERT INTO users(id,email,name,password_hash,password_salt) VALUES(?,?,?,?,?)",
+          `INSERT INTO organizations(id,name,slug)
+           SELECT ?,?,? WHERE EXISTS (
+             SELECT 1 FROM public_checkout_orders
+             WHERE order_nsu=? AND claimed_organization_id=?
+           )`,
+        ).bind(orgId, company, companySlug, orderNsu, orgId),
+        env.DB.prepare(
+          `INSERT INTO users(id,email,name,password_hash,password_salt)
+           SELECT ?,?,?,?,? WHERE EXISTS (
+             SELECT 1 FROM public_checkout_orders
+             WHERE order_nsu=? AND claimed_organization_id=?
+           )`,
         ).bind(
           userId,
           email,
           body.name.trim(),
-          await passwordHash(body.password!, salt),
+          password,
           salt,
+          orderNsu,
+          orgId,
         ),
-
         env.DB.prepare(
-          "INSERT INTO organization_members(organization_id,user_id,role) VALUES(?,?,'admin')",
-        ).bind(orgId, userId),
-
+          `INSERT INTO organization_members(organization_id,user_id,role)
+           SELECT ?,?,'admin' WHERE EXISTS (
+           SELECT 1 FROM public_checkout_orders
+           WHERE order_nsu=? AND claimed_organization_id=?
+           )`,
+        ).bind(orgId, userId, orderNsu, orgId),
         env.DB.prepare(
-          "INSERT INTO subscriptions(id,organization_id,status,period_ends_at) VALUES(?,?,'trialing',datetime('now','+7 days'))",
-        ).bind(id(), orgId),
+          `INSERT INTO subscriptions(id,organization_id,status,plan,period_ends_at)
+           SELECT ?,?,'active',plan,datetime('now','+'||period_days||' days')
+           FROM public_checkout_orders WHERE order_nsu=? AND claimed_organization_id=?`,
+        ).bind(id(), orgId, orderNsu, orgId),
+        env.DB.prepare(
+          `INSERT INTO billing_orders(
+           order_nsu,organization_id,plan,amount_cents,status,transaction_nsu,created_at,paid_at,period_days
+           )
+           SELECT order_nsu,?,plan,amount_cents,'paid',transaction_nsu,created_at,paid_at,period_days
+           FROM public_checkout_orders WHERE order_nsu=? AND claimed_organization_id=?`,
+        ).bind(orgId, orderNsu, orgId),
       ])
+
+      if (!results[0]?.meta.changes)
+        return json(
+          { error: "Este pagamento já foi vinculado a uma conta.", code: "payment_used" },
+          409,
+        )
 
       if (emailVerificationEnabled(env)) {
         const sent = await sendVerificationEmail(env, userId, email, body.name.trim())
@@ -604,13 +666,91 @@ async function api(
   if (url.pathname === "/api/billing/webhook/infinitepay" && request.method === "POST") {
     const body = await request.json<Record<string, unknown>>().catch(() => ({}))
 
-    const result = await confirmOrder(env, {
+    const input = {
       orderNsu: body.order_nsu,
       transactionNsu: body.transaction_nsu,
       slug: body.invoice_slug ?? body.slug,
-    })
+    }
+    const accountOrder = await confirmOrder(env, input)
+    const result =
+      accountOrder === "ignored"
+        ? await confirmPublicCheckout(env, input)
+        : accountOrder
 
     return result === "error" ? json({ error: "Falha ao confirmar." }, 502) : json({ ok: true })
+  }
+
+  if (
+    url.pathname === "/api/public/billing/checkout" &&
+    request.method === "POST"
+  ) {
+    const body = await request
+      .json<{ planId?: string; cycle?: string }>()
+      .catch(() => ({}))
+    const planId = body.planId ?? ""
+
+    if (!PLAN_PRICES[planId])
+      return json({ error: "Escolha um plano válido." }, 400)
+    if (body.cycle && !["monthly", "annual"].includes(body.cycle))
+      return json({ error: "Periodicidade inválida." }, 400)
+    if (!dynamicBillingEnabled(env))
+      return json(
+        { error: "O pagamento online está temporariamente indisponível." },
+        503,
+      )
+
+    const checkout = await createPublicCheckout(
+      env,
+      planId,
+      body.cycle === "annual" ? "annual" : "monthly",
+    )
+    return checkout
+      ? json(checkout, 201)
+      : json(
+          { error: "Não foi possível abrir o pagamento. Tente novamente." },
+          502,
+        )
+  }
+
+  if (
+    url.pathname === "/api/public/billing/confirm" &&
+    request.method === "POST"
+  ) {
+    const body = await request
+      .json<Record<string, unknown>>()
+      .catch(() => ({}))
+    const result = await confirmPublicCheckout(env, {
+      orderNsu: body.order_nsu,
+      transactionNsu: body.transaction_nsu,
+      slug: body.slug,
+    })
+    if (result === "error")
+      return json(
+        { error: "Não foi possível confirmar o pagamento agora." },
+        502,
+      )
+
+    const status = await publicCheckoutStatus(
+      env,
+      typeof body.order_nsu === "string" ? body.order_nsu : "",
+    )
+    return status
+      ? json(status)
+      : json({ error: "Pedido de pagamento não encontrado." }, 404)
+  }
+
+  if (
+    url.pathname === "/api/public/billing/status" &&
+    request.method === "GET"
+  ) {
+    const orderNsu = url.searchParams.get("order_nsu")?.trim() ?? ""
+    if (!/^public_[0-9a-f-]{36}$/.test(orderNsu))
+      return json({ error: "Pedido de pagamento inválido." }, 400)
+
+    const status = await publicCheckoutStatus(env, orderNsu)
+    return status
+      ? json(status)
+      : json({ error: "Pedido de pagamento não encontrado." }, 404)
   }
 
   if (url.pathname === "/api/health") {
@@ -634,6 +774,40 @@ async function api(
   const auth = await session(request, env)
 
   if (!auth) return json({ error: "Não autenticado." }, 401)
+
+  if (url.pathname === "/api/support")
+    return (await supportRoutes(request, env, auth)) ?? json({ error: "Rota não encontrada." }, 404)
+
+  if (
+    url.pathname === "/api/billing/claim-public" &&
+    request.method === "POST"
+  ) {
+    if (auth.role !== "admin")
+      return json(
+        { error: "Apenas administradores podem vincular um pagamento à empresa." },
+        403,
+      )
+    const body = await request
+      .json<{ order_nsu?: string }>()
+      .catch(() => ({}))
+    const orderNsu = body.order_nsu?.trim() ?? ""
+    if (!/^public_[0-9a-f-]{36}$/.test(orderNsu))
+      return json({ error: "Pedido de pagamento inválido." }, 400)
+
+    const claimed = await claimPublicCheckout(
+      env,
+      orderNsu,
+      auth.organizationId,
+    )
+    if (!claimed)
+      return json(
+        { error: "O pagamento não foi confirmado ou já foi vinculado a outra conta." },
+        409,
+      )
+
+    await audit(env, auth, "billing.public_order_claimed", "billing_order", orderNsu)
+    return json({ ok: true })
+  }
 
   if (url.pathname === "/api/billing/plans" && request.method === "GET") {
     const links = billingPlanUrls(env)

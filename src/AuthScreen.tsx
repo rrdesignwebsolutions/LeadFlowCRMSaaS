@@ -1,11 +1,17 @@
 import { useEffect, useRef, useState, type FormEvent } from "react";
 import { api, ApiError } from "./api";
 
-export default function AuthScreen({ onDone }: { onDone: () => void }) {
+export default function AuthScreen({
+  onDone,
+  paidOrderNsu,
+}: {
+  onDone: () => void
+  paidOrderNsu?: string
+}) {
   const params = new URLSearchParams(window.location.search);
   const inviteToken = params.get("invite") ?? "";
   const verifyToken = params.get("verify") ?? "";
-  const [mode, setMode] = useState<"login" | "register">(inviteToken ? "register" : "login");
+  const [mode, setMode] = useState<"login" | "register">(inviteToken || paidOrderNsu ? "register" : "login");
   const [invite, setInvite] = useState<{ email: string; organization: string } | null>(null);
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
@@ -43,11 +49,17 @@ export default function AuthScreen({ onDone }: { onDone: () => void }) {
     event.preventDefault();
     const form = Object.fromEntries(new FormData(event.currentTarget)) as Record<string, string>;
     if (invite) form.inviteToken = inviteToken;
+    if (register && paidOrderNsu) form.order_nsu = paidOrderNsu;
     setBusy(true);
     setError("");
     setNotice("");
     try {
       const result = await api<{ verify?: boolean; email?: string; sent?: boolean }>(mode === "login" ? "/api/auth/login" : "/api/auth/register", { method: "POST", body: form });
+      if (mode === "login" && paidOrderNsu)
+        await api("/api/billing/claim-public", {
+          method: "POST",
+          body: { order_nsu: paidOrderNsu },
+        });
       if (result.verify) {
         setPendingEmail(result.email ?? form.email ?? "");
         if (result.sent === false) setNotice("Não conseguimos enviar o e-mail agora. Toque em “Reenviar e-mail” em instantes.");
@@ -93,6 +105,7 @@ export default function AuthScreen({ onDone }: { onDone: () => void }) {
           <span>AV Flow <b>CRM</b><small>Acelera Vendas</small></span>
         </div>
         <h1>{invite ? `Entrar em ${invite.organization}` : register ? "Criar conta" : "Entrar"}</h1>
+        {paidOrderNsu && register && <p className="muted">Pagamento confirmado. Crie sua conta para ativar o plano.</p>}
         {register && !inviteToken && <label>Empresa<input name="company" required autoComplete="organization" /></label>}
         {register && <label>Seu nome<input name="name" required autoComplete="name" /></label>}
         <label>E-mail<input name="email" type="email" required autoComplete="email" defaultValue={invite?.email} key={invite?.email} readOnly={!!invite} /></label>
@@ -101,7 +114,7 @@ export default function AuthScreen({ onDone }: { onDone: () => void }) {
         </label>
         {error && <p className="auth-error" role="alert">{error}</p>}
         <button className="button" disabled={busy || (!!inviteToken && !invite)}>{busy ? "Aguarde..." : register ? (invite ? "Aceitar convite" : "Criar conta") : "Entrar"}</button>
-        {!inviteToken && <button type="button" className="text-button" onClick={() => { setMode(register ? "login" : "register"); setError(""); }}>
+        {!inviteToken && paidOrderNsu && <button type="button" className="text-button" onClick={() => { setMode(register ? "login" : "register"); setError(""); }}>
           {register ? "Já tenho conta" : "Criar uma conta"}
         </button>}
         <a className="text-button" href="/privacy.html" target="_blank" rel="noreferrer">Política de Privacidade</a>
