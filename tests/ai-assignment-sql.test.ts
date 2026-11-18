@@ -80,6 +80,26 @@ describe("atribuição com SQL real", () => {
     db.close()
   })
 
+  it("mantém a IA pausada após mensagem humana até a retomada explícita, mesmo após 30 minutos", async () => {
+    const { db, env } = setup()
+    db.exec(`
+      INSERT INTO messages(id,organization_id,conversation_id,direction,type,body,status,is_ai,created_at)
+        VALUES('human','org','conv','outbound','text','Resposta','sent',0,datetime('now','-1 hour'));
+      UPDATE conversations SET ai_resumed_at=datetime('now','-2 hours') WHERE id='conv';
+    `)
+    await autoReply(env, "org", "conv", "wamid")
+    expect(sendText).not.toHaveBeenCalled()
+    db.close()
+  })
+
+  it("não pausa a IA apenas por existir uma solicitação de atendimento humano", async () => {
+    const { db, env } = setup()
+    db.exec("UPDATE leads SET ai_handoff_at=CURRENT_TIMESTAMP WHERE id='lead'")
+    expect(await autoReply(env, "org", "conv", "wamid")).toBe(true)
+    expect(sendText).toHaveBeenCalledOnce()
+    db.close()
+  })
+
   it("não classifica como quente nem oferece vendedor quando o pagamento está impedido", async () => {
     const { db, env } = setup("blocked", "hot", 90)
     await autoReply(env, "org", "conv", "wamid")
@@ -122,6 +142,18 @@ describe("atribuição com SQL real", () => {
     expect(db.prepare("SELECT status,financial_pending,ai_score FROM leads").get()).toMatchObject({
       status: "follow_up", financial_pending: 1, ai_score: 69,
     })
+    db.close()
+  })
+
+  it("usa as instruções comerciais da empresa na classificação separada", async () => {
+    const { db, env } = setup()
+    db.exec("UPDATE ai_settings SET instructions='Financiamento Sicredi sujeito a análise; restrição impede essa modalidade.' WHERE organization_id='org'")
+    const fetchMock = vi.mocked(fetch)
+    await classifyLead(env, "org", "conv", "wamid")
+    const request = JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body))
+    expect(request.instructions).toContain("Financiamento Sicredi sujeito a análise")
+    expect(request.instructions).toContain("Não classifique como quente")
+    expect(request.instructions).toContain("America/Sao_Paulo")
     db.close()
   })
 })

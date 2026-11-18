@@ -68,7 +68,10 @@ function parseSpecs(raw: unknown): Spec[] {
 function stockConfirmed(row: Pick<ProductRow, "availability" | "availabilityAt">) {
   if (row.availability !== "in_stock" || !row.availabilityAt) return false
 
-  const age = Date.now() - new Date(row.availabilityAt.replace(" ", "T") + "Z").getTime()
+  const timestamp = /(?:Z|[+-]\d{2}:\d{2})$/i.test(row.availabilityAt)
+    ? row.availabilityAt
+    : `${row.availabilityAt.replace(" ", "T")}Z`
+  const age = Date.now() - new Date(timestamp).getTime()
 
   return age >= 0 && age < STOCK_FRESH_DAYS * 86_400_000
 }
@@ -506,7 +509,7 @@ export const catalogTools = [
     type: "function",
     name: "listarModelosDisponiveis",
     description:
-      "Lista os modelos autorizados para venda e com estoque confirmado. Use antes de oferecer modelos.",
+      "Lista somente modelos autorizados com estoque confirmado nos últimos sete dias. Use antes de oferecer produtos como disponíveis.",
     parameters: {
       type: "object",
       additionalProperties: false,
@@ -566,7 +569,7 @@ export const catalogTools = [
     type: "function",
     name: "enviarCatalogoFiltrado",
     description:
-      "Envia ao cliente a foto e a ficha resumida de todos os modelos aprovados e autorizados (catálogo completo). Use quando o cliente pedir o catálogo. Só diga que enviou se enviadas > 0.",
+      "Envia fotos e fichas resumidas somente dos modelos aprovados, autorizados e com estoque confirmado nos últimos sete dias. Use quando o cliente pedir o catálogo. Só diga que enviou se enviadas > 0 e informe apenas os modelos listados em modelosEnviados.",
     parameters: {
       type: "object",
       additionalProperties: false,
@@ -668,22 +671,32 @@ export async function sendCatalog(
   conversationId: string,
   productId: string | string[] | null,
   state: CatalogToolState = { sentImages: new Set() },
+  availableOnly = false,
 ) {
   const organizationId = sender.organizationId
   const ids = Array.isArray(productId) ? productId : productId ? [productId] : []
 
-  const rows = await loadProducts(
+  const approvedRows = await loadProducts(
     env,
     organizationId,
     `AND status='approved' AND authorized_for_sale=1${ids.length ? ` AND id IN (${ids.map(() => "?").join(",")})` : ""}`,
     ids,
   )
+  const rows = availableOnly
+    ? approvedRows.filter(stockConfirmed)
+    : approvedRows
 
   if (!rows.length)
-    return { enviadas: 0, erro: "Nenhum produto aprovado e autorizado para enviar." }
+    return {
+      enviadas: 0,
+      erro: availableOnly
+        ? "Nenhum produto aprovado e autorizado tem estoque confirmado recentemente."
+        : "Nenhum produto aprovado e autorizado para enviar.",
+    }
 
   let sent = 0
   let error: string | null = null
+  const sentModels: string[] = []
 
   for (const product of rows.slice(0, MAX_CATALOG_SEND)) {
     const result = await sendProductPhotos(
@@ -698,6 +711,7 @@ export async function sendCatalog(
     )
 
     sent += result.enviadas
+    if (result.enviadas > 0) sentModels.push(`${product.model}${product.version ? ` ${product.version}` : ""}`)
 
     if (result.erro) {
       error = result.erro
@@ -708,6 +722,7 @@ export async function sendCatalog(
   return {
     enviadas: sent,
     erro: error ?? (sent ? null : "Os produtos não têm foto cadastrada."),
+    ...(availableOnly ? { modelosEnviados: sentModels } : {}),
   }
 }
 
@@ -789,16 +804,16 @@ export async function runCatalogTool(
       organizationId,
       "AND status='approved' AND authorized_for_sale=1",
     )
+    const available = rows.filter(stockConfirmed)
 
     return {
-      modelosAutorizados: rows.map((p) => ({
+      modelosDisponiveis: available.map((p) => ({
         nome: p.name,
         modelo: p.model,
         versao: p.version,
-        estoque: stockConfirmed(p)
-          ? "confirmado"
-          : "não confirmado (não afirme que há estoque)",
+        estoque: "confirmado",
       })),
+      quantidadeComEstoqueNaoConfirmado: rows.length - available.length,
     }
   }
 
@@ -830,6 +845,7 @@ export async function runCatalogTool(
       conversationId,
       null,
       state,
+      true,
     )
 
     return {

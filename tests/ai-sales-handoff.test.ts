@@ -125,11 +125,33 @@ describe("oferta de vendedor pela IA", () => {
     expect(vi.mocked(sendText).mock.calls[0][4]).toEqual({ talkButton: false, assignmentRevision: 0 })
   })
 
-  it("limita a resposta ao tamanho permitido para mensagens com botão", async () => {
+  it("envia respostas longas em partes e limita a mensagem com botão", async () => {
     const { env } = setup(decision({ offerSalesperson: true, reply: "a".repeat(1500) }))
     await autoReply(env, "org", "conversation", "latest")
-    expect(vi.mocked(sendText).mock.calls[0][3]).toHaveLength(1024)
-    expect(vi.mocked(sendText).mock.calls[0][4]).toEqual({ talkButton: true, assignmentRevision: 0 })
+    const calls = vi.mocked(sendText).mock.calls
+    expect(calls).toHaveLength(2)
+    expect(calls.every((call) => String(call[3]).length <= 1024)).toBe(true)
+    expect(calls[0]?.[4]).toEqual({ talkButton: false, assignmentRevision: 0 })
+    expect(calls[1]?.[4]).toEqual({ talkButton: true, assignmentRevision: 0 })
+  })
+
+  it("não separa um emoji entre duas mensagens", async () => {
+    const reply = `${"a".repeat(1023)}😀${"b".repeat(8)}`
+    const { env } = setup(decision({ offerSalesperson: true, reply }))
+    await autoReply(env, "org", "conversation", "latest")
+    const parts = vi.mocked(sendText).mock.calls.map((call) => String(call[3]))
+    expect(parts.join("")).toBe(reply)
+    expect(parts.some((part) => part.includes("\ud83d") && !part.includes("😀"))).toBe(false)
+  })
+
+  it("preserva uma ficha longa em mensagens dentro do limite do WhatsApp", async () => {
+    const reply = "Especificação verificada. ".repeat(350)
+    const { env } = setup(decision({ reply }))
+    await autoReply(env, "org", "conversation", "latest")
+    const calls = vi.mocked(sendText).mock.calls
+    expect(calls.length).toBeGreaterThan(1)
+    expect(calls.every((call) => String(call[3]).length <= 4000)).toBe(true)
+    expect(calls.map((call) => call[3]).join(" ")).toContain("Especificação verificada.")
   })
 
   it("mantém o encaminhamento imediato quando a IA identifica necessidade de atendimento humano", async () => {

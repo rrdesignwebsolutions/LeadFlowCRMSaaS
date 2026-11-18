@@ -5,6 +5,7 @@ import { effectiveLeadStatus } from "./lead-status"
 const GRAPH_VERSION = "v26.0"
 
 const WINDOW_MS = 24 * 60 * 60 * 1000
+const INBOUND_MEDIA_LIMIT = 16 * 1024 * 1024
 
 const STATUS_RANK: Record<string, number> = {
   queued: 0,
@@ -640,7 +641,7 @@ export async function handleMetaPayload(
                 ),
               )
 
-            if (result.inserted && result.type === "text")
+            if (result.inserted && ["text", "audio", "image"].includes(result.type))
               after(
                 autoReply(
                   env,
@@ -1320,6 +1321,72 @@ async function downloadMedia(
   return new Response(file.body, { status: file.status, headers })
 }
 
+export async function fetchInboundMessageMedia(
+  env: Env,
+  organizationId: string,
+  conversationId: string,
+  externalId: string,
+) {
+  const row = await env.DB.prepare(
+    `SELECT m.media_id mediaId,m.media_mime mime,i.access_token_enc token
+     FROM messages m
+     JOIN conversations c ON c.id=m.conversation_id AND c.organization_id=m.organization_id
+     JOIN integrations i ON i.id=c.integration_id AND i.organization_id=c.organization_id
+     WHERE m.organization_id=? AND m.conversation_id=? AND m.external_id=? AND m.direction='inbound'`,
+  ).bind(organizationId, conversationId, externalId).first<{
+    mediaId: string | null
+    mime: string | null
+    token: string | null
+  }>()
+
+  if (!row?.mediaId) throw new Error("A mídia recebida não está disponível no WhatsApp.")
+  if (!row.token) throw new Error("A integração do WhatsApp não tem token ativo.")
+
+  const token = await decryptToken(env, row.token)
+  const meta = await graphFetch(env, row.mediaId, token)
+  const url = typeof meta.data.url === "string" ? meta.data.url : null
+  if (!meta.ok || !url) throw new Error("A Meta não disponibilizou a mídia recebida.")
+
+  const response = await fetch(url, { headers: { authorization: `Bearer ${token}` } })
+  if (!response.ok || !response.body) throw new Error("Não foi possível baixar a mídia da Meta.")
+
+  const contentLength = Number(response.headers.get("content-length"))
+  if (Number.isFinite(contentLength) && contentLength > INBOUND_MEDIA_LIMIT) {
+    await response.body.cancel()
+    throw new Error("A mídia excede o limite de processamento de 16 MB.")
+  }
+
+  const reader = response.body.getReader()
+  const chunks: Uint8Array[] = []
+  let size = 0
+  try {
+    while (true) {
+      const { done, value } = await reader.read()
+      if (done) break
+      size += value.byteLength
+      if (size > INBOUND_MEDIA_LIMIT) {
+        await reader.cancel()
+        throw new Error("A mídia excede o limite de processamento de 16 MB.")
+      }
+      chunks.push(value)
+    }
+  } finally {
+    reader.releaseLock()
+  }
+
+  const bytes = new Uint8Array(size)
+  let offset = 0
+  for (const chunk of chunks) {
+    bytes.set(chunk, offset)
+    offset += chunk.byteLength
+  }
+
+  return {
+    bytes,
+    mime: (row.mime ?? response.headers.get("content-type") ?? "").split(";")[0]!.trim().toLowerCase(),
+  }
+}
+
 const MEDIA_LIMITS: Record<string, number> = {
   image: 5 * 1024 * 1024,
   video: 16 * 1024 * 1024,
@@ -1962,8 +2029,8 @@ export async function whatsappRoutes(
       if (pending?.direction === "outbound" && pending.status === "queued")
         return json({ ok: true, warning: "Há uma mensagem em envio. Aguarde e use Retomar IA novamente para verificar se existe resposta pendente." })
       if (pending?.direction === "inbound") {
-        if (pending.type !== "text" || !pending.externalId)
-          return json({ ok: true, warning: "A última mensagem não é de texto; a IA não pode respondê-la automaticamente." })
+        if (!["text", "audio", "image"].includes(pending.type) || !pending.externalId)
+          return json({ ok: true, warning: "A última mensagem não pode ser processada automaticamente pela IA." })
         if (!pending.at || Date.now() - new Date(pending.at).getTime() > WINDOW_MS)
           return json({ ok: true, warning: "A janela de 24 horas expirou; a IA aguardará uma nova mensagem." })
         try {

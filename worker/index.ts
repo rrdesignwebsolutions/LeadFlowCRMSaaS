@@ -53,6 +53,10 @@ export interface Env {
 
   OPENAI_MODEL?: string
 
+  OPENAI_VISION_MODEL?: string
+
+  OPENAI_TRANSCRIPTION_MODEL?: string
+
   INFINITEPAY_ESSENCIAL_URL?: string
 
   INFINITEPAY_PRO_URL?: string

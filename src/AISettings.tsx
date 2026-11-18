@@ -3,7 +3,7 @@ import { Bot, FileText, Trash2, Upload } from "lucide-react";
 import { api, errorMessage } from "./api";
 
 type Doc = { id: string; name: string; size: number; createdAt: string };
-type Settings = { enabled: boolean; assistantName: string; instructions: string };
+type Settings = { enabled: boolean; assistantName: string; instructions: string; mediaProcessingEnabled: boolean };
 
 export default function AISettings({ canEdit }: { canEdit: boolean }) {
   const [settings, setSettings] = useState<Settings | null>(null);
@@ -39,6 +39,7 @@ export default function AISettings({ canEdit }: { canEdit: boolean }) {
           enabled: form.get("enabled") === "on",
           assistantName: form.get("assistantName"),
           instructions: form.get("instructions"),
+          mediaProcessingEnabled: form.get("mediaProcessingEnabled") === "on",
         },
       });
       setMessage("Configurações salvas.");
@@ -82,6 +83,13 @@ export default function AISettings({ canEdit }: { canEdit: boolean }) {
         <label>Instruções da empresa (tom, horários, políticas, o que nunca prometer)
           <textarea name="instructions" rows={12} defaultValue={settings.instructions} disabled={!canEdit} />
         </label>
+        <label>
+          <span>
+            <input type="checkbox" name="mediaProcessingEnabled" defaultChecked={settings.mediaProcessingEnabled} disabled={!canEdit || !ready} />
+            Permitir que a IA analise áudios e imagens recebidos
+          </span>
+          <small className="muted">Quando ativado, mídias recebidas são enviadas à OpenAI para transcrição ou análise visual e podem gerar custos de API. Desativado por padrão.</small>
+        </label>
         {canEdit && <button className="button" disabled={busy}>Salvar</button>}
       </form>
 
@@ -103,7 +111,7 @@ export default function AISettings({ canEdit }: { canEdit: boolean }) {
       )}
       {message && <p className="muted" role="status">{message}</p>}
       {error && <p className="auth-error" role="alert">{error}</p>}
-      <p className="muted">A IA oferece falar com um vendedor quando identifica um lead quente que precisa de ajuda para fechar a compra. Ela encaminha à equipe pedidos diretos de atendimento, reclamações e dúvidas que não consegue responder, e pausa por 30 minutos sempre que um atendente responde.</p>
+      <p className="muted">A IA oferece falar com um vendedor quando identifica um lead quente que precisa de ajuda para fechar a compra. Pedidos diretos de atendimento são registrados e encaminhados; a conversa só fica pausada quando uma pessoa assume ou envia uma mensagem manual.</p>
       <p className="muted">Na caixa de entrada, atribua uma conversa a um membro para manter a IA pausada até devolvê-la ao assistente. Ao retomar, a IA tenta responder à última mensagem de texto pendente, respeitando a janela de 24 horas do WhatsApp.</p>
       <p className="muted">Leads interessados sem uma forma de pagamento viável ficam em Pendência financeira, não como Quente. A IA reavalia quando surgir uma alternativa de pagamento.</p>
     </section>
