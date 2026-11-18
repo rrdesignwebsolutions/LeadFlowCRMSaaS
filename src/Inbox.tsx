@@ -26,7 +26,15 @@ import {
 
 import { Boxes } from "lucide-react"
 
-import { api, errorMessage, type Member, type Team } from "./api"
+import {
+  api,
+  editableStatuses,
+  errorMessage,
+  statusLabels,
+  toLocalInput,
+  type Member,
+  type Team,
+} from "./api"
 import { displayMessage } from "./messageDisplay"
 import { QuickReplyForm, type QuickReply } from "./QuickReplies"
 import {
@@ -72,7 +80,15 @@ type Conversation = {
   preview: string | null
   previewType: string | null
 
+  leadId: string | null
   leadStatus: string | null
+  productInterest: string | null
+  nextAction: string | null
+  followUpAt: string | null
+  leadNotes: string | null
+  lossReason: string | null
+  aiScore: number | null
+  aiSummary: string | null
 
   humanRequestedAt?: string | null
   assignedTo: string | null
@@ -218,6 +234,9 @@ export default function Inbox({
     x: number
     y: number
   } | null>(null)
+  const [leadEditor, setLeadEditor] = useState<Conversation | null>(null)
+  const [leadSaving, setLeadSaving] = useState(false)
+  const [leadEditorError, setLeadEditorError] = useState("")
   const [quickOpen, setQuickOpen] = useState(false)
   const [quickCreate, setQuickCreate] = useState(false)
   const [quickBusy, setQuickBusy] = useState(false)
@@ -313,7 +332,7 @@ export default function Inbox({
       kind,
       id,
       x: Math.max(8, Math.min(x, window.innerWidth - 270)),
-      y: Math.max(8, Math.min(y, window.innerHeight - 170)),
+      y: Math.max(8, Math.min(y, window.innerHeight - 250)),
     })
   }
 
@@ -501,6 +520,54 @@ export default function Inbox({
       setError(errorMessage(e))
     }
   }, [])
+
+  function editLead(id: string) {
+    setContextMenu(null)
+    const conversation = list.find((item) => item.id === id)
+    if (!conversation?.leadId) {
+      setError("Não foi possível localizar o lead desta conversa.")
+      return
+    }
+    setLeadEditorError("")
+    setLeadEditor(conversation)
+  }
+
+  async function saveLead(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    if (!leadEditor?.leadId) return
+
+    const form = new FormData(event.currentTarget)
+    const followUpValue = String(form.get("followUpAt") ?? "")
+    const followUpDate = followUpValue ? new Date(followUpValue) : null
+    if (followUpDate && Number.isNaN(followUpDate.getTime())) {
+      setLeadEditorError("Informe uma data e hora válidas para o follow-up.")
+      return
+    }
+
+    setLeadSaving(true)
+    setLeadEditorError("")
+    try {
+      await api(`/api/leads/${leadEditor.leadId}`, {
+        method: "PATCH",
+        body: {
+          ...(leadEditor.leadStatus === "sold"
+            ? {}
+            : { status: String(form.get("status") ?? leadEditor.leadStatus) }),
+          productInterest: String(form.get("productInterest") ?? ""),
+          nextAction: String(form.get("nextAction") ?? ""),
+          followUpAt: followUpDate?.toISOString() ?? null,
+          lossReason: String(form.get("lossReason") ?? ""),
+          notes: String(form.get("notes") ?? ""),
+        },
+      })
+      await loadList()
+      setLeadEditor(null)
+    } catch (e) {
+      setLeadEditorError(errorMessage(e))
+    } finally {
+      setLeadSaving(false)
+    }
+  }
 
   useEffect(() => {
     void loadList()
@@ -1329,6 +1396,15 @@ export default function Inbox({
             <button
               type="button"
               role="menuitem"
+              onClick={() => editLead(contextMenu.id)}
+            >
+              Qualificar lead / agendar follow-up
+            </button>
+          )}
+          {contextMenu.kind === "conversation" && (
+            <button
+              type="button"
+              role="menuitem"
               onClick={() => void markUnread(contextMenu.id)}
             >
               Marcar como não lida
@@ -1358,6 +1434,128 @@ export default function Inbox({
                 : "Excluir mensagem"}
             </button>
           )}
+        </div>
+      )}
+      {leadEditor && (
+        <div
+          className="modal-backdrop"
+          role="presentation"
+          onMouseDown={(event) => {
+            if (event.target === event.currentTarget && !leadSaving)
+              setLeadEditor(null)
+          }}
+        >
+          <section
+            className="modal wide"
+            role="dialog"
+            aria-modal="true"
+            aria-label="Qualificar lead e agendar follow-up"
+            onMouseDown={(event) => event.stopPropagation()}
+          >
+            <button
+              type="button"
+              className="icon-button modal-close"
+              aria-label="Fechar"
+              disabled={leadSaving}
+              onClick={() => setLeadEditor(null)}
+            >
+              <X size={20} />
+            </button>
+            <h2>Organizar atendimento</h2>
+            <p className="muted">
+              {leadEditor.name ?? leadEditor.phone}
+              {leadEditor.aiScore !== null
+                ? ` · Nota estimada pela IA: ${leadEditor.aiScore}/100`
+                : ""}
+            </p>
+            {leadEditor.aiSummary && (
+              <p className="callout-text">{leadEditor.aiSummary}</p>
+            )}
+            <form className="form" onSubmit={(event) => void saveLead(event)}>
+              {leadEditor.leadStatus === "sold" ? (
+                <p className="callout-text">Este lead já foi marcado como vendido.</p>
+              ) : (
+                <label>
+                  Qualificação manual
+                  <select
+                    name="status"
+                    defaultValue={leadEditor.leadStatus ?? "new"}
+                  >
+                    {editableStatuses.map((status) => (
+                      <option key={status} value={status}>
+                        {statusLabels[status]}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+              )}
+              <label>
+                Interesse / produto
+                <input
+                  name="productInterest"
+                  defaultValue={leadEditor.productInterest ?? ""}
+                  maxLength={160}
+                />
+              </label>
+              <label>
+                Próxima ação
+                <input
+                  name="nextAction"
+                  defaultValue={leadEditor.nextAction ?? ""}
+                  maxLength={300}
+                  placeholder="Ex.: enviar condições e confirmar interesse"
+                />
+              </label>
+              <label>
+                Agendar follow-up
+                <input
+                  name="followUpAt"
+                  type="datetime-local"
+                  defaultValue={toLocalInput(leadEditor.followUpAt)}
+                />
+              </label>
+              <label>
+                Motivo da perda (se aplicável)
+                <input
+                  name="lossReason"
+                  defaultValue={leadEditor.lossReason ?? ""}
+                  maxLength={300}
+                />
+              </label>
+              <label>
+                Observações internas
+                <textarea
+                  name="notes"
+                  rows={4}
+                  defaultValue={leadEditor.leadNotes ?? ""}
+                  maxLength={2000}
+                />
+              </label>
+              <p className="callout-text">
+                A qualificação manual será preservada pela IA. Leads quentes ficam
+                priorizados no topo das conversas, e o follow-up fica registrado no
+                cadastro do lead.
+              </p>
+              {leadEditorError && (
+                <p className="auth-error" role="alert">
+                  {leadEditorError}
+                </p>
+              )}
+              <div className="modal-actions">
+                <button
+                  type="button"
+                  className="button secondary"
+                  disabled={leadSaving}
+                  onClick={() => setLeadEditor(null)}
+                >
+                  Cancelar
+                </button>
+                <button className="button" disabled={leadSaving}>
+                  {leadSaving ? "Salvando..." : "Salvar organização"}
+                </button>
+              </div>
+            </form>
+          </section>
         </div>
       )}
     </div>

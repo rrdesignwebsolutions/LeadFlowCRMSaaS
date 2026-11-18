@@ -1,7 +1,11 @@
 import type { Env, Session } from "./index"
 import { fetchInboundMessageMedia, sendText } from "./whatsapp"
 import { escapeHtml, sendNotificationEmail } from "./verification"
-import { effectiveLeadStatus, normalizeLeadAssessment } from "./lead-status"
+import {
+  effectiveLeadStatus,
+  hasManualLeadStatusOverride,
+  normalizeLeadAssessment,
+} from "./lead-status"
 import {
   catalogEnabled,
   catalogTools,
@@ -1127,7 +1131,10 @@ async function generateReply(
 
   await env.DB.prepare(
     `UPDATE leads SET
-      status=COALESCE(?,status),
+      status=CASE
+        WHEN ?<>'financial_pending' AND ${hasManualLeadStatusOverride("leads")} THEN status
+        ELSE COALESCE(?,status)
+      END,
       financial_pending=CASE WHEN ? IS NULL THEN financial_pending WHEN ?='financial_pending' THEN 1 ELSE 0 END,
       ai_score=COALESCE(?,ai_score),
       ai_summary=COALESCE(?,ai_summary),
@@ -1141,6 +1148,7 @@ async function generateReply(
      WHERE id=? AND organization_id=?`,
   )
     .bind(
+      status,
       status === "financial_pending" ? "follow_up" : status,
       status,
       status,
@@ -1433,7 +1441,10 @@ ${knowledge || "(vazia)"}`,
 
   await env.DB.prepare(
     `UPDATE leads SET
-      status=COALESCE(?,status),
+      status=CASE
+        WHEN ?<>'financial_pending' AND ${hasManualLeadStatusOverride("leads")} THEN status
+        ELSE COALESCE(?,status)
+      END,
       financial_pending=CASE WHEN ? IS NULL THEN financial_pending WHEN ?='financial_pending' THEN 1 ELSE 0 END,
       ai_score=COALESCE(?,ai_score),
       ai_summary=COALESCE(?,ai_summary),
@@ -1446,6 +1457,7 @@ ${knowledge || "(vazia)"}`,
      WHERE id=? AND organization_id=? AND status IN ('new','not_contacted','in_service','hot','qualified','follow_up','cold')`,
   )
     .bind(
+      status,
       status === "financial_pending" ? "follow_up" : status,
       status,
       status,

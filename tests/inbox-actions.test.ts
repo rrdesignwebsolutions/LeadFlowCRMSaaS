@@ -111,8 +111,49 @@ describe("ações da caixa de entrada", () => {
     const response = await call("/api/conversations", "GET")
 
     expect(await response?.json()).toMatchObject({
-      results: [{ aiState: "HUMANO" }],
+      results: [{
+        aiState: "HUMANO",
+        leadId: "lead",
+        leadStatus: "new",
+        productInterest: null,
+        nextAction: null,
+        followUpAt: null,
+      }],
     })
+    db.close()
+  })
+
+  it("permite excluir conversa com mensagem enfileirada antiga", async () => {
+    const { db, call } = setup()
+    db.exec(`
+      UPDATE messages SET direction='outbound',status='queued',created_at=datetime('now','-10 minutes')
+        WHERE id='message';
+    `)
+
+    const response = await call("/api/conversations/conv", "DELETE")
+
+    expect(response?.status).toBe(200)
+    expect(db.prepare("SELECT id FROM conversations WHERE id='conv'").get()).toBeUndefined()
+    db.close()
+  })
+
+  it("impede excluir conversa enquanto envio ou resposta da IA está ativo", async () => {
+    const { db, call } = setup()
+    db.exec(`
+      UPDATE messages SET direction='outbound',status='queued',created_at=CURRENT_TIMESTAMP
+        WHERE id='message';
+    `)
+
+    const queuedResponse = await call("/api/conversations/conv", "DELETE")
+    expect(queuedResponse?.status).toBe(409)
+
+    db.exec(`
+      UPDATE messages SET status='received' WHERE id='message';
+      UPDATE conversations SET ai_reply_lock='active',ai_reply_lock_until=datetime('now','+1 minute')
+        WHERE id='conv';
+    `)
+    const aiResponse = await call("/api/conversations/conv", "DELETE")
+    expect(aiResponse?.status).toBe(409)
     db.close()
   })
 

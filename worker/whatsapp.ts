@@ -3275,10 +3275,12 @@ export async function whatsappRoutes(
   if (path === "/api/conversations" && request.method === "GET") {
     return json(
       await env.DB.prepare(`SELECT c.id,c.unread_count unread,c.last_message_at lastMessageAt,c.human_requested_at humanRequestedAt,c.assigned_to assignedTo,c.ai_state aiState,ct.name,ct.phone_e164 phone,
-      (SELECT ${effectiveLeadStatus("l")} FROM leads l WHERE l.contact_id=ct.id AND l.organization_id=c.organization_id LIMIT 1) leadStatus,
+      l.id leadId,${effectiveLeadStatus("l")} leadStatus,l.product_interest productInterest,l.next_action nextAction,
+      l.follow_up_at followUpAt,l.notes leadNotes,l.loss_reason lossReason,l.ai_score aiScore,l.ai_summary aiSummary,
       (SELECT m.body FROM messages m WHERE m.conversation_id=c.id AND m.organization_id=c.organization_id ORDER BY COALESCE(m.external_created_at,strftime('%Y-%m-%dT%H:%M:%fZ',m.created_at)) DESC,m.rowid DESC LIMIT 1) preview,
       (SELECT m.type FROM messages m WHERE m.conversation_id=c.id AND m.organization_id=c.organization_id ORDER BY COALESCE(m.external_created_at,strftime('%Y-%m-%dT%H:%M:%fZ',m.created_at)) DESC,m.rowid DESC LIMIT 1) previewType
       FROM conversations c JOIN contacts ct ON ct.id=c.contact_id AND ct.organization_id=c.organization_id
+      LEFT JOIN leads l ON l.contact_id=ct.id AND l.organization_id=c.organization_id
       WHERE c.organization_id=? ORDER BY
         (c.human_requested_at IS NOT NULL) DESC,
         (leadStatus='hot') DESC,
@@ -3352,7 +3354,9 @@ export async function whatsappRoutes(
         403,
       )
     const conversation = await env.DB.prepare(
-      `SELECT c.id, EXISTS(SELECT 1 FROM messages m WHERE m.organization_id=c.organization_id AND m.conversation_id=c.id AND m.status='queued') queued,
+      `SELECT c.id, EXISTS(SELECT 1 FROM messages m
+         WHERE m.organization_id=c.organization_id AND m.conversation_id=c.id
+           AND m.status='queued' AND m.created_at>=datetime('now','-5 minutes')) queued,
        (c.ai_reply_lock IS NOT NULL AND c.ai_reply_lock_until>CURRENT_TIMESTAMP) aiBusy
        FROM conversations c WHERE c.id=? AND c.organization_id=?`,
     )

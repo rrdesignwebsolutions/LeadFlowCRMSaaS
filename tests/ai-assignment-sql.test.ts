@@ -149,6 +149,20 @@ describe("atribuição com SQL real", () => {
     db.close()
   })
 
+  it("preserva o status escolhido manualmente mesmo após nova classificação da IA", async () => {
+    const { db, env } = setup("viable", "cold", 20, "unknown")
+    db.exec(`
+      UPDATE leads SET status='hot' WHERE id='lead';
+      INSERT INTO lead_status_history(id,organization_id,lead_id,from_status,to_status,changed_by)
+        VALUES('manual-status','org','lead','qualified','hot','agent');
+    `)
+    await autoReply(env, "org", "conv", "wamid")
+    expect(db.prepare("SELECT status,ai_score FROM leads").get()).toMatchObject({
+      status: "hot", ai_score: 20,
+    })
+    db.close()
+  })
+
   it("mantém pendência se não houver alternativa viável identificada", async () => {
     const { db, env } = setup("unknown", "hot", 90)
     db.exec("UPDATE leads SET status='follow_up',financial_pending=1")
@@ -187,6 +201,27 @@ describe("atribuição com SQL real", () => {
     await classifyLead(env, "org", "conv", "wamid")
     expect(db.prepare("SELECT status,ai_score FROM leads").get()).toMatchObject({
       status: "hot", ai_score: 82,
+    })
+    db.close()
+  })
+
+  it("preserva status manual durante a classificação sem resposta", async () => {
+    const { db, env } = setup()
+    db.exec(`
+      UPDATE leads SET status='cold' WHERE id='lead';
+      INSERT INTO lead_status_history(id,organization_id,lead_id,from_status,to_status,changed_by)
+        VALUES('manual-status','org','lead','qualified','cold','agent');
+    `)
+    vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({
+      output: [{ type: "message", content: [{ type: "output_text", text: JSON.stringify({
+        status: "hot", score: 90, summary: "Pronto para comprar",
+        productInterest: null, mainInterest: null, budgetRange: null, paymentMethod: null,
+        purchaseTimeline: "Hoje", purchaseReadiness: "ready_now", paymentViability: "viable",
+      }) }] }],
+    }))))
+    await classifyLead(env, "org", "conv", "wamid")
+    expect(db.prepare("SELECT status,ai_score FROM leads").get()).toMatchObject({
+      status: "cold", ai_score: 90,
     })
     db.close()
   })
