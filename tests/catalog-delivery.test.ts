@@ -78,7 +78,7 @@ function setup() {
         }
       },
 
-      async batch(statements: Array<{ sql: string args: unknown[] }>) {
+      async batch(statements: Array<{ sql: string; args: unknown[] }>) {
         return statements.map((statement) => {
           const result = db
 

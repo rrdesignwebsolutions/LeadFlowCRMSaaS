@@ -502,14 +502,15 @@ function simulate(
   definition: WorkflowDefinition,
   testMessage: string,
   leadStatus: string,
+  testContext: Pick<RuntimeContext, "priority" | "humanRequested" | "hasFollowUp">,
 ) {
   const context: RuntimeContext = {
     message: testMessage,
     messageType: "text",
     leadStatus,
-    priority: false,
-    humanRequested: false,
-    hasFollowUp: false,
+    priority: testContext.priority,
+    humanRequested: testContext.humanRequested,
+    hasFollowUp: testContext.hasFollowUp,
     contactName: "Cliente de teste",
     aiState: "IA",
     assignedTo: null,
@@ -561,6 +562,33 @@ export async function workflowRoutes(
   }
   if (!canEdit(auth) && request.method !== "GET")
     return json({ error: "Apenas administradores e gerentes podem alterar fluxos." }, 403)
+
+  if (path === "/starter" && request.method === "POST") {
+    const result = validateWorkflowDefinition(DEFAULT_WORKFLOW)
+    if (!result.definition)
+      return json({ error: "O modelo inicial de fluxo está inválido." }, 500)
+    const id = uid()
+    const inserted = await env.DB.prepare(
+      `INSERT INTO workflows(id,organization_id,name,description,draft_json,created_by)
+       SELECT ?,?,?,?,?,? WHERE NOT EXISTS (
+         SELECT 1 FROM workflows WHERE organization_id=?
+       )`,
+    )
+      .bind(
+        id,
+        org,
+        "VIP Routing",
+        "Identifica conversas prioritárias: registra uma nota para a equipe e direciona as demais à IA.",
+        JSON.stringify(result.definition),
+        auth.userId,
+        org,
+      )
+      .run()
+    return json(
+      { created: inserted.meta.changes > 0 },
+      inserted.meta.changes > 0 ? 201 : 200,
+    )
+  }
 
   if (path === "" && request.method === "POST") {
     const body = await request.json<Record<string, unknown>>()
@@ -749,6 +777,11 @@ export async function workflowRoutes(
         definition,
         message,
         asText(body.leadStatus, 40) || "new",
+        {
+          priority: body.priority === true,
+          humanRequested: body.humanRequested === true,
+          hasFollowUp: body.hasFollowUp === true,
+        },
       ),
     })
   }

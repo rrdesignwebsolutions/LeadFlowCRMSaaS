@@ -200,12 +200,49 @@ export function validateWorkflowDefinition(
 export const DEFAULT_WORKFLOW: WorkflowDefinition = {
   nodes: [
     {
-      id: "trigger",
+      id: "trigger-message",
       type: "trigger",
       kind: "message_received",
       config: {},
-      position: { x: 80, y: 120 },
+      position: { x: 560, y: 100 },
+    },
+    {
+      id: "vip-condition",
+      type: "condition",
+      kind: "is_priority",
+      config: {},
+      position: { x: 560, y: 285 },
+    },
+    {
+      id: "vip-note",
+      type: "action",
+      kind: "private_note",
+      config: {
+        text: "⭐ Lead VIP detectado! Priorize esta conversa e faça o atendimento pessoalmente.",
+      },
+      position: { x: 220, y: 520 },
+    },
+    {
+      id: "standard-ai",
+      type: "action",
+      kind: "reply_with_ai",
+      config: {},
+      position: { x: 900, y: 520 },
     },
   ],
-  edges: [],
+  edges: [
+    { id: "edge-trigger-condition", source: "trigger-message", target: "vip-condition" },
+    {
+      id: "edge-vip-note",
+      source: "vip-condition",
+      target: "vip-note",
+      sourceHandle: "true",
+    },
+    {
+      id: "edge-standard-ai",
+      source: "vip-condition",
+      target: "standard-ai",
+      sourceHandle: "false",
+    },
+  ],
 }

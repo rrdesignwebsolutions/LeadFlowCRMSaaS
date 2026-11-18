@@ -1,5 +1,5 @@
 export type Subscription = { status: "trialing" | "active" | "expired"; plan: string; endsAt: string | null; daysLeft: number };
-export type Me = { name: string; email: string; organization: string; role: string; subscription: Subscription };
+export type Me = { name: string; email: string; organization: string; organizationId: string; role: string; subscription: Subscription };
 export type Metrics = { leads: number; qualified: number; hot: number; sold: number; active: number; seats: number; seatLimit: number };
 export type Lead = {
   id: string; status: string; productInterest: string | null; notes: string | null; nextAction: string | null;
@@ -24,8 +24,24 @@ export async function api<T>(path: string, init: { method?: string; body?: unkno
     headers: init.body ? { "content-type": "application/json" } : undefined,
     body: init.body ? JSON.stringify(init.body) : undefined,
   });
-  const data = await response.json().catch(() => ({}));
-  if (!response.ok) throw new ApiError(response.status, (data as { error?: string }).error ?? "Erro inesperado.", (data as { code?: string }).code);
+  let data: unknown;
+  try {
+    data = await response.json();
+  } catch {
+    if (!response.ok) throw new ApiError(response.status, "Erro inesperado.");
+    throw new ApiError(
+      502,
+      "A API do AV Flow não respondeu em JSON. Verifique se o Worker está ativo.",
+    );
+  }
+  if (!response.ok) {
+    const body = data && typeof data === "object" ? data as Record<string, unknown> : {};
+    throw new ApiError(
+      response.status,
+      typeof body.error === "string" ? body.error : "Erro inesperado.",
+      typeof body.code === "string" ? body.code : undefined,
+    );
+  }
   return data as T;
 }
 

@@ -8,7 +8,7 @@ import {
 } from "../worker/whatsapp"
 
 function database(duplicateMessage: { conversation_id: string } | null = null) {
-  const statements: Array<{ sql: string args: unknown[] }> = []
+  const statements: Array<{ sql: string; args: unknown[] }> = []
 
   const db = {
     prepare(sql: string) {
@@ -93,7 +93,7 @@ function database(duplicateMessage: { conversation_id: string } | null = null) {
       }
     },
 
-    async batch(batch: Array<{ sql: string args: unknown[] }>) {
+    async batch(batch: Array<{ sql: string; args: unknown[] }>) {
       statements.push(...batch)
 
       return batch.map(() => ({ meta: { changes: 1 } }))

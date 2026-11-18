@@ -1001,7 +1001,7 @@ async function api(
 
   if (url.pathname === "/api/me") {
     const data =
-      await env.DB.prepare(`SELECT u.name,u.email,o.name organization,m.role FROM users u
+      await env.DB.prepare(`SELECT u.name,u.email,o.id organizationId,o.name organization,m.role FROM users u
       JOIN organization_members m ON m.user_id=u.id JOIN organizations o ON o.id=m.organization_id
       WHERE u.id=? AND o.id=?`)
         .bind(auth.userId, auth.organizationId)

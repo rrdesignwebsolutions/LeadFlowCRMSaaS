@@ -94,6 +94,22 @@ const initials = (name: string) =>
     .map((p) => p[0]!.toUpperCase())
     .join("")
 
+function isMeResponse(value: unknown): value is Me {
+  if (!value || typeof value !== "object") return false
+  const record = value as Record<string, unknown>
+  const subscription = record.subscription
+  if (!subscription || typeof subscription !== "object") return false
+  const status = (subscription as Record<string, unknown>).status
+  return (
+    typeof record.name === "string" &&
+    typeof record.email === "string" &&
+    typeof record.organization === "string" &&
+    typeof record.organizationId === "string" &&
+    typeof record.role === "string" &&
+    (status === "trialing" || status === "active" || status === "expired")
+  )
+}
+
 function EmailChange({ current, onChanged }: { current: string; onChanged: () => void }) {
   const [open, setOpen] = useState(false)
   const [busy, setBusy] = useState(false)
@@ -171,6 +187,8 @@ export default function App() {
 function WorkspaceApp() {
   const [me, setMe] = useState<Me | null | undefined>(undefined)
 
+  const [bootstrapError, setBootstrapError] = useState("")
+
   const [metrics, setMetrics] = useState<Metrics | null>(null)
 
   const [leads, setLeads] = useState<Lead[]>([])
@@ -186,8 +204,12 @@ function WorkspaceApp() {
 
   const load = useCallback(async () => {
     try {
-      const current = await api<Me>("/api/me")
+      const response = await api<unknown>("/api/me")
+      if (!isMeResponse(response))
+        throw new ApiError(502, "O servidor retornou dados incompletos da conta.")
+      const current = response
 
+      setBootstrapError("")
       setMe(current)
 
       if (current.subscription.status === "expired") {
@@ -212,10 +234,15 @@ function WorkspaceApp() {
 
       setLoadError("")
     } catch (e) {
-      if (e instanceof ApiError && e.status === 401) setMe(null)
+      if (e instanceof ApiError && e.status === 401) {
+        setMe(null)
+        setBootstrapError("")
+      }
       else {
         setMe((current) => current ?? null)
-        setLoadError(errorMessage(e))
+        const message = errorMessage(e)
+        setLoadError(message)
+        setBootstrapError((current) => current || message)
       }
     }
   }, [updateBranding])
@@ -262,9 +289,27 @@ function WorkspaceApp() {
       <AuthScreen
         onDone={() => {
           setMe(undefined)
+          setBootstrapError("")
           void load()
         }}
       />
+    )
+
+  if (me === null && bootstrapError)
+    return (
+      <div className="auth-page">
+      <section className="auth-card" role="alert">
+        <div className="brand">
+          <img className="brand-mark" src="/app-icon.png" alt="" />
+          <span>AV Flow <b>CRM</b><small>Acelera Vendas</small></span>
+        </div>
+        <h1>Não foi possível conectar</h1>
+        <p>{bootstrapError}</p>
+        <button className="button" onClick={() => { setMe(undefined); setBootstrapError(""); void load() }}>
+          Tentar novamente
+        </button>
+      </section>
+      </div>
     )
 
   if (me.subscription.status === "expired")
@@ -792,7 +837,7 @@ function Shell({
           )}
 
           {view === "workflows" && (
-            <Workflows canEdit={me.role === "admin" || me.role === "manager"} />
+            <Workflows organizationId={me.organizationId} canEdit={me.role === "admin" || me.role === "manager"} />
           )}
 
           {view === "settings" && (

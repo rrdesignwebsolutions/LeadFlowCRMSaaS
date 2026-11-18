@@ -118,6 +118,29 @@ describe("validação de fluxos", () => {
 })
 
 describe("API de fluxos", () => {
+  it("cria o modelo VIP inicial apenas quando a organização ainda não tem fluxos", async () => {
+    const { db, call } = setup()
+
+    expect((await call("/starter", "POST"))?.status).toBe(201)
+    expect((await call("/starter", "POST"))?.status).toBe(200)
+    expect(
+      db.prepare("SELECT COUNT(*) count FROM workflows WHERE organization_id='org'").get(),
+    ).toMatchObject({ count: 1 })
+
+    const row = db
+      .prepare("SELECT name,draft_json FROM workflows WHERE organization_id='org'")
+      .get() as { name: string; draft_json: string }
+    expect(row.name).toBe("VIP Routing")
+    expect(JSON.parse(row.draft_json)).toMatchObject({
+      nodes: expect.arrayContaining([
+        expect.objectContaining({ id: "vip-condition", kind: "is_priority" }),
+        expect.objectContaining({ id: "vip-note", kind: "private_note" }),
+        expect.objectContaining({ id: "standard-ai", kind: "reply_with_ai" }),
+      ]),
+    })
+    db.close()
+  })
+
   it("cria, publica, simula sem efeitos e mantém isolamento por organização", async () => {
     const { db, call } = setup()
     const created = await call("", "POST", {
@@ -139,6 +162,24 @@ describe("API de fluxos", () => {
       sideEffects: false,
       matched: true,
     })
+    const vipPreview = await call(`/${id}/test`, "POST", {
+      message: "oi",
+      priority: true,
+    })
+    expect((await vipPreview?.json()).steps.map((step: { id: string }) => step.id)).toEqual([
+      "trigger-message",
+      "vip-condition",
+      "vip-note",
+    ])
+    const standardPreview = await call(`/${id}/test`, "POST", {
+      message: "oi",
+      priority: false,
+    })
+    expect((await standardPreview?.json()).steps.map((step: { id: string }) => step.id)).toEqual([
+      "trigger-message",
+      "vip-condition",
+      "standard-ai",
+    ])
     expect(db.prepare("SELECT COUNT(*) count FROM workflow_runs").get()).toMatchObject({ count: 0 })
 
     const other: Session = { userId: "admin", organizationId: "other", role: "admin" }

@@ -22,6 +22,7 @@ import {
   X,
 } from "lucide-react"
 import { api, errorMessage } from "./api"
+import { DEFAULT_WORKFLOW } from "../worker/workflow-model"
 
 type NodeType = "trigger" | "condition" | "action"
 type Node = {
@@ -93,19 +94,6 @@ const leadStatuses = [
   ["lost", "Perdido"],
   ["sold", "Vendido"],
 ]
-
-const defaultDefinition: Definition = {
-  nodes: [
-    {
-      id: "trigger",
-      type: "trigger",
-      kind: "message_received",
-      config: {},
-      position: { x: 80, y: 120 },
-    },
-  ],
-  edges: [],
-}
 
 const makeId = () => `node-${crypto.randomUUID().slice(0, 8)}`
 
@@ -370,7 +358,7 @@ function WorkflowCanvas({
   )
 }
 
-export default function Workflows({ canEdit }: { canEdit: boolean }) {
+export default function Workflows({ canEdit, organizationId }: { canEdit: boolean; organizationId: string }) {
   const [items, setItems] = useState<Summary[]>([])
   const [activeId, setActiveId] = useState("")
   const [detail, setDetail] = useState<WorkflowDetail | null>(null)
@@ -393,16 +381,32 @@ export default function Workflows({ canEdit }: { canEdit: boolean }) {
   const [connectionSource, setConnectionSource] = useState<{ nodeId: string; handle?: "true" | "false" } | null>(null)
   const [history, setHistory] = useState<Definition[]>([])
   const [future, setFuture] = useState<Definition[]>([])
+  const starterRequest = useRef(false)
 
   const loadList = useCallback(async () => {
     try {
       const response = await api<{ results: Summary[] }>("/api/workflows")
-      setItems(response.results)
-      if (!activeId && response.results[0]) setActiveId(response.results[0].id)
+      let results = response.results
+      const markerKey = `av-flow-workflow-starter:${organizationId}`
+      if (results.length) localStorage.setItem(markerKey, "1")
+      if (
+        results.length === 0 &&
+        canEdit &&
+        !starterRequest.current &&
+        localStorage.getItem(markerKey) !== "1"
+      ) {
+        starterRequest.current = true
+        await api("/api/workflows/starter", { method: "POST" })
+        results = (await api<{ results: Summary[] }>("/api/workflows")).results
+        localStorage.setItem(markerKey, "1")
+      }
+      setItems(results)
+      if (!activeId && results[0]) setActiveId(results[0].id)
     } catch (e) {
       setError(errorMessage(e))
+      starterRequest.current = false
     }
-  }, [activeId])
+  }, [activeId, canEdit, organizationId])
 
   const loadDetail = useCallback(async (id: string) => {
     if (!id) {
@@ -572,7 +576,7 @@ export default function Workflows({ canEdit }: { canEdit: boolean }) {
         body: {
           name: newName.trim(),
           description: newDescription.trim(),
-          definition: defaultDefinition,
+          definition: DEFAULT_WORKFLOW,
         },
       })
       setCreateOpen(false)
