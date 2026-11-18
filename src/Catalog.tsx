@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState, type ChangeEvent, type FormEvent } from "react";
 import { Boxes, ChevronLeft, ChevronRight, Pencil, Trash2, Upload } from "lucide-react";
 import { api, errorMessage } from "./api";
+import { formatCentsInput, formatExistingCurrency } from "./currency";
 
 type Spec = { label: string; value: string };
 type Product = {
@@ -17,6 +18,55 @@ const textToSpecs = (text: string): Spec[] =>
     const i = line.indexOf(":");
     return i > 0 ? { label: line.slice(0, i).trim(), value: line.slice(i + 1).trim() } : { label: "", value: "" };
   }).filter((s) => s.label && s.value);
+
+function CurrencyInput({ name, value, placeholder }: { name: string; value?: string | null; placeholder: string }) {
+  const initial = formatExistingCurrency(value);
+  const [legacy, setLegacy] = useState(initial === null);
+
+  function change(event: ChangeEvent<HTMLInputElement>) {
+    const input = event.currentTarget;
+    if (legacy && input.value && !/^[\d\s.,$Rr]*$/.test(input.value)) {
+      input.setCustomValidity("Apague o valor anterior e digite apenas números.");
+      return;
+    }
+    input.setCustomValidity("");
+    setLegacy(false);
+    const digitsAfterCursor = input.value.slice(input.selectionStart ?? input.value.length).replace(/\D/g, "").length;
+    input.value = formatCentsInput(input.value);
+    let cursor = input.value.length;
+    let remaining = digitsAfterCursor;
+    while (cursor > 0 && remaining > 0) {
+      cursor--;
+      if (/\d/.test(input.value[cursor])) remaining--;
+    }
+    input.setSelectionRange(cursor, cursor);
+  }
+
+  return <>
+    <input name={name} type="text" inputMode="numeric" autoComplete="off" defaultValue={initial ?? value ?? ""} placeholder={placeholder} onChange={change}
+      onKeyDown={(event) => {
+        const input = event.currentTarget;
+        if (event.key === "Backspace" && input.selectionStart === input.value.length &&
+          input.selectionEnd === input.value.length && /^R\$ 0,00$/.test(input.value)) {
+          event.preventDefault();
+          input.value = "";
+          input.setCustomValidity("");
+          setLegacy(false);
+        }
+      }}
+      onPaste={(event) => {
+        const pasted = event.clipboardData.getData("text").trim();
+        if (!/[.,]/.test(pasted)) return;
+        const formatted = formatExistingCurrency(pasted);
+        if (formatted === null) return;
+        event.preventDefault();
+        event.currentTarget.value = formatted;
+        event.currentTarget.setCustomValidity("");
+        setLegacy(false);
+      }} />
+    {legacy && <small className="muted">Valor anterior mantido. Para alterar, apague e digite somente números.</small>}
+  </>;
+}
 
 function ProductForm({ product, busy, onSubmit, onCancel }: {
   product?: Product; busy: boolean; onSubmit: (body: Record<string, unknown>, files: File[]) => void; onCancel?: () => void;
@@ -42,11 +92,11 @@ function ProductForm({ product, busy, onSubmit, onCancel }: {
       <label>Versão<input name="version" maxLength={80} defaultValue={product?.version ?? ""} /></label>
       <label>Marca<input name="brand" maxLength={80} defaultValue={product?.brand ?? ""} /></label>
       <label>Categoria<input name="category" maxLength={80} defaultValue={product?.category ?? ""} /></label>
-      <label>Preço normal à vista no Pix ou dinheiro (opcional)<input name="priceText" maxLength={80} defaultValue={product?.priceText ?? ""} placeholder="Ex.: R$ 12.990" /></label>
+      <label>Preço normal à vista no Pix ou dinheiro (opcional)<CurrencyInput name="priceText" value={product?.priceText} placeholder="R$ 0,00" /></label>
       <label>Nº de parcelas no cartão (opcional)<input name="cardInstallments" inputMode="numeric" maxLength={10} defaultValue={product?.cardInstallments ?? ""} placeholder="Ex.: 12" /></label>
-      <label>Valor da parcela no cartão (opcional, personalizável)<input name="cardInstallmentText" maxLength={80} defaultValue={product?.cardInstallmentText ?? ""} placeholder="Ex.: R$ 1.250" /></label>
+      <label>Valor da parcela no cartão (opcional, personalizável)<CurrencyInput name="cardInstallmentText" value={product?.cardInstallmentText} placeholder="R$ 0,00" /></label>
       <p className="muted">Financiamos em até 36x pela Sicredi, com ou sem entrada, somente para pessoas com nome limpo, sem restrições.</p>
-      <label>Preço de oferta à vista no Pix ou dinheiro (opcional, preencha quando houver promoção)<input name="salePriceText" maxLength={80} defaultValue={product?.salePriceText ?? ""} placeholder="Ex.: R$ 11.490" /></label>
+      <label>Preço de oferta à vista no Pix ou dinheiro (opcional, preencha quando houver promoção)<CurrencyInput name="salePriceText" value={product?.salePriceText} placeholder="R$ 0,00" /></label>
       <label>Descrição<textarea name="description" rows={3} maxLength={2000} defaultValue={product?.description ?? ""} /></label>
       <label>Especificações (uma por linha, no formato "Item: valor")
         <textarea name="specs" rows={6} defaultValue={specsToText(product?.specs ?? [])} placeholder={"Motor: 800W\nAutonomia: 60 km\nBateria: Chumbo-ácido 60V"} />
