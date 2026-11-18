@@ -198,7 +198,7 @@ type WaMessage = {
 
   text?: { body?: string }
 
-  reaction?: { message_id?: string emoji?: string }
+  reaction?: { message_id?: string; emoji?: string }
 
   image?: { id?: string caption?: string mime_type?: string }
   video?: { id?: string caption?: string mime_type?: string }

@@ -53,7 +53,7 @@ type LlmItem = {
   call_id?: string
   name?: string
   arguments?: string
-  content?: Array<{ type: string text?: string }>
+  content?: Array<{ type: string; text?: string }>
 }
 
 type LlmBody = {

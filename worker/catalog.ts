@@ -24,7 +24,7 @@ const STOCK_FRESH_DAYS = 7
 const clip = (value: unknown, max: number) =>
   typeof value === "string" && value.trim() ? value.trim().slice(0, max) : null
 
-type Spec = { label: string value: string }
+type Spec = { label: string; value: string }
 
 type ProductRow = {
   id: string
