@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState, type FormEvent } from "react"
+import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent, type PointerEvent as ReactPointerEvent } from "react"
 import {
   Activity,
   ArrowRight,
@@ -130,10 +130,245 @@ function statusLabel(status: Summary["status"]) {
   return status === "active" ? "Publicado" : status === "blocked" ? "Bloqueado" : "Rascunho"
 }
 
+type WorkflowCanvasProps = {
+  nodes: Node[]
+  edges: Edge[]
+  selectedNodeId: string
+  canEdit: boolean
+  zoom: number
+  resetVersion: number
+  nodeUsage: Map<string, number>
+  connectionSource: { nodeId: string; handle?: "true" | "false" } | null
+  onSelect: (nodeId: string) => void
+  onMove: (nodeId: string, position: { x: number; y: number }) => void
+  onStartConnection: (nodeId: string, handle?: "true" | "false") => void
+  onConnect: (targetId: string) => void
+}
+
+function WorkflowCanvas({
+  nodes,
+  edges,
+  selectedNodeId,
+  canEdit,
+  zoom,
+  resetVersion,
+  nodeUsage,
+  connectionSource,
+  onSelect,
+  onMove,
+  onStartConnection,
+  onConnect,
+}: WorkflowCanvasProps) {
+  const [positions, setPositions] = useState<Record<string, { x: number; y: number }>>(() =>
+    Object.fromEntries(nodes.map((node, index) => [node.id, node.position ?? { x: 100 + index * 340, y: 120 }])),
+  )
+  const [pan, setPan] = useState({ x: 40, y: 30 })
+  const interaction = useRef<
+    | { type: "pan"; start: { x: number; y: number }; origin: { x: number; y: number } }
+    | { type: "node"; id: string; start: { x: number; y: number }; origin: { x: number; y: number }; current: { x: number; y: number } }
+    | null
+  >(null)
+
+  useEffect(() => {
+    setPositions(Object.fromEntries(nodes.map((node, index) => [node.id, node.position ?? positions[node.id] ?? { x: 100 + index * 340, y: 120 }])))
+  }, [nodes])
+
+  useEffect(() => {
+    setPan({ x: 40, y: 30 })
+  }, [resetVersion])
+
+  useEffect(() => {
+    function move(event: PointerEvent) {
+      const current = interaction.current
+      if (!current) return
+      if (current.type === "pan") {
+        setPan({
+          x: current.origin.x + event.clientX - current.start.x,
+          y: current.origin.y + event.clientY - current.start.y,
+        })
+        return
+      }
+      const position = {
+        x: Math.max(20, current.origin.x + (event.clientX - current.start.x) / zoom),
+        y: Math.max(20, current.origin.y + (event.clientY - current.start.y) / zoom),
+      }
+      current.current = position
+      setPositions((previous) => ({ ...previous, [current.id]: position }))
+    }
+
+    function finish() {
+      const current = interaction.current
+      if (current?.type === "node" && (current.current.x !== current.origin.x || current.current.y !== current.origin.y)) {
+        onMove(current.id, current.current)
+      }
+      interaction.current = null
+    }
+
+    window.addEventListener("pointermove", move)
+    window.addEventListener("pointerup", finish)
+    window.addEventListener("pointercancel", finish)
+    return () => {
+      window.removeEventListener("pointermove", move)
+      window.removeEventListener("pointerup", finish)
+      window.removeEventListener("pointercancel", finish)
+    }
+  }, [onMove, zoom])
+
+  const nodeWidth = 250
+  const nodeHeight = (node: Node) => node.type === "condition" ? 166 : 132
+  const positionOf = (nodeId: string) => positions[nodeId] ?? { x: 100, y: 120 }
+  const stageWidth = Math.max(1900, ...nodes.map((node) => positionOf(node.id).x + nodeWidth + 180))
+  const stageHeight = Math.max(1100, ...nodes.map((node) => positionOf(node.id).y + nodeHeight(node) + 180))
+
+  function beginPan(event: ReactPointerEvent<HTMLDivElement>) {
+    const target = event.target as HTMLElement
+    if (target.closest("button, article")) return
+    interaction.current = {
+      type: "pan",
+      start: { x: event.clientX, y: event.clientY },
+      origin: pan,
+    }
+  }
+
+  function beginNodeDrag(event: ReactPointerEvent<HTMLElement>, node: Node) {
+    if (!canEdit || (event.target as HTMLElement).closest("button")) return
+    event.preventDefault()
+    event.stopPropagation()
+    const origin = positionOf(node.id)
+    interaction.current = {
+      type: "node",
+      id: node.id,
+      start: { x: event.clientX, y: event.clientY },
+      origin,
+      current: origin,
+    }
+    onSelect(node.id)
+  }
+
+  return (
+    <div className="workflow-canvas-viewport" onPointerDown={beginPan}>
+      <div
+        className="workflow-canvas-stage"
+        style={{
+          width: stageWidth,
+          height: stageHeight,
+          transform: `translate(${pan.x}px, ${pan.y}px) scale(${zoom})`,
+        }}
+      >
+        <svg className="workflow-canvas-edges" width={stageWidth} height={stageHeight} aria-hidden="true">
+          {edges.map((edge) => {
+            const source = nodes.find((node) => node.id === edge.source)
+            const target = nodes.find((node) => node.id === edge.target)
+            if (!source || !target) return null
+            const sourcePosition = positionOf(source.id)
+            const targetPosition = positionOf(target.id)
+            const sourceY = source.type === "condition"
+              ? sourcePosition.y + (edge.sourceHandle === "false" ? nodeHeight(source) - 42 : 42)
+              : sourcePosition.y + nodeHeight(source) / 2
+            const x1 = sourcePosition.x + nodeWidth
+            const x2 = targetPosition.x
+            const y2 = targetPosition.y + nodeHeight(target) / 2
+            const curve = Math.max(56, (x2 - x1) / 2)
+            const labelX = (x1 + x2) / 2
+            const labelY = (sourceY + y2) / 2 - 7
+            return (
+              <g key={edge.id}>
+                <path
+                  d={`M ${x1} ${sourceY} C ${x1 + curve} ${sourceY}, ${x2 - curve} ${y2}, ${x2} ${y2}`}
+                  fill="none"
+                  stroke={edge.sourceHandle === "true" ? "#16a36a" : edge.sourceHandle === "false" ? "#d28a24" : "#8fa39a"}
+                  strokeWidth="2"
+                />
+                <circle cx={x2} cy={y2} r="4" fill="#fff" stroke="#8fa39a" strokeWidth="2" />
+                {edge.sourceHandle && <text x={labelX} y={labelY} textAnchor="middle" className={`workflow-edge-label ${edge.sourceHandle}`}>
+                  {edge.sourceHandle === "true" ? "Sim" : "Não"}
+                </text>}
+              </g>
+            )
+          })}
+        </svg>
+        {nodes.map((node, index) => {
+          const position = positionOf(node.id)
+          const outgoing = node.type === "action" && node.kind === "stop"
+            ? []
+            : node.type === "condition" ? ["true", "false"] as const : [undefined]
+          return (
+            <article
+              key={node.id}
+              className={`workflow-node ${node.type} ${selectedNodeId === node.id ? "selected" : ""}`}
+              style={{ left: position.x, top: position.y, width: nodeWidth, minHeight: nodeHeight(node) }}
+              onPointerDown={(event) => beginNodeDrag(event, node)}
+              onClick={() => onSelect(node.id)}
+            >
+              <button
+                type="button"
+                className={`workflow-node-port input ${connectionSource ? "connect-target" : ""}`}
+                title={connectionSource ? "Conectar nesta etapa" : "Ponto de entrada"}
+                onPointerDown={(event) => event.stopPropagation()}
+                onClick={(event) => {
+                  event.stopPropagation()
+                  if (connectionSource && connectionSource.nodeId !== node.id) onConnect(node.id)
+                }}
+              />
+              <div className="workflow-node-head">
+                <span className={`workflow-node-icon ${node.type}`}>
+                  {node.type === "trigger" ? <MessageSquareText size={16} /> : node.type === "condition" ? <GitBranch size={16} /> : <Sparkles size={16} />}
+                </span>
+                <span className="workflow-node-meta">
+                  <small>{node.type === "trigger" ? "QUANDO" : node.type === "condition" ? "VERIFICAR" : "ENTÃO"} · ETAPA {index + 1}</small>
+                  <b>{nodeLabel(node)}</b>
+                </span>
+                {nodeUsage.has(node.id) && <span className="workflow-node-count">{nodeUsage.get(node.id)}</span>}
+              </div>
+              <div className="workflow-node-summary">
+                {node.kind === "message_contains"
+                  ? String(node.config.text || "Defina o texto para comparar")
+                  : node.kind === "send_message"
+                    ? String(node.config.text || "Configure a mensagem").slice(0, 68)
+                    : node.kind === "lead_status"
+                      ? `Status: ${leadStatuses.find(([value]) => value === node.config.status)?.[1] ?? "Quente"}`
+                      : node.kind === "private_note"
+                        ? String(node.config.text || "Nota interna")
+                        : node.kind === "reply_with_ai"
+                          ? "O assistente responde com IA"
+                          : node.kind === "stop"
+                            ? "Fim deste caminho"
+                            : "Configure esta etapa no painel"}
+              </div>
+              {outgoing.map((handle) => (
+                <button
+                  key={handle ?? "default"}
+                  type="button"
+                  className={`workflow-node-port output ${handle ?? ""} ${connectionSource?.nodeId === node.id && connectionSource.handle === handle ? "connecting" : ""}`}
+                  style={handle ? { top: handle === "true" ? 42 : nodeHeight(node) - 42 } : undefined}
+                  title={handle === "true" ? "Conectar saída Sim" : handle === "false" ? "Conectar saída Não" : "Conectar próxima etapa"}
+                  onPointerDown={(event) => event.stopPropagation()}
+                  onClick={(event) => {
+                    event.stopPropagation()
+                    if (canEdit) onStartConnection(node.id, handle)
+                  }}
+                >
+                  {handle === "true" ? "Sim" : handle === "false" ? "Não" : ""}
+                </button>
+              ))}
+            </article>
+          )
+        })}
+      </div>
+      <div className="workflow-canvas-hint">
+        <span>Arraste os blocos para organizar</span>
+        <span>Arraste o fundo para navegar</span>
+        <span>Clique em uma saída e depois em uma entrada para conectar</span>
+      </div>
+    </div>
+  )
+}
+
 export default function Workflows({ canEdit }: { canEdit: boolean }) {
   const [items, setItems] = useState<Summary[]>([])
   const [activeId, setActiveId] = useState("")
   const [detail, setDetail] = useState<WorkflowDetail | null>(null)
+  const [selectedNodeId, setSelectedNodeId] = useState("")
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState("")
   const [notice, setNotice] = useState("")
@@ -148,6 +383,8 @@ export default function Workflows({ canEdit }: { canEdit: boolean }) {
   const [newName, setNewName] = useState("")
   const [newDescription, setNewDescription] = useState("")
   const [zoom, setZoom] = useState(1)
+  const [canvasResetVersion, setCanvasResetVersion] = useState(0)
+  const [connectionSource, setConnectionSource] = useState<{ nodeId: string; handle?: "true" | "false" } | null>(null)
   const [history, setHistory] = useState<Definition[]>([])
   const [future, setFuture] = useState<Definition[]>([])
 
@@ -169,6 +406,7 @@ export default function Workflows({ canEdit }: { canEdit: boolean }) {
     try {
       const response = await api<WorkflowDetail>(`/api/workflows/${id}`)
       setDetail(response)
+      setSelectedNodeId(response.definition.nodes[0]?.id ?? "")
       setHistory([])
       setFuture([])
     } catch (e) {
@@ -216,12 +454,17 @@ export default function Workflows({ canEdit }: { canEdit: boolean }) {
     if (!detail) return
     const id = makeId()
     const kind = type === "condition" ? "message_contains" : type === "trigger" ? "message_received" : "send_message"
+    const tail = detail.definition.nodes.at(-1)
+    const basePosition = tail?.position ?? { x: 80, y: 120 }
     const node: Node = {
       id,
       type,
       kind,
       config: defaultConfig(type, kind),
-      position: { x: 80 + detail.definition.nodes.length * 40, y: 120 + detail.definition.nodes.length * 24 },
+      position: {
+        x: basePosition.x + 340,
+        y: basePosition.y + (type === "condition" ? 0 : 35),
+      },
     }
     const nodes = [...detail.definition.nodes, node]
     let edges = [...detail.definition.edges]
@@ -234,14 +477,14 @@ export default function Workflows({ canEdit }: { canEdit: boolean }) {
           type: "action",
           kind: "stop",
           config: {},
-          position: { x: node.position!.x + 320, y: node.position!.y - 70 },
+          position: { x: node.position!.x + 340, y: node.position!.y - 145 },
         },
         {
           id: falseId,
           type: "action",
           kind: "stop",
           config: {},
-          position: { x: node.position!.x + 320, y: node.position!.y + 90 },
+          position: { x: node.position!.x + 340, y: node.position!.y + 145 },
         },
       )
       edges.push(
@@ -255,6 +498,7 @@ export default function Workflows({ canEdit }: { canEdit: boolean }) {
       .at(-1)
     if (previousTail) edges.push({ id: makeId(), source: previousTail.id, target: id })
     changeDefinition({ nodes, edges })
+    setSelectedNodeId(id)
   }
 
   function updateConnection(source: string, handle: "true" | "false" | undefined, target: string) {
@@ -266,12 +510,34 @@ export default function Workflows({ canEdit }: { canEdit: boolean }) {
     changeDefinition({ ...detail.definition, edges: without })
   }
 
+  function moveNodePosition(nodeId: string, position: { x: number; y: number }) {
+    if (!detail) return
+    changeDefinition({
+      ...detail.definition,
+      nodes: detail.definition.nodes.map((node) => node.id === nodeId ? { ...node, position } : node),
+    })
+  }
+
+  function startConnection(nodeId: string, handle?: "true" | "false") {
+    setConnectionSource((current) =>
+      current?.nodeId === nodeId && current.handle === handle ? null : { nodeId, handle },
+    )
+  }
+
+  function connectNode(targetId: string) {
+    if (!connectionSource || connectionSource.nodeId === targetId) return
+    updateConnection(connectionSource.nodeId, connectionSource.handle, targetId)
+    setConnectionSource(null)
+  }
+
   function removeNode(nodeId: string) {
     if (!detail || detail.definition.nodes.find((node) => node.id === nodeId)?.type === "trigger") return
+    const nextSelected = detail.definition.nodes.find((node) => node.id !== nodeId)
     changeDefinition({
       nodes: detail.definition.nodes.filter((node) => node.id !== nodeId),
       edges: detail.definition.edges.filter((edge) => edge.source !== nodeId && edge.target !== nodeId),
     })
+    setSelectedNodeId(nextSelected?.id ?? "")
   }
 
   function undo() {
@@ -401,52 +667,91 @@ export default function Workflows({ canEdit }: { canEdit: boolean }) {
     for (const item of heatmap ?? []) counts.set(item.nodeId, (counts.get(item.nodeId) ?? 0) + item.count)
     return counts
   }, [heatmap])
+  const selectedNode = detail?.definition.nodes.find((node) => node.id === selectedNodeId) ?? null
 
   return (
-    <section className="space-y-4">
-      <header className="page-heading">
+    <section className="workflow-page">
+      <header className="workflow-heading">
         <div>
-          <h1><WorkflowIcon size={24} /> Construtor de fluxos</h1>
-          <p>Automatize conversas do WhatsApp com condições, ações e respostas integradas à IA.</p>
+          <div className="workflow-eyebrow"><span>AV FLOW AUTOMATIONS</span><span>WHATSAPP + IA</span></div>
+          <h1>Fluxos de IA</h1>
+          <p>Crie automações visuais para conduzir cada conversa com inteligência.</p>
         </div>
-        {canEdit && <button className="button" onClick={() => void createWorkflow()} disabled={busy}><Plus size={16} /> Criar fluxo</button>}
+        {canEdit && <button className="button workflow-create-button" onClick={() => setCreateOpen(true)} disabled={busy}><Plus size={17} /> Novo fluxo</button>}
       </header>
 
-      <div className="grid gap-4 xl:grid-cols-[260px_minmax(0,1fr)]">
-        <aside className="panel p-4">
-          <div className="flex items-center justify-between gap-2">
-            <h2>Seus fluxos</h2>
-            <button className="button secondary" onClick={() => setShowActiveOnly((value) => !value)}>{showActiveOnly ? "Todos" : "Ativos"}</button>
+      {(error || notice) && (
+        <div className={error ? "workflow-feedback error" : "workflow-feedback"} role={error ? "alert" : "status"}>
+          {error || notice}
+          <button className="icon-button" aria-label="Fechar aviso" onClick={() => { setError(""); setNotice("") }}><X size={15} /></button>
+        </div>
+      )}
+
+      <div className="workflow-layout">
+        <aside className="workflow-sidebar">
+          <div className="workflow-sidebar-head">
+            <div><h2>Seus fluxos</h2><p>{items.length} {items.length === 1 ? "automação" : "automações"}</p></div>
+            {canEdit && <button className="workflow-icon-button" aria-label="Criar fluxo" title="Criar fluxo" onClick={() => setCreateOpen(true)}><Plus size={17} /></button>}
           </div>
-          {visibleItems.length === 0 ? <p className="muted mt-4">Nenhum fluxo encontrado. Crie um rascunho para começar.</p> : (
-            <ul className="mt-3 space-y-2">
-              {visibleItems.map((item) => (
-                <li key={item.id}>
-                  <button className={`w-full rounded-lg border p-3 text-left ${activeId === item.id ? "border-blue-500 bg-blue-50" : "border-line"}`} onClick={() => { setActiveId(item.id); setSimulation(null); setLogs(null); setHeatmap(null) }}>
-                    <span className="block font-medium">{item.name}</span>
-                    <span className="muted text-xs">{statusLabel(item.status)} · v{item.version}</span>
-                  </button>
-                </li>
-              ))}
-            </ul>
-          )}
-          <div className="mt-5 border-t border-line pt-4">
-            <h3 className="font-semibold">Recursos do fluxo</h3>
-            <ul className="mt-2 space-y-1 text-sm text-muted">
-              <li>Gatilhos por mensagem ou botão</li>
-              <li>Condições por lead e conversa</li>
-              <li>Mensagens, notas e atualizações</li>
-              <li>Teste sem efeitos reais</li>
-            </ul>
+          <label className="workflow-search">
+            <Search size={16} />
+            <input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Buscar fluxo" aria-label="Buscar fluxo" />
+          </label>
+          <button className={`workflow-filter ${!showActiveOnly ? "selected" : ""}`} onClick={() => setShowActiveOnly(false)}>
+            <span>Todos os fluxos</span><span>{items.length}</span>
+          </button>
+          <button className={`workflow-filter ${showActiveOnly ? "selected" : ""}`} onClick={() => setShowActiveOnly(true)}>
+            <span><span className="workflow-status-dot active" /> Publicados</span>
+            <span>{items.filter((item) => item.status === "active").length}</span>
+          </button>
+          <div className="workflow-list">
+            {visibleItems.map((item) => (
+              <button key={item.id} className={`workflow-list-item ${activeId === item.id ? "selected" : ""}`} onClick={() => { setActiveId(item.id); setSimulation(null); setLogs(null); setHeatmap(null); setError(""); setNotice("") }}>
+                <span className={`workflow-list-icon ${item.status}`}><WorkflowIcon size={17} /></span>
+                <span className="workflow-list-copy">
+                  <b>{item.name}</b>
+                  <small>{item.description || `Versão ${item.version}`}</small>
+                </span>
+                <span className={`workflow-status-dot ${item.status}`} title={statusLabel(item.status)} />
+              </button>
+            ))}
+            {visibleItems.length === 0 && (
+              <div className="workflow-list-empty">
+                <WorkflowIcon size={19} />
+                <p>{items.length ? "Nenhum fluxo corresponde à busca." : "Seus fluxos criados aparecem aqui."}</p>
+              </div>
+            )}
+          </div>
+          <div className="workflow-sidebar-footer">
+            <span className="workflow-footer-icon"><Bot size={16} /></span>
+            <span><b>Integrado à IA</b><small>Use o assistente nas etapas do fluxo.</small></span>
           </div>
         </aside>
 
         {!detail ? (
-          <div className="panel grid min-h-72 place-items-center p-8 text-center">
-            <div><WorkflowIcon size={34} className="mx-auto text-muted" /><h2 className="mt-3">Selecione ou crie um fluxo</h2><p className="muted mt-1">Cada fluxo publicado é executado para novas mensagens elegíveis.</p></div>
-          </div>
+          <main className="workflow-empty">
+            <div className="workflow-empty-grid" aria-hidden="true" />
+            <div className="workflow-empty-content">
+              <div className="workflow-preview">
+                <div className="workflow-preview-node trigger"><MessageSquareText size={17} /><span><small>QUANDO</small>Nova mensagem recebida</span><span className="workflow-preview-port" /></div>
+                <div className="workflow-preview-link"><i /><ArrowRight size={15} /></div>
+                <div className="workflow-preview-node condition"><GitBranch size={17} /><span><small>VERIFICAR</small>Intenção do lead</span><span className="workflow-preview-port" /></div>
+                <div className="workflow-preview-branch"><span><i /> Interessado</span><span><i /> Precisa de ajuda</span></div>
+                <div className="workflow-preview-node action"><Sparkles size={17} /><span><small>ENTÃO</small>Responder com IA</span></div>
+              </div>
+              <span className="workflow-pill"><Sparkles size={13} /> AUTOMAÇÃO SEM CÓDIGO</span>
+              <h2>{items.length ? "Escolha um fluxo para editar" : "Faça cada conversa avançar"}</h2>
+              <p>{items.length ? "Selecione uma automação na lista ou crie um novo fluxo." : "Conecte mensagens, condições e ações em um fluxo simples — com seu assistente de IA sempre à mão."}</p>
+              {canEdit && <button className="button workflow-create-button" onClick={() => setCreateOpen(true)}><Plus size={17} /> Criar meu primeiro fluxo</button>}
+              <div className="workflow-capabilities">
+                <span><MessageSquareText size={15} /> Gatilhos</span>
+                <span><GitBranch size={15} /> Condições</span>
+                <span><Bot size={15} /> Ações com IA</span>
+              </div>
+            </div>
+          </main>
         ) : (
-          <div className="panel min-w-0 p-4">
+          <main className="workflow-editor">
             <div className="flex flex-wrap items-center justify-between gap-3 border-b border-line pb-4">
               <div className="flex min-w-56 flex-1 items-center gap-3">
                 <div className="min-w-0 flex-1">
@@ -458,9 +763,9 @@ export default function Workflows({ canEdit }: { canEdit: boolean }) {
               <div className="flex flex-wrap gap-2">
                 <button className="button secondary" title="Desfazer" onClick={undo} disabled={!history.length}><RotateCcw size={15} /></button>
                 <button className="button secondary" title="Refazer" onClick={redo} disabled={!future.length}><RotateCcw size={15} className="scale-x-[-1]" /></button>
-                <button className="button secondary" title="Centralizar fluxo" onClick={() => { setZoom(1); document.getElementById("workflow-canvas")?.scrollTo({ left: 0, top: 0, behavior: "smooth" }) }}><Crosshair size={15} /></button>
-                <button className="button secondary" title="Reduzir" onClick={() => setZoom((value) => Math.max(.65, value - .1))}>−</button>
-                <button className="button secondary" title="Ampliar" onClick={() => setZoom((value) => Math.min(1.25, value + .1))}>+</button>
+                <button className="button secondary" title="Centralizar fluxo" onClick={() => { setZoom(1); setCanvasResetVersion((value) => value + 1) }}><Crosshair size={15} /></button>
+                <button className="button secondary" title="Reduzir" onClick={() => setZoom((value) => Math.max(.5, value - .1))}>−</button>
+                <button className="button secondary" title="Ampliar" onClick={() => setZoom((value) => Math.min(1.5, value + .1))}>+</button>
                 <button className="button secondary" onClick={() => void showLogs()}><Activity size={15} /> Logs</button>
                 <button className="button secondary" onClick={() => void showHeatmap()}><Eye size={15} /> Heatmap</button>
                 <button className="button secondary" onClick={exportWorkflow}><Download size={15} /> Exportar</button>
@@ -493,16 +798,36 @@ export default function Workflows({ canEdit }: { canEdit: boolean }) {
               <small className="muted">WhatsApp · gatilho: nova mensagem recebida</small>
             </div>
 
-            <div id="workflow-canvas" className="mt-4 max-h-[60vh] overflow-auto rounded-xl border border-line bg-slate-50 p-4">
-              <div className="flex min-w-max items-start gap-4" style={{ transform: `scale(${zoom})`, transformOrigin: "top left" }}>
-                {detail.definition.nodes.map((node, index) => {
+            <div className="workflow-editor-workspace">
+              <WorkflowCanvas
+                nodes={detail.definition.nodes}
+                edges={detail.definition.edges}
+                selectedNodeId={selectedNodeId}
+                canEdit={canEdit}
+                zoom={zoom}
+                resetVersion={canvasResetVersion}
+                nodeUsage={nodeUsage}
+                connectionSource={connectionSource}
+                onSelect={setSelectedNodeId}
+                onMove={moveNodePosition}
+                onStartConnection={startConnection}
+                onConnect={connectNode}
+              />
+              <aside className="workflow-inspector">
+                <div className="workflow-inspector-heading">
+                  <span><Sparkles size={16} /></span>
+                  <div><b>Configuração da etapa</b><small>{selectedNode ? nodeLabel(selectedNode) : "Selecione um bloco no canvas"}</small></div>
+                </div>
+                <div className="workflow-inspector-content">
+              <div className="workflow-inspector-node">
+                {detail.definition.nodes.filter((node) => node.id === selectedNodeId).map((node, index) => {
                   const outgoing = detail.definition.edges.filter((edge) => edge.source === node.id)
                   const target = outgoing.find((edge) => !edge.sourceHandle)?.target ?? ""
                   const trueTarget = outgoing.find((edge) => edge.sourceHandle === "true")?.target ?? ""
                   const falseTarget = outgoing.find((edge) => edge.sourceHandle === "false")?.target ?? ""
                   const availableTargets = detail.definition.nodes.filter((item) => item.id !== node.id)
                   return (
-                    <article key={node.id} className="w-[300px] shrink-0 rounded-xl border border-line bg-white shadow-sm">
+                    <article key={node.id} className="workflow-inspector-card">
                       <div className="flex items-start justify-between gap-2 border-b border-line p-3">
                         <div>
                           <span className="text-xs font-semibold uppercase tracking-wide text-blue-700">{node.type === "trigger" ? "Gatilho" : node.type === "condition" ? "Condição" : "Ação"} · {index + 1}</span>
@@ -511,7 +836,7 @@ export default function Workflows({ canEdit }: { canEdit: boolean }) {
                         </div>
                         {canEdit && node.type !== "trigger" && <button className="icon-button" aria-label="Remover etapa" onClick={() => removeNode(node.id)}><X size={15} /></button>}
                       </div>
-                      <div className="space-y-3 p-3">
+                      <div className="workflow-inspector-fields">
                         {canEdit && (
                           <label>Tipo
                             <select className="mt-1 w-full" value={node.kind} disabled={node.type === "trigger"} onChange={(event) => updateNode(node.id, { kind: event.target.value, config: defaultConfig(node.type, event.target.value) })}>
@@ -587,6 +912,8 @@ export default function Workflows({ canEdit }: { canEdit: boolean }) {
                   )
                 })}
               </div>
+                </div>
+              </aside>
             </div>
 
             <div className="mt-4 grid gap-3 lg:grid-cols-[1fr_auto]">
@@ -615,9 +942,31 @@ export default function Workflows({ canEdit }: { canEdit: boolean }) {
             {heatmap && <div className="mt-4 rounded-lg border border-line p-3"><h3 className="font-semibold">Heatmap de execução</h3><p className="muted mt-1">{heatmap.length ? heatmap.map((item) => `${item.nodeId}: ${item.count} ${item.status}`).join(" · ") : "Sem dados para exibir."}</p></div>}
             {notice && <p className="muted mt-3" role="status">{notice}</p>}
             {error && <p className="auth-error mt-3" role="alert">{error}</p>}
-          </div>
+          </main>
         )}
       </div>
+      {createOpen && (
+        <div className="modal-backdrop" role="presentation" onClick={() => setCreateOpen(false)}>
+          <section className="modal workflow-create-modal" role="dialog" aria-modal="true" aria-labelledby="workflow-create-title" onClick={(event) => event.stopPropagation()}>
+            <div className="panel-title">
+              <div><h2 id="workflow-create-title">Novo fluxo</h2><p>Comece com um rascunho e organize as etapas no canvas.</p></div>
+              <button className="icon-button" aria-label="Fechar" onClick={() => setCreateOpen(false)}><X size={17} /></button>
+            </div>
+            <form className="workflow-create-form" onSubmit={(event) => void createWorkflow(event)}>
+              <label>Nome do fluxo
+                <input autoFocus value={newName} onChange={(event) => setNewName(event.target.value)} maxLength={100} placeholder="Ex.: Qualificação de novos leads" required />
+              </label>
+              <label>Descrição (opcional)
+                <textarea value={newDescription} onChange={(event) => setNewDescription(event.target.value)} maxLength={500} placeholder="O que este fluxo deve fazer?" />
+              </label>
+              <div className="workflow-create-actions">
+                <button className="button secondary" type="button" onClick={() => setCreateOpen(false)}>Cancelar</button>
+                <button className="button" type="submit" disabled={busy || !newName.trim()}><Plus size={15} /> Criar rascunho</button>
+              </div>
+            </form>
+          </section>
+        </div>
+      )}
       {apiInfo && <div className="modal-backdrop" role="presentation" onClick={() => setApiInfo(null)}><section className="modal" role="dialog" aria-modal="true" aria-labelledby="workflow-api-title" onClick={(event) => event.stopPropagation()}><div className="panel-title"><h2 id="workflow-api-title">API do fluxo</h2><button className="icon-button" aria-label="Fechar" onClick={() => setApiInfo(null)}><X size={18} /></button></div><p className="muted">{apiInfo.note}</p><pre className="mt-3 overflow-auto rounded bg-slate-100 p-3 text-sm">{apiInfo.endpoint}</pre><button className="button secondary mt-3" onClick={() => void navigator.clipboard.writeText(apiInfo.endpoint)}>Copiar endpoint</button></section></div>}
     </section>
   )
