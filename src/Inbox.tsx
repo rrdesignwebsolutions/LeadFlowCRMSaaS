@@ -423,7 +423,7 @@ export default function Inbox({
     setError("")
     setAssignmentNotice("")
     try {
-      const result = await api<{ warning?: string }>(
+      const result = await api<{ warning?: string; notice?: string }>(
         `/api/conversations/${id}/assignment`,
         {
         method: "POST",
@@ -434,6 +434,7 @@ export default function Inbox({
       await loadThread(id)
       setAssignmentNotice(
         result.warning ??
+          result.notice ??
           (assignedTo
             ? "Conversa atribuída. A IA está pausada."
             : "Conversa devolvida à IA."),

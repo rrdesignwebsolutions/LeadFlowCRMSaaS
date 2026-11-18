@@ -3078,6 +3078,7 @@ export async function whatsappRoutes(
   env: Env,
   url: URL,
   auth: Session,
+  schedule?: (task: Promise<unknown>) => void,
 ): Promise<Response | null> {
   const path = url.pathname
 
@@ -3525,27 +3526,53 @@ export async function whatsappRoutes(
               "A janela de 24 horas expirou; a IA aguardará uma nova mensagem.",
           })
         try {
-          const replied = await autoReply(
-            env,
-            org,
-            conversationId,
-            pending.externalId,
+          const inboundExternalId = pending.externalId
+          const jobId = uid()
+          await env.DB.prepare(
+            `INSERT OR IGNORE INTO whatsapp_processing_jobs(
+               id,organization_id,conversation_id,inbound_external_id
+             ) VALUES(?,?,?,?)`,
           )
-          if (!replied)
-            return json({
-              ok: true,
-              warning:
-                "A IA não respondeu à mensagem pendente. Confira se está ativa e se a conversa ainda precisa de resposta.",
-            })
+            .bind(jobId, org, conversationId, inboundExternalId)
+            .run()
+          const job = await env.DB.prepare(
+            `SELECT id,status,(status='processing' AND locked_until>CURRENT_TIMESTAMP) active
+             FROM whatsapp_processing_jobs
+             WHERE organization_id=? AND inbound_external_id=?`,
+          )
+            .bind(org, inboundExternalId)
+            .first<{ id: string; status: string; active: number }>()
+          if (!job) throw new Error("Não foi possível criar o processamento da mensagem.")
+
+          if (!job.active) {
+            await env.DB.prepare(
+              `UPDATE whatsapp_processing_jobs SET status='pending',attempts=0,
+                 next_attempt_at=CURRENT_TIMESTAMP,locked_until=NULL,error_summary=NULL,
+                 updated_at=CURRENT_TIMESTAMP
+               WHERE id=? AND (status<>'processing' OR locked_until<=CURRENT_TIMESTAMP)`,
+            )
+              .bind(job.id)
+              .run()
+            const task = processWhatsAppJob(env, job.id)
+            if (schedule) schedule(task)
+            else await task
+          }
+
+          return json({
+            ok: true,
+            notice: job.active
+              ? "A IA já está processando a mensagem pendente."
+              : "A mensagem pendente foi colocada na fila de resposta da IA.",
+          })
         } catch (error) {
           console.error(
-            "ai_resume_failed",
+            "ai_resume_enqueue_failed",
             error instanceof Error ? error.message : "unknown",
           )
           return json({
             ok: true,
             warning:
-              "A conversa foi devolvida à IA, mas não foi possível responder à mensagem pendente.",
+              "A conversa foi devolvida à IA, mas não foi possível colocar a mensagem pendente na fila.",
           })
         }
       }

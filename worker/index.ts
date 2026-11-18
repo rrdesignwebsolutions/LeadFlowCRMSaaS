@@ -1366,7 +1366,13 @@ async function api(
 
   if (branding) return branding
 
-  const whatsapp = await whatsappRoutes(request, env, url, auth)
+  const whatsapp = await whatsappRoutes(
+    request,
+    env,
+    url,
+    auth,
+    (task) => ctx.waitUntil(task),
+  )
 
   if (whatsapp) return whatsapp
 
