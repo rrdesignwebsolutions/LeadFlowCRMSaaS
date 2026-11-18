@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState, type FormEvent } from "react"
+import { useCallback, useEffect, useRef, useState, type CSSProperties, type FormEvent } from "react"
 
 import {
   ArrowLeft,
@@ -19,6 +19,20 @@ import {
 import { Boxes } from "lucide-react"
 
 import { api, errorMessage, type Member, type Team } from "./api"
+import { clampSidebarWidth, DEFAULT_SIDEBAR_WIDTH, MIN_SIDEBAR_WIDTH, sidebarWidthLimit } from "./inboxResize"
+
+const SIDEBAR_WIDTH_KEY = "avflow-inbox-sidebar-width"
+
+function savedSidebarWidth() {
+  try {
+    const saved = window.localStorage.getItem(SIDEBAR_WIDTH_KEY)
+    const width = saved === null ? DEFAULT_SIDEBAR_WIDTH : Number(saved)
+    return Number.isFinite(width) && width > 0 ? width : DEFAULT_SIDEBAR_WIDTH
+  } catch (error) {
+    console.warn("inbox_sidebar_storage_read_failed", error)
+    return DEFAULT_SIDEBAR_WIDTH
+  }
+}
 
 type CatalogItem = { id: string; name: string; version: string | null; status: string; authorized: boolean; images: Array<{ id: string; isPrimary: boolean }> }
 
@@ -172,6 +186,30 @@ export default function Inbox({
   const [assigning, setAssigning] = useState(false)
   const [assignmentNotice, setAssignmentNotice] = useState("")
   const [contextMenu, setContextMenu] = useState<{ kind: "conversation" | "message"; id: string; x: number; y: number } | null>(null)
+  const shellRef = useRef<HTMLElement>(null)
+  const [sidebarWidth, setSidebarWidth] = useState(savedSidebarWidth)
+  const [containerWidth, setContainerWidth] = useState(0)
+  const displayedWidth = containerWidth ? clampSidebarWidth(sidebarWidth, containerWidth) : DEFAULT_SIDEBAR_WIDTH
+
+  useEffect(() => {
+    const shell = shellRef.current
+    if (!shell) return
+    const observer = new ResizeObserver((entries) => setContainerWidth(entries[0].contentRect.width))
+    observer.observe(shell)
+    return () => observer.disconnect()
+  }, [])
+
+  function resizeSidebar(width: number) {
+    const size = shellRef.current?.getBoundingClientRect().width
+    if (!size) return
+    const next = clampSidebarWidth(width, size)
+    setSidebarWidth(next)
+    try {
+      window.localStorage.setItem(SIDEBAR_WIDTH_KEY, String(next))
+    } catch (error) {
+      console.warn("inbox_sidebar_storage_write_failed", error)
+    }
+  }
 
   function showMenu(kind: "conversation" | "message", id: string, x: number, y: number) {
     setContextMenu({ kind, id, x: Math.max(8, Math.min(x, window.innerWidth - 210)), y: Math.max(8, Math.min(y, window.innerHeight - 130)) })
@@ -426,10 +464,12 @@ export default function Inbox({
         </button>
       </div>
       <section
+        ref={shellRef}
         className={`inbox-shell${activeId ? " has-active" : ""}`}
         aria-label="Caixa de entrada do WhatsApp"
+        style={{ "--inbox-sidebar-width": `${displayedWidth}px` } as CSSProperties}
       >
-      <aside className="inbox-sidebar">
+      <aside className="inbox-sidebar" id="inbox-conversation-list">
         <div className="inbox-sidebar-head">
           <div>
             <h2>Conversas</h2>
@@ -531,6 +571,44 @@ export default function Inbox({
           </div>
         )}
       </aside>
+
+      <div
+        className="inbox-resizer"
+        role="separator"
+        aria-label="Ajustar largura da lista de conversas"
+        aria-orientation="vertical"
+        aria-valuemin={MIN_SIDEBAR_WIDTH}
+        aria-valuemax={containerWidth ? sidebarWidthLimit(containerWidth) : DEFAULT_SIDEBAR_WIDTH}
+        aria-valuenow={displayedWidth}
+        aria-valuetext={`${displayedWidth} pixels`}
+        aria-controls="inbox-conversation-list"
+        tabIndex={0}
+        title="Arraste para ajustar a lista de conversas"
+        onPointerDown={(event) => {
+          if (event.button !== 0) return
+          event.preventDefault()
+          event.currentTarget.setPointerCapture(event.pointerId)
+          resizeSidebar(event.clientX - (shellRef.current?.getBoundingClientRect().left ?? 0))
+        }}
+        onPointerMove={(event) => {
+          if (!event.currentTarget.hasPointerCapture(event.pointerId)) return
+          resizeSidebar(event.clientX - (shellRef.current?.getBoundingClientRect().left ?? 0))
+        }}
+        onPointerUp={(event) => {
+          if (event.currentTarget.hasPointerCapture(event.pointerId))
+            event.currentTarget.releasePointerCapture(event.pointerId)
+        }}
+        onDoubleClick={() => resizeSidebar(DEFAULT_SIDEBAR_WIDTH)}
+        onKeyDown={(event) => {
+          const change = event.shiftKey ? 50 : 10
+          if (event.key === "ArrowLeft") resizeSidebar(displayedWidth - change)
+          else if (event.key === "ArrowRight") resizeSidebar(displayedWidth + change)
+          else if (event.key === "Home") resizeSidebar(MIN_SIDEBAR_WIDTH)
+          else if (event.key === "End") resizeSidebar(sidebarWidthLimit(containerWidth))
+          else return
+          event.preventDefault()
+        }}
+      />
 
       <div className="inbox-chat">
         {active ? (
