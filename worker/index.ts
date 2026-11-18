@@ -1,6 +1,7 @@
 /// <reference types="@cloudflare/workers-types" />
 
 import { aiRoutes } from "./ai"
+import { quickReplyRoutes } from "./quick-replies"
 import { effectiveLeadStatus } from "./lead-status"
 import { catalogRoutes } from "./catalog"
 import { brandingRoutes } from "./branding"
@@ -1154,6 +1155,9 @@ async function api(
       return json({ ok: true })
     }
   }
+
+  const quickReplies = await quickReplyRoutes(request, env, url, auth)
+  if (quickReplies) return quickReplies
 
   const ai = await aiRoutes(request, env, url, auth)
 

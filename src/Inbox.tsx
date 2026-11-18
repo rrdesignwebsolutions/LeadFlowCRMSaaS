@@ -14,11 +14,13 @@ import {
   Search,
   Send,
   X,
+  Zap,
 } from "lucide-react"
 
 import { Boxes } from "lucide-react"
 
 import { api, errorMessage, type Member, type Team } from "./api"
+import { QuickReplyForm, type QuickReply } from "./QuickReplies"
 import { clampSidebarWidth, DEFAULT_SIDEBAR_WIDTH, MIN_SIDEBAR_WIDTH, sidebarWidthLimit } from "./inboxResize"
 
 const SIDEBAR_WIDTH_KEY = "avflow-inbox-sidebar-width"
@@ -186,6 +188,42 @@ export default function Inbox({
   const [assigning, setAssigning] = useState(false)
   const [assignmentNotice, setAssignmentNotice] = useState("")
   const [contextMenu, setContextMenu] = useState<{ kind: "conversation" | "message"; id: string; x: number; y: number } | null>(null)
+  const [quickOpen, setQuickOpen] = useState(false)
+  const [quickCreate, setQuickCreate] = useState(false)
+  const [quickBusy, setQuickBusy] = useState(false)
+  const [quickReplies, setQuickReplies] = useState<QuickReply[]>([])
+  const [quickQuery, setQuickQuery] = useState("")
+
+  async function toggleQuickReplies() {
+    if (quickOpen) { setQuickOpen(false); setQuickCreate(false); return }
+    setQuickOpen(true); setCatalogOpen(false); setQuickCreate(false); setQuickQuery(""); setError("")
+    try { setQuickReplies((await api<{ results: QuickReply[] }>("/api/quick-replies")).results) }
+    catch (e) { setError(errorMessage(e)) }
+  }
+
+  async function createQuickReply(title: string, body: string) {
+    setQuickBusy(true); setError("")
+    try {
+      await api("/api/quick-replies", { method: "POST", body: { title, body } })
+      setQuickReplies((await api<{ results: QuickReply[] }>("/api/quick-replies")).results)
+      setQuickCreate(false)
+    } catch (e) { setError(errorMessage(e)) } finally { setQuickBusy(false) }
+  }
+
+  function insertQuickReply(body: string) {
+    const input = composer.current
+    if (!input) return
+    const start = input.selectionStart
+    const end = input.selectionEnd
+    if (input.value.length - (end - start) + body.length > 4096) {
+      setError("A mensagem combinada ultrapassa o limite de 4096 caracteres.")
+      return
+    }
+    input.setRangeText(body, start, end, "end")
+    setQuickOpen(false)
+    fitComposer()
+    input.focus()
+  }
   const shellRef = useRef<HTMLElement>(null)
   const [sidebarWidth, setSidebarWidth] = useState(savedSidebarWidth)
   const [containerWidth, setContainerWidth] = useState(0)
@@ -282,6 +320,7 @@ export default function Inbox({
 
   async function toggleCatalog() {
     const next = !catalogOpen
+    setQuickOpen(false)
     setCatalogOpen(next)
     setSelected([])
     if (!next) return
@@ -364,7 +403,10 @@ export default function Inbox({
   }, [thread?.messages.length])
 
   async function open(id: string) {
+    if (id !== activeId) setFile(null)
     setActiveId(id)
+    setQuickOpen(false)
+    setQuickCreate(false)
 
     setThread(null)
 
@@ -785,7 +827,7 @@ export default function Inbox({
                 {error}
               </p>
             )}
-            {thread && !thread.windowOpen ? (
+            {thread && !thread.windowOpen && (
               <div className="inbox-window-note">
                 <Info size={16} />
                 <span>
@@ -793,7 +835,7 @@ export default function Inbox({
                   precisa enviar uma nova mensagem para você responder.
                 </span>
               </div>
-            ) : (
+            )}
               <form className="inbox-composer" onSubmit={send}>
                 <input
                   ref={fileInput}
@@ -807,7 +849,7 @@ export default function Inbox({
                 <button
                   type="button"
                   className="inbox-attach"
-                  disabled={sending}
+                  disabled={sending || !thread?.windowOpen}
                   onClick={() => fileInput.current?.click()}
                   aria-label="Anexar arquivo"
                   title="Anexar arquivo"
@@ -818,7 +860,7 @@ export default function Inbox({
                   <button
                     type="button"
                     className="inbox-attach"
-                    disabled={sending}
+                    disabled={sending || !thread?.windowOpen}
                     onClick={() => void toggleCatalog()}
                     aria-label="Enviar catálogo"
                     title="Enviar catálogo ou modelo"
@@ -870,6 +912,28 @@ export default function Inbox({
                     </div>
                   )}
                 </span>
+                <span className="inbox-catalog">
+                  <button type="button" className="inbox-attach" disabled={sending} onClick={() => void toggleQuickReplies()}
+                    aria-label="Mensagens rápidas" aria-expanded={quickOpen} title="Mensagens rápidas">
+                    <Zap size={19} />
+                  </button>
+                  {quickOpen && <div className="inbox-catalog-menu quick-reply-menu">
+                    {quickCreate ? <>
+                      <b>Cadastrar mensagem rápida</b>
+                      <QuickReplyForm busy={quickBusy} onSave={createQuickReply} onCancel={() => setQuickCreate(false)} />
+                    </> : <>
+                      <b>Mensagens rápidas</b>
+                      <input className="quick-reply-search" aria-label="Buscar mensagens rápidas" placeholder="Buscar mensagem" value={quickQuery} onChange={(event) => setQuickQuery(event.target.value)} />
+                      {quickReplies.filter((item) => `${item.title} ${item.body}`.toLocaleLowerCase().includes(quickQuery.trim().toLocaleLowerCase())).map((item) =>
+                        <button key={item.id} type="button" className="quick-reply-option" onClick={() => insertQuickReply(item.body)}>
+                          <strong>{item.title}</strong><span>{item.body}</span>
+                        </button>)}
+                      {!quickReplies.length && <p>Nenhuma mensagem cadastrada.</p>}
+                      {quickReplies.length > 0 && !quickReplies.some((item) => `${item.title} ${item.body}`.toLocaleLowerCase().includes(quickQuery.trim().toLocaleLowerCase())) && <p>Nenhuma mensagem encontrada.</p>}
+                      <button type="button" className="all" onClick={() => setQuickCreate(true)}>+ Cadastrar mensagem rápida</button>
+                    </>}
+                  </div>}
+                </span>
                 {file && (
                   <span className="inbox-file-chip" title={file.name}>
                     <span>{file.name}</span>
@@ -883,6 +947,7 @@ export default function Inbox({
                   </span>
                 )}
                 <textarea
+                  key={activeId}
                   ref={composer}
                   name="body"
                   rows={1}
@@ -896,14 +961,13 @@ export default function Inbox({
                 />
                 <button
                   className="inbox-send"
-                  disabled={sending}
+                  disabled={sending || !thread?.windowOpen}
                   aria-label="Enviar mensagem"
                   title="Enviar mensagem"
                 >
                   <Send size={18} />
                 </button>
               </form>
-            )}
           </>
         ) : (
           <div className="inbox-welcome">

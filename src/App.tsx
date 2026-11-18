@@ -16,6 +16,7 @@ import {
   ShieldCheck,
   UsersRound,
   X,
+  Zap,
 } from "lucide-react"
 
 import AISettings from "./AISettings"
@@ -23,6 +24,7 @@ import AISettings from "./AISettings"
 import AuthScreen from "./AuthScreen"
 
 import Catalog from "./Catalog"
+import QuickReplies from "./QuickReplies"
 
 import InboxView from "./Inbox"
 
@@ -48,7 +50,7 @@ import {
   type Metrics,
 } from "./api"
 
-type View = "overview" | "inbox" | "leads" | "catalog" | "campaigns" | "reports" | "team" | "plans" | "settings"
+type View = "overview" | "inbox" | "leads" | "catalog" | "quick-replies" | "campaigns" | "reports" | "team" | "plans" | "settings"
 
 const work: Array<{ id: View; label: string; icon: typeof Inbox }> = [
   { id: "overview", label: "Visão geral", icon: LayoutDashboard },
@@ -58,6 +60,8 @@ const work: Array<{ id: View; label: string; icon: typeof Inbox }> = [
   { id: "leads", label: "Leads", icon: ContactRound },
 
   { id: "catalog", label: "Catálogo", icon: Boxes },
+
+  { id: "quick-replies", label: "Mensagens rápidas", icon: Zap },
 
   { id: "campaigns", label: "Campanhas", icon: Megaphone },
 
@@ -677,6 +681,7 @@ function Shell({
             <Leads leads={leads} loadError={loadError} onChanged={reload} />
           )}
           {view === "catalog" && <Catalog />}
+          {view === "quick-replies" && <QuickReplies />}
           {view === "team" && <TeamView meRole={me.role} onChanged={reload} />}
           {view === "plans" && <Plans meRole={me.role} />}
           {view === "reports" && (

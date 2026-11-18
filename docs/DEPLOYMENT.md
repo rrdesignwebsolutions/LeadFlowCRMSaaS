@@ -12,6 +12,8 @@
 
 Para desenvolvimento, copie `.dev.vars.example` para `.dev.vars` (arquivo ignorado) e use valores locais. Nunca commite segredos.
 
+Mensagens rápidas compartilhadas exigem a migração `0019_quick_replies.sql` antes do deploy. Todos os membros ativos da empresa podem criar, editar, excluir e inserir essas mensagens no campo de texto das conversas; a seleção não envia automaticamente.
+
 ## Assinaturas recorrentes — InfinitePay
 
 1. No app InfinitePay, habilite as assinaturas/Planos e Recorrências e crie um plano mensal para cada faixa exibida em **Planos** (Essencial R$ 119, Pro R$ 149 e Scale R$ 249).
