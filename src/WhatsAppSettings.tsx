@@ -13,6 +13,7 @@ type Status = {
     historySyncStatus: "not_started" | "requesting" | "requested" | "completed" | "declined" | "failed"
     historySyncProgress: number
     historySyncError: string | null
+    historySyncRequestedAt: string | null
     historySyncAvailable: number
   } | null
 
@@ -49,6 +50,10 @@ type FacebookLoginResponse = { authResponse?: { code?: string } }
 type SignupResult =
   | { selectionRequired: true; pendingId: string; phoneNumbers: Array<{ id: string; displayPhoneNumber: string; verifiedName: string | null }> }
   | { selectionRequired?: false; displayPhoneNumber: string; subscribed: boolean; subscribeError?: string }
+
+export function historySyncWasSuperseded(connectedAt: string | null, requestedAt: string | null) {
+  return !!connectedAt && !!requestedAt && connectedAt > requestedAt
+}
 
 declare global {
   interface Window {
@@ -133,12 +138,19 @@ export default function WhatsAppSettings({
   }, [load])
 
   useEffect(() => {
-    const status = data?.integration?.historySyncStatus
-    if (status !== "requesting" && status !== "requested") return
+    const integration = data?.integration
+    const status = integration?.historySyncStatus
+    if (!integration || (status !== "requesting" && status !== "requested")) return
+    if (historySyncWasSuperseded(integration.connectedAt, integration.historySyncRequestedAt)) return
 
     const timer = setInterval(() => void load(), 5000)
     return () => clearInterval(timer)
-  }, [data?.integration?.historySyncStatus, load])
+  }, [
+    data?.integration?.historySyncStatus,
+    data?.integration?.connectedAt,
+    data?.integration?.historySyncRequestedAt,
+    load,
+  ])
 
   const showConnectionResult = useCallback(async (result: Exclude<SignupResult, { selectionRequired: true }>, mode: "cloud_api" | "coexistence") => {
     const modeLabel = mode === "coexistence" ? "modo de coexistência" : "modo Cloud API"
@@ -554,14 +566,23 @@ export default function WhatsAppSettings({
                   )}
               </>
             ) : i.historySyncStatus === "requesting" || i.historySyncStatus === "requested" ? (
-              <p>
-                Sincronização em andamento pela Meta
+              historySyncWasSuperseded(i.connectedAt, i.historySyncRequestedAt) ? (
+                <p role="alert">
+                  Essa tentativa começou antes da reconexão e não foi retomada
+                  pela Meta. O AV Flow não pode continuar nem repetir
+                  automaticamente a solicitação. As mensagens novas continuam
+                  sendo sincronizadas.
+                </p>
+              ) : (
+                <p>
+                  Sincronização em andamento pela Meta
  ({i.historySyncProgress}%).
-                {i.historySyncProgress === 0
-                  ? " Aguardando a Meta enviar as primeiras mensagens; isso pode levar alguns minutos. "
-                  : " "}
-                A caixa de entrada será atualizada automaticamente.
-              </p>
+                  {i.historySyncProgress === 0
+                    ? " Aguardando a Meta enviar as primeiras mensagens; isso pode levar alguns minutos. "
+                    : " "}
+                  A caixa de entrada será atualizada automaticamente.
+                </p>
+              )
             ) : i.historySyncStatus === "completed" ? (
               <p>Histórico sincronizado ({i.historySyncProgress}%).</p>
             ) : i.historySyncStatus === "declined" ? (

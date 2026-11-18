@@ -1806,6 +1806,7 @@ export async function whatsappRoutes(
       const integration =
         await env.DB.prepare(`SELECT status,phone_number_id phoneNumberId,display_phone_number displayPhoneNumber,connection_mode connectionMode,error_summary errorSummary,connected_at connectedAt,
         history_sync_status historySyncStatus,history_sync_progress historySyncProgress,history_sync_error historySyncError,
+        history_sync_requested_at historySyncRequestedAt,
         CASE WHEN connected_at>=datetime('now','-24 hours') THEN 1 ELSE 0 END historySyncAvailable
         FROM integrations WHERE organization_id=? AND provider='meta_whatsapp' AND status!='disconnected' ORDER BY created_at DESC LIMIT 1`)
           .bind(org)
